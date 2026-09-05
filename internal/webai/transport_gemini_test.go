@@ -27,7 +27,7 @@ type fakeInteractionAdapter struct {
 	cancelN   int
 }
 
-func (f *fakeInteractionAdapter) Name() string            { return "fake" }
+func (f *fakeInteractionAdapter) Name() string           { return "fake" }
 func (f *fakeInteractionAdapter) TargetScore(string) int { return 100 }
 func (f *fakeInteractionAdapter) Probe(context.Context, sites.Evaluator) (sites.Result, error) {
 	return sites.Result{State: sites.ReadinessReady}, nil
