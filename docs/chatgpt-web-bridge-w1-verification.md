@@ -99,10 +99,10 @@ Windows (`windows-latest`):
 - `go vet ./...`: PASS
 - `go test -buildvcs=false -count=1 ./...`: PASS
 
-### Final clean CI run #8
+### Final exact-head CI run #9
 
-Run ID: `33978723298`  
-Verified final head: `f0924feaad83777cfb0145dcef9087673381375f`
+Run ID: `33978822325`  
+Verified final head: `f894f63c647ca11153664c5c1a26c470f0065fee`
 
 Ubuntu (`ubuntu-latest`): **PASS** for format, installer syntax, `go vet`, full `go test`, and selected race tests.
 
