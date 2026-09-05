@@ -1,6 +1,7 @@
 package webai
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ func wrappedResponse(body string) string {
 }
 
 func testToolSpec() agentcore.ToolSpec {
+	strict := true
 	return agentcore.ToolSpec{
 		Name:        "save_chapter",
 		Description: "save a chapter",
@@ -23,6 +25,8 @@ func testToolSpec() agentcore.ToolSpec {
 			},
 			"required": []string{"chapter"},
 		},
+		DeferLoading: true,
+		Strict:       &strict,
 	}
 }
 
@@ -32,12 +36,13 @@ func TestBuildPromptDoesNotLeakProviderCredentials(t *testing.T) {
 		SessionID:      "provider-session-secret",
 		PromptCacheKey: "provider-cache-secret",
 		MaxTokens:      1234,
+		ToolChoice:     map[string]any{"provider_selector_secret": "do-not-send"},
 	}
 	prompt, err := BuildPrompt([]agentcore.Message{agentcore.UserMsg("hello")}, []agentcore.ToolSpec{testToolSpec()}, cfg)
 	if err != nil {
 		t.Fatalf("BuildPrompt: %v", err)
 	}
-	for _, secret := range []string{cfg.APIKey, cfg.SessionID, cfg.PromptCacheKey} {
+	for _, secret := range []string{cfg.APIKey, cfg.SessionID, cfg.PromptCacheKey, "provider_selector_secret", "do-not-send"} {
 		if strings.Contains(prompt, secret) {
 			t.Fatalf("web prompt leaked provider-only value %q", secret)
 		}
@@ -47,6 +52,78 @@ func TestBuildPromptDoesNotLeakProviderCredentials(t *testing.T) {
 	}
 	if !strings.Contains(prompt, `"name":"save_chapter"`) {
 		t.Fatal("tool spec was not serialized into web request")
+	}
+}
+
+func TestBuildPromptStripsMessageTelemetryAndInternalMetadata(t *testing.T) {
+	assistant := agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{
+			agentcore.TextBlock("calling local tool"),
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "tc-1", Name: "save_chapter", Args: json.RawMessage(`{"chapter":9}`)}),
+		},
+		Usage: &agentcore.Usage{Provider: "provider-telemetry-secret", Model: "legacy-api-model"},
+		Metadata: map[string]any{
+			"internal_secret": "message-metadata-secret",
+		},
+	}
+	toolResult := agentcore.ToolResultMsg("tc-1", json.RawMessage(`{"saved":true}`), false)
+	toolResult.Metadata["tool_name"] = "save_chapter"
+	toolResult.Metadata["internal_secret"] = "tool-metadata-secret"
+	toolResult.Usage = &agentcore.Usage{Provider: "tool-provider-secret"}
+
+	prompt, err := BuildPrompt([]agentcore.Message{assistant, toolResult}, []agentcore.ToolSpec{testToolSpec()}, agentcore.CallConfig{})
+	if err != nil {
+		t.Fatalf("BuildPrompt: %v", err)
+	}
+	for _, secret := range []string{
+		"provider-telemetry-secret",
+		"legacy-api-model",
+		"message-metadata-secret",
+		"tool-metadata-secret",
+		"tool-provider-secret",
+	} {
+		if strings.Contains(prompt, secret) {
+			t.Fatalf("web prompt leaked internal message data %q", secret)
+		}
+	}
+	for _, required := range []string{`"id":"tc-1"`, `"name":"save_chapter"`, `"tool_call_id":"tc-1"`, `"saved":true`} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("web prompt lost required local tool transcript field %s", required)
+		}
+	}
+}
+
+func TestBuildPromptStripsProviderToolFlags(t *testing.T) {
+	prompt, err := BuildPrompt([]agentcore.Message{agentcore.UserMsg("hello")}, []agentcore.ToolSpec{testToolSpec()}, agentcore.CallConfig{})
+	if err != nil {
+		t.Fatalf("BuildPrompt: %v", err)
+	}
+	if strings.Contains(prompt, `"defer_loading"`) || strings.Contains(prompt, `"strict"`) {
+		t.Fatal("provider/local tool flags must not cross the browser boundary")
+	}
+	if !strings.Contains(prompt, `"parameters"`) {
+		t.Fatal("tool JSON schema must remain available to the web model")
+	}
+}
+
+func TestBuildPromptKeepsPortableToolChoiceOnly(t *testing.T) {
+	for _, value := range []string{"auto", "required", "none"} {
+		prompt, err := BuildPrompt(nil, nil, agentcore.CallConfig{ToolChoice: value})
+		if err != nil {
+			t.Fatalf("BuildPrompt(%s): %v", value, err)
+		}
+		if !strings.Contains(prompt, `"tool_choice":"`+value+`"`) {
+			t.Fatalf("portable tool choice %q was not projected", value)
+		}
+	}
+}
+
+func TestBuildPromptRejectsToolResultWithoutCorrelationID(t *testing.T) {
+	msg := agentcore.Message{Role: agentcore.RoleTool, Content: []agentcore.ContentBlock{agentcore.TextBlock(`{"ok":true}`)}}
+	_, err := BuildPrompt([]agentcore.Message{msg}, nil, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected ErrProtocol, got %v", err)
 	}
 }
 
