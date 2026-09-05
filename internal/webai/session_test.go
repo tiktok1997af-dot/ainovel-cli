@@ -19,7 +19,7 @@ func newFakeBrowserProcess(pid int) *fakeBrowserProcess {
 	return &fakeBrowserProcess{pid: pid, done: make(chan error, 1)}
 }
 
-func (p *fakeBrowserProcess) PID() int            { return p.pid }
+func (p *fakeBrowserProcess) PID() int           { return p.pid }
 func (p *fakeBrowserProcess) Done() <-chan error { return p.done }
 func (p *fakeBrowserProcess) Stop() error {
 	p.stopOnce.Do(func() { close(p.done) })
