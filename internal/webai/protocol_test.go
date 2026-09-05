@@ -160,6 +160,14 @@ func TestBuildPromptRejectsUnsupportedRoleAndContent(t *testing.T) {
 	}
 }
 
+func TestBuildPromptRejectsThinkingOnlyMessageAfterProjection(t *testing.T) {
+	msg := agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ThinkingBlock("provider-only reasoning")}}
+	_, err := BuildPrompt([]agentcore.Message{msg}, nil, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected empty-after-projection protocol error, got %v", err)
+	}
+}
+
 func TestBuildPromptRejectsMalformedOrDuplicateHistoricalToolCalls(t *testing.T) {
 	invalid := agentcore.Message{
 		Role: agentcore.RoleAssistant,
