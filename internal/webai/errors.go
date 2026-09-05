@@ -62,12 +62,27 @@ func (e *Error) Unwrap() error {
 	return e.Cause
 }
 
-// Retryable implements agentcore.RetryableError.
-func (e *Error) Retryable() bool { return e != nil && e.Retry }
-
-// RetryAfter implements agentcore.RetryHinter.
-func (e *Error) RetryAfter() time.Duration {
+// Retryable implements agentcore.RetryableError. Authentication/security
+// challenges, protocol violations and unsupported site layouts always require
+// correction or user action; they must never become same-request retry loops
+// even if a caller accidentally sets Retry=true.
+func (e *Error) Retryable() bool {
 	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ErrorAuthRequired, ErrorSecurityChallenge, ErrorProtocol, ErrorUnsupportedSite:
+		return false
+	default:
+		return e.Retry
+	}
+}
+
+// RetryAfter implements agentcore.RetryHinter. Non-retryable failures never
+// advertise a delay because the existing loop treats retryability and hints as
+// independent interfaces.
+func (e *Error) RetryAfter() time.Duration {
+	if e == nil || !e.Retryable() {
 		return 0
 	}
 	return e.RetryDelay
