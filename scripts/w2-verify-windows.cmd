@@ -3,6 +3,12 @@ setlocal
 cd /d "%~dp0"
 echo W2E - AINovel WEB-ONLY Browser Verification
 echo.
+echo The verifier first checks AUTH_REQUIRED in read-only inspection mode.
+echo DO NOT sign in during that first inspection window.
+echo It will then reopen the same profile in NORMAL Chrome without DevTools.
+echo Sign in there. When Gemini is fully signed in, CLOSE that Chrome window.
+echo The verifier will continue automatically and verify READY + restart persistence.
+echo.
 ainovel-w2-verify.exe
 set EXIT_CODE=%ERRORLEVEL%
 echo.
