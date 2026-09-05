@@ -30,6 +30,13 @@ type Model struct {
 	transport Transport
 }
 
+var (
+	_ agentcore.ChatModel      = (*Model)(nil)
+	_ agentcore.ProviderNamer  = (*Model)(nil)
+	_ agentcore.ModelNamer     = (*Model)(nil)
+	_ llm.CapabilityProvider   = (*Model)(nil)
+)
+
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
 		return nil, fmt.Errorf("webai: transport is required")
