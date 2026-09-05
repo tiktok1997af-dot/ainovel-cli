@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/ainovel-cli/internal/llmcontract"
 )
@@ -54,6 +55,45 @@ func mustModel(t *testing.T, transport Transport) *Model {
 		t.Fatalf("NewModel: %v", err)
 	}
 	return m
+}
+
+func TestNewModelRequiresTransportAndNormalizesIdentity(t *testing.T) {
+	if _, err := NewModel(ModelConfig{}); err == nil {
+		t.Fatal("expected missing transport error")
+	}
+	m, err := NewModel(ModelConfig{Site: "  ", Model: "  ", Transport: &fakeTransport{}})
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	if m.site != "web" || m.ModelName() != "web-session" || m.ProviderName() != "web" {
+		t.Fatalf("unexpected normalized identity: site=%q provider=%q model=%q", m.site, m.ProviderName(), m.ModelName())
+	}
+}
+
+func TestModelCapabilityReportingIsInternallyConsistent(t *testing.T) {
+	model := mustModel(t, &fakeTransport{})
+	info := model.Info()
+	caps := model.Capabilities()
+	if info.Provider != "web" || caps.Provider != "web" || info.Name != caps.Model {
+		t.Fatalf("identity mismatch: info=%+v caps=%+v", info, caps)
+	}
+	if !containsCapability(info.Capabilities, llm.CapabilityChat) ||
+		!containsCapability(info.Capabilities, llm.CapabilityToolCalling) ||
+		!containsCapability(info.Capabilities, llm.CapabilityStreaming) {
+		t.Fatalf("model info capabilities incomplete: %v", info.Capabilities)
+	}
+	if caps.Tools.Calls != llm.SupportYes || caps.Structured.JSONSchema != llm.SupportNo || !caps.Structured.PromptOnly || caps.Streaming.Supported != llm.SupportPartial {
+		t.Fatalf("unexpected web capabilities: %+v", caps)
+	}
+}
+
+func containsCapability(values []string, want llm.ModelCapability) bool {
+	for _, value := range values {
+		if value == string(want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestModelGenerateText(t *testing.T) {
@@ -116,9 +156,9 @@ func TestModelForcesPromptContractForStructuredCalls(t *testing.T) {
 	_, resolution := llmcontract.Plan(model, llmcontract.Contract{
 		Name: "decision",
 		Schema: map[string]any{
-			"type": "object",
+			"type":       "object",
 			"properties": map[string]any{"choice": map[string]any{"type": "string"}},
-			"required": []string{"choice"},
+			"required":   []string{"choice"},
 		},
 	})
 	if resolution.Mode != llmcontract.ModePromptContract {
@@ -224,8 +264,20 @@ func TestWebErrorRetryContracts(t *testing.T) {
 		t.Fatalf("retry hint missing: %v", retry)
 	}
 
+	for _, kind := range []ErrorKind{ErrorAuthRequired, ErrorSecurityChallenge, ErrorProtocol, ErrorUnsupportedSite} {
+		blocked := &Error{Kind: kind, Op: "hardening", Cause: errors.New("user/correction required"), Retry: true, RetryDelay: time.Minute}
+		if blocked.Retryable() || blocked.RetryAfter() != 0 {
+			t.Fatalf("kind %s must remain non-retryable even when Retry=true: %v", kind, blocked)
+		}
+	}
+
 	auth := &Error{Kind: ErrorAuthRequired, Op: "readiness", Cause: errors.New("login required")}
 	if !errors.Is(auth, agentcore.ErrProviderAuth) || auth.Retryable() {
 		t.Fatalf("auth error must be non-retryable and map to auth sentinel: %v", auth)
+	}
+
+	timeout := &Error{Kind: ErrorTimeout, Op: "capture", Cause: errors.New("response timeout"), Retry: true}
+	if !errors.Is(timeout, agentcore.ErrProviderTimeout) || !timeout.Retryable() {
+		t.Fatalf("retryable timeout contract mismatch: %v", timeout)
 	}
 }
