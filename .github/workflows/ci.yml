@@ -28,10 +28,7 @@ jobs:
 
       - name: Format check
         shell: bash
-        run: |
-          files="$(gofmt -l .)"
-          printf '%s\n' "$files"
-          test -z "$files"
+        run: test -z "$(gofmt -l .)"
 
       - name: Installer syntax check
         if: runner.os == 'Linux'
