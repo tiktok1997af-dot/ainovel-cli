@@ -49,12 +49,20 @@ func NewSessionManager(cfg SessionConfig) *SessionManager {
 	if launcher == nil {
 		launcher = ExecBrowserLauncher{}
 	}
+	site := strings.ToLower(strings.TrimSpace(cfg.Site))
+	if strings.TrimSpace(cfg.StartURL) == "" && (site == "gemini" || site == "gemini-web") {
+		cfg.StartURL = "https://gemini.google.com/app"
+	}
+	probe := cfg.Probe
+	if probe == nil && (site == "gemini" || site == "gemini-web") {
+		probe = NewGeminiDevToolsReadinessProbe()
+	}
 	now := time.Now()
 	return &SessionManager{
 		cfg:      cfg,
 		launcher: launcher,
-		probe:    cfg.Probe,
-		snapshot: SessionSnapshot{State: SessionStopped, Site: strings.TrimSpace(cfg.Site), ChangedAt: now},
+		probe:    probe,
+		snapshot: SessionSnapshot{State: SessionStopped, Site: site, ChangedAt: now},
 	}
 }
 

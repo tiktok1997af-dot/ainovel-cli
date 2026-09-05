@@ -52,6 +52,7 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 
 	args := []string{
 		"--user-data-dir=" + cfg.ProfileDir,
+		"--remote-debugging-address=127.0.0.1",
 		"--remote-debugging-port=0",
 		"--no-first-run",
 		"--no-default-browser-check",
