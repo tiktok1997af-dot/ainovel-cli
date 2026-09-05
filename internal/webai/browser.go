@@ -14,10 +14,11 @@ import (
 // BrowserLaunchConfig describes one visible Chrome session. The profile is a
 // dedicated persistent browser profile owned by ainovel, never project data.
 type BrowserLaunchConfig struct {
-	Executable string
-	ProfileDir string
-	StartURL   string
-	ExtraArgs  []string
+	Executable      string
+	ProfileDir      string
+	StartURL        string
+	ExtraArgs       []string
+	DisableDevTools bool
 }
 
 // BrowserProcess is the process lifecycle needed by SessionManager.
@@ -50,20 +51,10 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 		return nil, fmt.Errorf("webai: create browser profile: %w", err)
 	}
 
-	args := []string{
-		"--user-data-dir=" + cfg.ProfileDir,
-		"--remote-debugging-address=127.0.0.1",
-		"--remote-debugging-port=0",
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--disable-background-mode",
-		"--new-window",
+	args, err := browserLaunchArgs(cfg)
+	if err != nil {
+		return nil, err
 	}
-	args = append(args, cfg.ExtraArgs...)
-	if strings.TrimSpace(cfg.StartURL) != "" {
-		args = append(args, cfg.StartURL)
-	}
-
 	cmd := exec.Command(cfg.Executable, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("webai: launch Chrome: %w", err)
@@ -74,6 +65,43 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 		close(p.done)
 	}()
 	return p, nil
+}
+
+func browserLaunchArgs(cfg BrowserLaunchConfig) ([]string, error) {
+	if strings.TrimSpace(cfg.ProfileDir) == "" {
+		return nil, fmt.Errorf("webai: browser profile directory is required")
+	}
+	if cfg.DisableDevTools {
+		for _, arg := range cfg.ExtraArgs {
+			lower := strings.ToLower(strings.TrimSpace(arg))
+			if strings.HasPrefix(lower, "--remote-debugging-") ||
+				strings.HasPrefix(lower, "--enable-automation") ||
+				strings.HasPrefix(lower, "--headless") {
+				return nil, fmt.Errorf("webai: normal login launch forbids automation/debug flag %q", arg)
+			}
+		}
+	}
+
+	args := []string{"--user-data-dir=" + cfg.ProfileDir}
+	if cfg.DisableDevTools {
+		// Manual Google sign-in must happen in an ordinary visible Chrome session.
+		// Do not add remote-debugging or automation flags in this phase.
+		args = append(args, "--new-window")
+	} else {
+		args = append(args,
+			"--remote-debugging-address=127.0.0.1",
+			"--remote-debugging-port=0",
+			"--no-first-run",
+			"--no-default-browser-check",
+			"--disable-background-mode",
+			"--new-window",
+		)
+	}
+	args = append(args, cfg.ExtraArgs...)
+	if strings.TrimSpace(cfg.StartURL) != "" {
+		args = append(args, cfg.StartURL)
+	}
+	return args, nil
 }
 
 type execBrowserProcess struct {
