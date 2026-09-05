@@ -31,10 +31,10 @@ type Model struct {
 }
 
 var (
-	_ agentcore.ChatModel      = (*Model)(nil)
-	_ agentcore.ProviderNamer  = (*Model)(nil)
-	_ agentcore.ModelNamer     = (*Model)(nil)
-	_ llm.CapabilityProvider   = (*Model)(nil)
+	_ agentcore.ChatModel     = (*Model)(nil)
+	_ agentcore.ProviderNamer = (*Model)(nil)
+	_ agentcore.ModelNamer    = (*Model)(nil)
+	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
 func NewModel(cfg ModelConfig) (*Model, error) {
