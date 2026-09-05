@@ -104,6 +104,7 @@ func (m *Model) Info() llm.ModelInfo {
 		Capabilities: []string{
 			string(llm.CapabilityChat),
 			string(llm.CapabilityToolCalling),
+			string(llm.CapabilityStreaming),
 		},
 	}
 }
