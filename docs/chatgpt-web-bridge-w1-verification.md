@@ -99,7 +99,16 @@ Windows (`windows-latest`):
 - `go vet ./...`: PASS
 - `go test -buildvcs=false -count=1 ./...`: PASS
 
-The Linux test log explicitly showed `internal/webai` passing after one brittle string-level assertion was corrected to account for JSON string escaping.
+### Final clean CI run #7
+
+Run ID: `33978610232`  
+Verified final head: `6855e366fa171005dd2c59168423f11150ba148e`
+
+Ubuntu (`ubuntu-latest`): **PASS** for format, installer syntax, `go vet`, full `go test`, and selected race tests.
+
+Windows (`windows-latest`): **PASS** for format, `go vet`, and full `go test`.
+
+This final run verifies the cleaned branch after removal of the temporary CI trigger and restoration of the original workflow.
 
 ## 6. Baseline issue found during verification
 
@@ -114,8 +123,6 @@ Only whitespace formatting was corrected; no behavior was changed. After that co
 Temporary diagnostic workflow changes were fully reverted. `.github/workflows/ci.yml` is restored to the upstream workflow content.
 
 The temporary `docs/.w1-actions-trigger` file was removed.
-
-A final CI run is expected automatically for the cleaned branch head after this record update. No W1 runtime source is changed by the cleanup/documentation commits.
 
 ## 8. Gate decision
 
