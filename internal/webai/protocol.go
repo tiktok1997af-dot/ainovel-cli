@@ -99,14 +99,21 @@ Rules:
 // BuildPrompt serializes one agentcore model request into a deterministic text
 // payload suitable for submission through a logged-in web conversation.
 func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg agentcore.CallConfig) (string, error) {
+	if err := agentcore.AssertMessageSequence(messages); err != nil {
+		return "", protocolError("validate message sequence", err)
+	}
 	projectedMessages, err := projectMessages(messages)
+	if err != nil {
+		return "", err
+	}
+	projectedTools, err := projectTools(tools)
 	if err != nil {
 		return "", err
 	}
 	payload := requestPayload{
 		Protocol: protocolVersion,
 		Messages: projectedMessages,
-		Tools:    projectTools(tools),
+		Tools:    projectedTools,
 		Call: callProjection{
 			ThinkingLevel:  cfg.ThinkingLevel,
 			ThinkingBudget: cfg.ThinkingBudget,
@@ -124,24 +131,65 @@ func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg a
 
 func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 	out := make([]wireMessage, 0, len(messages))
+	seenToolCallIDs := make(map[string]struct{})
 	for i, msg := range messages {
-		projected := wireMessage{Role: msg.Role, Text: msg.TextContent()}
-		for _, call := range msg.ToolCalls() {
-			if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
-				return nil, protocolError("project messages", fmt.Errorf("message %d contains tool call without id/name", i))
+		if !supportedRole(msg.Role) {
+			return nil, protocolError("project messages", fmt.Errorf("message %d has unsupported role %q", i, msg.Role))
+		}
+		projected := wireMessage{Role: msg.Role}
+		for j, block := range msg.Content {
+			switch block.Type {
+			case agentcore.ContentText:
+				projected.Text += block.Text
+			case agentcore.ContentThinking:
+				// Provider reasoning/thinking is intentionally not replayed through
+				// the consumer web boundary. It is neither required local state nor
+				// safe transport metadata.
+				continue
+			case agentcore.ContentToolCall:
+				if msg.Role != agentcore.RoleAssistant {
+					return nil, protocolError("project messages", fmt.Errorf("message %d block %d has tool call on role %q", i, j, msg.Role))
+				}
+				if block.ToolCall == nil {
+					return nil, protocolError("project messages", fmt.Errorf("message %d block %d has nil tool call", i, j))
+				}
+				call := *block.ToolCall
+				if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
+					return nil, protocolError("project messages", fmt.Errorf("message %d contains tool call without id/name", i))
+				}
+				if call.ID != strings.TrimSpace(call.ID) || call.Name != strings.TrimSpace(call.Name) {
+					return nil, protocolError("project messages", fmt.Errorf("message %d contains tool call with surrounding whitespace in id/name", i))
+				}
+				if call.ArgsInvalid {
+					return nil, protocolError("project messages", fmt.Errorf("message %d tool %q contains malformed historical arguments", i, call.Name))
+				}
+				if _, exists := seenToolCallIDs[call.ID]; exists {
+					return nil, protocolError("project messages", fmt.Errorf("duplicate historical tool_call_id %q", call.ID))
+				}
+				if err := validateJSONObject(call.Args); err != nil {
+					return nil, protocolError("project messages", fmt.Errorf("message %d tool %q arguments: %w", i, call.Name, err))
+				}
+				seenToolCallIDs[call.ID] = struct{}{}
+				projected.ToolCalls = append(projected.ToolCalls, wireHistoryToolCall{
+					ID:        call.ID,
+					Name:      call.Name,
+					Arguments: append(json.RawMessage(nil), call.Args...),
+				})
+			case agentcore.ContentImage, agentcore.ContentToolRef:
+				return nil, protocolError("project messages", fmt.Errorf("message %d block %d uses unsupported web content type %q", i, j, block.Type))
+			default:
+				return nil, protocolError("project messages", fmt.Errorf("message %d block %d has unknown content type %q", i, j, block.Type))
 			}
-			projected.ToolCalls = append(projected.ToolCalls, wireHistoryToolCall{
-				ID:        call.ID,
-				Name:      call.Name,
-				Arguments: append(json.RawMessage(nil), call.Args...),
-			})
 		}
 		if msg.Role == agentcore.RoleTool {
 			projected.ToolCallID, _ = msg.Metadata["tool_call_id"].(string)
 			projected.ToolName, _ = msg.Metadata["tool_name"].(string)
 			projected.IsError, _ = msg.Metadata["is_error"].(bool)
-			if strings.TrimSpace(projected.ToolCallID) == "" {
-				return nil, protocolError("project messages", fmt.Errorf("tool result message %d is missing tool_call_id", i))
+			if strings.TrimSpace(projected.ToolCallID) == "" || projected.ToolCallID != strings.TrimSpace(projected.ToolCallID) {
+				return nil, protocolError("project messages", fmt.Errorf("tool result message %d has invalid tool_call_id", i))
+			}
+			if projected.ToolName != "" && projected.ToolName != strings.TrimSpace(projected.ToolName) {
+				return nil, protocolError("project messages", fmt.Errorf("tool result message %d has invalid tool_name", i))
 			}
 		}
 		out = append(out, projected)
@@ -149,7 +197,19 @@ func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 	return out, nil
 }
 
-func projectTools(tools []agentcore.ToolSpec) []wireToolSpec {
+func supportedRole(role agentcore.Role) bool {
+	switch role {
+	case agentcore.RoleSystem, agentcore.RoleUser, agentcore.RoleAssistant, agentcore.RoleTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func projectTools(tools []agentcore.ToolSpec) ([]wireToolSpec, error) {
+	if err := validateToolRegistry(tools); err != nil {
+		return nil, err
+	}
 	out := make([]wireToolSpec, 0, len(tools))
 	for _, tool := range tools {
 		out = append(out, wireToolSpec{
@@ -158,7 +218,25 @@ func projectTools(tools []agentcore.ToolSpec) []wireToolSpec {
 			Parameters:  tool.Parameters,
 		})
 	}
-	return out
+	return out, nil
+}
+
+func validateToolRegistry(tools []agentcore.ToolSpec) error {
+	seen := make(map[string]struct{}, len(tools))
+	for i, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			return protocolError("validate tools", fmt.Errorf("tool %d has empty name", i))
+		}
+		if name != tool.Name {
+			return protocolError("validate tools", fmt.Errorf("tool %d name %q has surrounding whitespace", i, tool.Name))
+		}
+		if _, exists := seen[name]; exists {
+			return protocolError("validate tools", fmt.Errorf("duplicate tool name %q", name))
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 func portableToolChoice(choice any) string {
@@ -177,8 +255,12 @@ func portableToolChoice(choice any) string {
 // ParseResponse validates a captured web answer and converts it to the native
 // agentcore message shape. Tool schema validation itself remains enforced by
 // agentcore immediately before local execution; this layer additionally rejects
-// unknown tool names and non-object JSON arguments before they enter the loop.
+// ambiguous registries, unknown tool names and non-object JSON arguments before
+// they enter the loop.
 func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
+	if err := validateToolRegistry(tools); err != nil {
+		return agentcore.Message{}, err
+	}
 	payload, err := extractEnvelope(raw)
 	if err != nil {
 		return agentcore.Message{}, err
@@ -220,9 +302,9 @@ func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agent
 		if len(env.ToolCalls) == 0 || len(env.ToolCalls) > maxToolCalls {
 			return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool_calls count must be between 1 and %d", maxToolCalls))
 		}
-		allowed := make(map[string]agentcore.ToolSpec, len(tools))
+		allowed := make(map[string]struct{}, len(tools))
 		for _, tool := range tools {
-			allowed[tool.Name] = tool
+			allowed[tool.Name] = struct{}{}
 		}
 		blocks := make([]agentcore.ContentBlock, 0, len(env.ToolCalls))
 		for i, call := range env.ToolCalls {
@@ -230,18 +312,13 @@ func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agent
 			if name == "" {
 				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool call %d has empty name", i))
 			}
+			if name != call.Name {
+				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool call %d name %q has surrounding whitespace", i, call.Name))
+			}
 			if _, ok := allowed[name]; !ok {
 				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool %q is not available in this request", name))
 			}
-			args := strings.TrimSpace(string(call.Arguments))
-			if args == "" {
-				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool %q has empty arguments", name))
-			}
-			var object map[string]any
-			if err := json.Unmarshal(call.Arguments, &object); err != nil || object == nil {
-				if err == nil {
-					err = fmt.Errorf("arguments must be a JSON object")
-				}
+			if err := validateJSONObject(call.Arguments); err != nil {
 				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool %q arguments: %w", name, err))
 			}
 			blocks = append(blocks, agentcore.ToolCallBlock(agentcore.ToolCall{
@@ -259,6 +336,20 @@ func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agent
 	default:
 		return agentcore.Message{}, protocolError("validate response", fmt.Errorf("unknown response kind %q", env.Kind))
 	}
+}
+
+func validateJSONObject(raw json.RawMessage) error {
+	if strings.TrimSpace(string(raw)) == "" {
+		return fmt.Errorf("arguments are empty")
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return fmt.Errorf("arguments must be a JSON object")
+	}
+	return nil
 }
 
 func extractEnvelope(raw string) (string, error) {
