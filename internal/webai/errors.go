@@ -33,6 +33,11 @@ type Error struct {
 	RetryDelay time.Duration
 }
 
+var (
+	_ agentcore.RetryableError = (*Error)(nil)
+	_ agentcore.RetryHinter    = (*Error)(nil)
+)
+
 func (e *Error) Error() string {
 	if e == nil {
 		return "<nil>"
