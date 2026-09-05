@@ -95,10 +95,13 @@ func TestBuildPromptStripsMessageTelemetryAndInternalMetadata(t *testing.T) {
 			t.Fatalf("web prompt leaked internal/provider message data %q", secret)
 		}
 	}
-	for _, required := range []string{`"id":"tc-1"`, `"name":"save_chapter"`, `"tool_call_id":"tc-1"`, `"saved":true`} {
+	for _, required := range []string{`"id":"tc-1"`, `"name":"save_chapter"`, `"tool_call_id":"tc-1"`} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("web prompt lost required local tool transcript field %s", required)
 		}
+	}
+	if !strings.Contains(prompt, `\{"saved":true\}`) && !strings.Contains(prompt, `\"saved\":true`) {
+		t.Fatal("web prompt lost serialized local tool result payload")
 	}
 }
 
