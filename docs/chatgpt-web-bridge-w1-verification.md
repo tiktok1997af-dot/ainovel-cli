@@ -99,16 +99,16 @@ Windows (`windows-latest`):
 - `go vet ./...`: PASS
 - `go test -buildvcs=false -count=1 ./...`: PASS
 
-### Final exact-head CI run #9
+### Final exact-head CI run #10
 
-Run ID: `33978822325`  
-Verified final head: `f894f63c647ca11153664c5c1a26c470f0065fee`
+Run ID: `33978921105`  
+Verified final head: `732837c98a537036f013939dbea5b105b19d65ac`
 
 Ubuntu (`ubuntu-latest`): **PASS** for format, installer syntax, `go vet`, full `go test`, and selected race tests.
 
 Windows (`windows-latest`): **PASS** for format, `go vet`, and full `go test`.
 
-This is the final exact-head verification for W1 before merge.
+This is the exact branch head approved for W1 merge.
 
 ## 6. Baseline issue found during verification
 
