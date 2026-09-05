@@ -1,6 +1,6 @@
 # W2 — Browser Session & Persistent Web Login v0.1
 
-Status: **OPEN — W2A–W2C LOCKED / W2D IMPLEMENTATION IN PROGRESS**
+Status: **OPEN — W2A–W2E DETERMINISTIC PASS / REAL-BROWSER GATE PENDING**
 
 Repository: `tiktok1997af-dot/ainovel-cli`  
 Branch: `w2-browser-session`  
@@ -63,7 +63,7 @@ GitHub Actions CI run: `33979454518` / run #16.
 
 Decision: **W2A–W2C PASS / LOCKED**.
 
-## W2D — Local Chrome DevTools readiness adapter
+## W2D — Local Chrome DevTools readiness adapter — DETERMINISTIC PASS
 
 Implementation boundary:
 
@@ -96,31 +96,81 @@ unknown/non-Gemini target -> DEGRADED
 
 `NewSessionManager(SessionConfig{Site: "gemini-web"})` automatically selects the Gemini start URL and concrete DevTools readiness probe unless a test/custom probe is explicitly injected.
 
-### W2D deterministic CI coverage
+### W2D deterministic verification
 
-W2D tests use a local fake DevTools HTTP/WebSocket server only. They cover:
+Exact verified commit: `aafcc8846946b03b4be0030d7c2a14275d7afe62`  
+GitHub Actions CI run: `33980197843` / run #20.
 
-- authenticated Gemini -> READY;
-- public/unauthenticated Gemini composer -> AUTH_REQUIRED;
-- authenticated Gemini without composer -> DEGRADED;
-- loopback-only WebSocket enforcement;
-- site-target scoring;
-- default Gemini probe wiring.
+- Ubuntu: format PASS; installer syntax PASS; `go vet ./...` PASS; full tests PASS; selected race tests PASS.
+- Windows: format PASS; `go vet ./...` PASS; full tests PASS.
+
+Decision: **W2D DETERMINISTIC PASS**.
+
+## W2E — Local real-browser verification harness — DETERMINISTIC PASS
+
+W2E adds a dedicated verifier that bypasses the legacy setup/config path entirely and therefore never asks for an AI API key:
+
+```text
+cmd/ainovel-w2-verify
+scripts/w2-verify-windows.cmd
+.github/workflows/w2-verifier.yml
+```
+
+One-click Windows sequence:
+
+```text
+START_W2_VERIFY.cmd
+  -> ainovel-w2-verify.exe
+  -> create a fresh dedicated profile
+  -> open visible Chrome/Gemini
+  -> observe AUTH_REQUIRED
+  -> user manually logs in
+  -> observe READY
+  -> Tool stops Chrome
+  -> Tool restarts the same profile
+  -> observe READY after restart
+  -> write local evidence JSON
+```
+
+The verifier never logs the Google account out automatically. An optional watch mode can record a later transition back to `AUTH_REQUIRED`, but the Tool will not mutate account state merely to manufacture evidence.
+
+Evidence defaults to `~/.ainovel/browser/evidence/<verification-profile>.json` and contains only:
+
+- schema/version;
+- site name;
+- generated verification profile name;
+- timestamps;
+- coarse state/reason transitions;
+- gate booleans.
+
+Evidence does **not** contain browser/profile paths, cookies, tokens, localStorage, account identity, page text, conversation content or project data.
+
+### W2E deterministic verification
+
+Exact verified implementation commit: `0b309f1764be0f636cf549389073cf881171ab79`.
+
+- CI run #21: Ubuntu format/vet/full tests/race PASS; Windows format/vet/full tests PASS.
+- W2 Browser Verifier Build run #1: Windows build PASS and artifact upload PASS.
+- Artifact name: `ainovel-w2-verifier-windows`.
+- Artifact archive digest: `sha256:f2a4bda2fc4050757e7111ee003d87c3847caabc26dcd6d058bc87a56a47db1f`.
+
+Decision: **W2E DETERMINISTIC IMPLEMENTATION PASS**.
 
 ## Security boundary
 
-Session snapshots may expose operational facts only: state, site, browser path, profile path, PID and timestamps/reason.
+Session snapshots may expose operational facts only: state, site, browser path, profile path, PID and timestamps/reason in memory.
 
-They must never expose or persist passwords, cookies, auth tokens, local-storage values, account identity, or browser database contents.
+Persisted W2E evidence is more restrictive and excludes browser/profile paths and all authentication/account/page data.
 
-## Remaining W2 gate
+Passwords, cookies, auth tokens, local-storage values, account identity, conversation text and project data must never be persisted by W2 evidence.
 
-W2 can be fully locked only after:
+## Remaining W2 real-browser gate
 
-1. W2D Linux/Windows CI passes.
-2. A clean real Chrome profile deterministically yields `AUTH_REQUIRED`.
-3. The same real profile after manual login yields `READY`.
-4. Restarting ainovel/Chrome with that profile preserves `READY` when the web login remains valid.
-5. Logout/security challenge returns to an explicit user-action state without bypass attempts.
+W2 can be fully locked only after the Windows verifier is executed on the user's real machine and records:
+
+1. clean local Chrome profile -> `AUTH_REQUIRED`;
+2. same profile after manual login -> `READY`;
+3. automatic restart with the same profile -> `READY` while the web login remains valid;
+4. logout/security challenge -> explicit user-action state without bypass attempts. The Tool will not force logout automatically; this branch may be observed later when naturally/manual triggered.
 
 Prompt submission and response capture are explicitly outside W2 and begin in W3.
