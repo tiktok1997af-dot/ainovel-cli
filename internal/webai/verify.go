@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const verificationEvidenceSchema = "ainovel.webai.w2e.v1"
+const verificationEvidenceSchema = "ainovel.webai.w2e.v2"
 
 // VerificationEvent records only coarse operational state. It deliberately
 // excludes browser cookies, tokens, account identity, page contents and project data.
@@ -32,6 +32,8 @@ type VerificationEvidence struct {
 	CompletedAt        *time.Time          `json:"completed_at,omitempty"`
 	Result             string              `json:"result"`
 	InitialAuth        bool                `json:"initial_auth_required"`
+	NormalLoginUsed    bool                `json:"normal_login_browser_used"`
+	NormalLoginClosed  bool                `json:"normal_login_browser_closed"`
 	LoginReady         bool                `json:"ready_after_manual_login"`
 	RestartReady       bool                `json:"ready_after_restart"`
 	UserActionObserved bool                `json:"user_action_state_observed"`
@@ -54,6 +56,7 @@ type VerificationConfig struct {
 	OnEvent                func(VerificationEvent)
 
 	sessionFactory func(SessionConfig) verificationSession
+	loginLauncher  BrowserLauncher
 	now            func() time.Time
 }
 
@@ -71,7 +74,8 @@ type verificationSession interface {
 }
 
 // RunBrowserVerification performs the real-browser W2E sequence:
-// clean profile -> AUTH_REQUIRED -> manual login -> READY -> restart -> READY.
+// clean debug-inspection profile -> AUTH_REQUIRED -> ordinary Chrome manual
+// login without DevTools -> debug inspection READY -> restart -> READY.
 // It never submits a prompt and never logs the user out automatically.
 func RunBrowserVerification(ctx context.Context, cfg VerificationConfig) (VerificationResult, error) {
 	now := cfg.now
@@ -189,10 +193,7 @@ func RunBrowserVerification(ctx context.Context, cfg VerificationConfig) (Verifi
 		finish("FAILED_NOT_CLEAN")
 		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: fresh verification profile unexpectedly started READY")
 	}
-	if initial.State == SessionAuthRequired {
-		evidence.InitialAuth = true
-		_ = writeVerificationEvidence(evidencePath, evidence)
-	} else {
+	if initial.State != SessionAuthRequired && initial.State != SessionReady {
 		initial, err = waitForVerificationState(ctx, manager, poll, 30*time.Second, "initial_auth_wait", emit, func(s SessionState) bool {
 			return s == SessionAuthRequired || s == SessionReady
 		})
@@ -200,35 +201,103 @@ func RunBrowserVerification(ctx context.Context, cfg VerificationConfig) (Verifi
 			finish("FAILED_INITIAL_AUTH")
 			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
 		}
-		if initial.State == SessionReady && !cfg.AllowExistingProfile {
-			finish("FAILED_NOT_CLEAN")
-			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: fresh verification profile reached READY before AUTH_REQUIRED")
-		}
-		if initial.State == SessionAuthRequired {
-			evidence.InitialAuth = true
-			_ = writeVerificationEvidence(evidencePath, evidence)
-		}
+	}
+	if initial.State == SessionReady && !cfg.AllowExistingProfile {
+		finish("FAILED_NOT_CLEAN")
+		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: fresh verification profile reached READY before AUTH_REQUIRED")
+	}
+	if initial.State == SessionAuthRequired {
+		evidence.InitialAuth = true
+		_ = writeVerificationEvidence(evidencePath, evidence)
 	}
 	if !evidence.InitialAuth && !cfg.AllowExistingProfile {
 		finish("FAILED_INITIAL_AUTH")
 		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: clean profile did not produce AUTH_REQUIRED")
 	}
 
-	ready, err := waitForVerificationState(ctx, manager, poll, loginTimeout, "login_wait", emit, func(s SessionState) bool {
-		return s == SessionReady
-	})
-	if err != nil {
-		finish("FAILED_LOGIN_READY")
-		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
-	}
-	if ready.State != SessionReady {
-		finish("FAILED_LOGIN_READY")
-		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: login readiness ended in %s", ready.State)
-	}
-	evidence.LoginReady = true
-	if err := emit("login_ready", ready); err != nil {
-		finish("FAILED_EVIDENCE_WRITE")
-		return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+	if initial.State == SessionReady && cfg.AllowExistingProfile {
+		evidence.LoginReady = true
+		if err := emit("login_ready", initial); err != nil {
+			finish("FAILED_EVIDENCE_WRITE")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+	} else {
+		if err := manager.Stop(); err != nil {
+			finish("FAILED_STOP_BEFORE_LOGIN")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: stop inspection browser before login: %w", err)
+		}
+		_ = emit("login_inspection_stop", manager.Snapshot())
+		if err := waitVerificationDelay(ctx, restartDelay); err != nil {
+			finish("FAILED_LOGIN_DELAY")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+
+		browserPath, err := ResolveChromeExecutable(cfg.BrowserPath)
+		if err != nil {
+			finish("FAILED_LOGIN_BROWSER_RESOLVE")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+		loginLauncher := cfg.loginLauncher
+		if loginLauncher == nil {
+			loginLauncher = ExecBrowserLauncher{}
+		}
+		loginProcess, err := loginLauncher.Launch(ctx, BrowserLaunchConfig{
+			Executable:      browserPath,
+			ProfileDir:      profileDir,
+			StartURL:        "https://gemini.google.com/app",
+			DisableDevTools: true,
+		})
+		if err != nil {
+			finish("FAILED_NORMAL_LOGIN_LAUNCH")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: launch ordinary Chrome for manual login: %w", err)
+		}
+		evidence.NormalLoginUsed = true
+		_ = emit("login_normal_open", SessionSnapshot{
+			State:       SessionAuthRequired,
+			Site:        "gemini-web",
+			BrowserPath: browserPath,
+			ProfileDir:  profileDir,
+			PID:         loginProcess.PID(),
+			Reason:      "ordinary Chrome login window opened without DevTools; close it after Gemini is signed in",
+		})
+		if err := waitForBrowserExit(ctx, loginProcess, loginTimeout); err != nil {
+			finish("FAILED_NORMAL_LOGIN_WAIT")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+		evidence.NormalLoginClosed = true
+		_ = emit("login_normal_closed", SessionSnapshot{
+			State:      SessionStopped,
+			Site:       "gemini-web",
+			ProfileDir: profileDir,
+			Reason:     "ordinary Chrome login window closed; starting read-only readiness inspection",
+		})
+		if err := waitVerificationDelay(ctx, restartDelay); err != nil {
+			finish("FAILED_POST_LOGIN_DELAY")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+
+		ready, startErr := manager.Start(ctx)
+		_ = emit("login_inspect_start", ready)
+		if startErr != nil && ready.State != SessionAuthRequired && ready.State != SessionDegraded {
+			finish("FAILED_LOGIN_INSPECT_START")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, startErr
+		}
+		ready, err = waitForVerificationState(ctx, manager, poll, restartTimeout, "login_ready_wait", emit, func(s SessionState) bool {
+			return s == SessionReady
+		})
+		if err != nil {
+			finish("FAILED_LOGIN_READY")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
+		if ready.State != SessionReady {
+			finish("FAILED_LOGIN_READY")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, fmt.Errorf("webai: login readiness ended in %s", ready.State)
+		}
+		evidence.LoginReady = true
+		if err := emit("login_ready", ready); err != nil {
+			finish("FAILED_EVIDENCE_WRITE")
+			return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, err
+		}
 	}
 
 	if err := manager.Stop(); err != nil {
@@ -276,15 +345,31 @@ func RunBrowserVerification(ctx context.Context, cfg VerificationConfig) (Verifi
 	return VerificationResult{EvidencePath: evidencePath, Evidence: evidence}, nil
 }
 
-func waitForVerificationState(
-	ctx context.Context,
-	session verificationSession,
-	poll time.Duration,
-	timeout time.Duration,
-	phase string,
-	emit func(string, SessionSnapshot) error,
-	accept func(SessionState) bool,
-) (SessionSnapshot, error) {
+func waitForBrowserExit(ctx context.Context, process BrowserProcess, timeout time.Duration) error {
+	if process == nil {
+		return fmt.Errorf("webai: normal login browser process is required")
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("webai: normal login timeout must be positive")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		_ = process.Stop()
+		return ctx.Err()
+	case <-timer.C:
+		_ = process.Stop()
+		return fmt.Errorf("webai: timed out waiting for ordinary Chrome login window to close")
+	case err, ok := <-process.Done():
+		if !ok || err == nil {
+			return nil
+		}
+		return fmt.Errorf("webai: ordinary Chrome login process exited with error: %w", err)
+	}
+}
+
+func waitForVerificationState(ctx context.Context, session verificationSession, poll time.Duration, timeout time.Duration, phase string, emit func(string, SessionSnapshot) error, accept func(SessionState) bool) (SessionSnapshot, error) {
 	if timeout <= 0 {
 		return session.Snapshot(), fmt.Errorf("webai: verification timeout must be positive")
 	}
