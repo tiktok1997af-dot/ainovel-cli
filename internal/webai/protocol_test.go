@@ -60,7 +60,13 @@ func TestBuildPromptStripsMessageTelemetryAndInternalMetadata(t *testing.T) {
 		Role: agentcore.RoleAssistant,
 		Content: []agentcore.ContentBlock{
 			agentcore.TextBlock("calling local tool"),
-			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "tc-1", Name: "save_chapter", Args: json.RawMessage(`{"chapter":9}`)}),
+			agentcore.ThinkingBlock("private-provider-thinking-secret"),
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID:               "tc-1",
+				Name:             "save_chapter",
+				Args:             json.RawMessage(`{"chapter":9}`),
+				ThoughtSignature: "provider-thought-signature-secret",
+			}),
 		},
 		Usage: &agentcore.Usage{Provider: "provider-telemetry-secret", Model: "legacy-api-model"},
 		Metadata: map[string]any{
@@ -82,9 +88,11 @@ func TestBuildPromptStripsMessageTelemetryAndInternalMetadata(t *testing.T) {
 		"message-metadata-secret",
 		"tool-metadata-secret",
 		"tool-provider-secret",
+		"private-provider-thinking-secret",
+		"provider-thought-signature-secret",
 	} {
 		if strings.Contains(prompt, secret) {
-			t.Fatalf("web prompt leaked internal message data %q", secret)
+			t.Fatalf("web prompt leaked internal/provider message data %q", secret)
 		}
 	}
 	for _, required := range []string{`"id":"tc-1"`, `"name":"save_chapter"`, `"tool_call_id":"tc-1"`, `"saved":true`} {
@@ -124,6 +132,68 @@ func TestBuildPromptRejectsToolResultWithoutCorrelationID(t *testing.T) {
 	_, err := BuildPrompt([]agentcore.Message{msg}, nil, agentcore.CallConfig{})
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("expected ErrProtocol, got %v", err)
+	}
+}
+
+func TestBuildPromptRejectsInvalidMessageSequence(t *testing.T) {
+	assistant := agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "tc-orphan", Name: "save_chapter", Args: json.RawMessage(`{"chapter":1}`)}),
+		},
+	}
+	_, err := BuildPrompt([]agentcore.Message{assistant}, []agentcore.ToolSpec{testToolSpec()}, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected ErrProtocol for incomplete tool transcript, got %v", err)
+	}
+}
+
+func TestBuildPromptRejectsUnsupportedRoleAndContent(t *testing.T) {
+	_, err := BuildPrompt([]agentcore.Message{{Role: agentcore.Role("developer"), Content: []agentcore.ContentBlock{agentcore.TextBlock("x")}}}, nil, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected unsupported role protocol error, got %v", err)
+	}
+
+	_, err = BuildPrompt([]agentcore.Message{{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.ImageURLBlock("https://example.invalid/image.png")}}}, nil, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected unsupported image protocol error, got %v", err)
+	}
+}
+
+func TestBuildPromptRejectsMalformedOrDuplicateHistoricalToolCalls(t *testing.T) {
+	invalid := agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{
+			ID: "tc-bad", Name: "save_chapter", Args: json.RawMessage(`{}`), ArgsInvalid: true,
+		})},
+	}
+	_, err := BuildPrompt([]agentcore.Message{invalid, agentcore.ToolResultMsg("tc-bad", json.RawMessage(`"bad"`), true)}, []agentcore.ToolSpec{testToolSpec()}, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected malformed historical tool-call protocol error, got %v", err)
+	}
+
+	first := agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{ID: "tc-dup", Name: "save_chapter", Args: json.RawMessage(`{"chapter":1}`)})}}
+	firstResult := agentcore.ToolResultMsg("tc-dup", json.RawMessage(`{"saved":true}`), false)
+	second := agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{ID: "tc-dup", Name: "save_chapter", Args: json.RawMessage(`{"chapter":2}`)})}}
+	secondResult := agentcore.ToolResultMsg("tc-dup", json.RawMessage(`{"saved":true}`), false)
+	_, err = BuildPrompt([]agentcore.Message{first, firstResult, second, secondResult}, []agentcore.ToolSpec{testToolSpec()}, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected duplicate historical tool_call_id protocol error, got %v", err)
+	}
+}
+
+func TestBuildPromptRejectsAmbiguousToolRegistry(t *testing.T) {
+	duplicate := []agentcore.ToolSpec{testToolSpec(), testToolSpec()}
+	_, err := BuildPrompt(nil, duplicate, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected duplicate tool registry protocol error, got %v", err)
+	}
+
+	bad := testToolSpec()
+	bad.Name = " save_chapter "
+	_, err = BuildPrompt(nil, []agentcore.ToolSpec{bad}, agentcore.CallConfig{})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected whitespace tool-name protocol error, got %v", err)
 	}
 }
 
@@ -177,6 +247,18 @@ func TestParseResponseRejectsNonObjectToolArguments(t *testing.T) {
 	_, err := ParseResponse("request", wrappedResponse(`{"kind":"tool_calls","tool_calls":[{"name":"save_chapter","arguments":[1,2]}]}`), []agentcore.ToolSpec{testToolSpec()})
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("expected ErrProtocol, got %v", err)
+	}
+}
+
+func TestParseResponseRejectsWhitespaceToolNameAndAmbiguousRegistry(t *testing.T) {
+	_, err := ParseResponse("request", wrappedResponse(`{"kind":"tool_calls","tool_calls":[{"name":" save_chapter ","arguments":{"chapter":7}}]}`), []agentcore.ToolSpec{testToolSpec()})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected whitespace tool-name protocol error, got %v", err)
+	}
+
+	_, err = ParseResponse("request", wrappedResponse(`{"kind":"text","text":"x"}`), []agentcore.ToolSpec{testToolSpec(), testToolSpec()})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected ambiguous registry protocol error, got %v", err)
 	}
 }
 
