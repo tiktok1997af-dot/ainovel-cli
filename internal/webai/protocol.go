@@ -21,9 +21,28 @@ const (
 
 type requestPayload struct {
 	Protocol string               `json:"protocol"`
-	Messages []agentcore.Message  `json:"messages"`
+	Messages []wireMessage        `json:"messages"`
 	Tools    []agentcore.ToolSpec `json:"tools,omitempty"`
 	Call     callProjection       `json:"call,omitempty"`
+}
+
+// wireMessage is the minimum conversation state allowed to cross the browser
+// boundary. Provider telemetry, timestamps and arbitrary Message.Metadata are
+// deliberately excluded. Tool-result correlation keeps only the three fields
+// required by the local agent loop transcript.
+type wireMessage struct {
+	Role       agentcore.Role       `json:"role"`
+	Text       string               `json:"text,omitempty"`
+	ToolCalls  []wireHistoryToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+	ToolName   string               `json:"tool_name,omitempty"`
+	IsError    bool                 `json:"is_error,omitempty"`
+}
+
+type wireHistoryToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // callProjection intentionally excludes API keys, cache routing identifiers and
@@ -33,7 +52,7 @@ type callProjection struct {
 	ThinkingLevel  agentcore.ThinkingLevel   `json:"thinking_level,omitempty"`
 	ThinkingBudget int                       `json:"thinking_budget,omitempty"`
 	MaxTokens      int                       `json:"max_tokens,omitempty"`
-	ToolChoice     any                       `json:"tool_choice,omitempty"`
+	ToolChoice     string                    `json:"tool_choice,omitempty"`
 	ResponseFormat *agentcore.ResponseFormat `json:"response_format,omitempty"`
 }
 
@@ -72,15 +91,19 @@ Rules:
 // BuildPrompt serializes one agentcore model request into a deterministic text
 // payload suitable for submission through a logged-in web conversation.
 func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg agentcore.CallConfig) (string, error) {
+	projected, err := projectMessages(messages)
+	if err != nil {
+		return "", err
+	}
 	payload := requestPayload{
 		Protocol: protocolVersion,
-		Messages: messages,
+		Messages: projected,
 		Tools:    tools,
 		Call: callProjection{
 			ThinkingLevel:  cfg.ThinkingLevel,
 			ThinkingBudget: cfg.ThinkingBudget,
 			MaxTokens:      cfg.MaxTokens,
-			ToolChoice:     cfg.ToolChoice,
+			ToolChoice:     portableToolChoice(cfg.ToolChoice),
 			ResponseFormat: cfg.ResponseFormat,
 		},
 	}
@@ -89,6 +112,46 @@ func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg a
 		return "", protocolError("encode request", err)
 	}
 	return protocolInstruction + "\n\n<<<AINOVEL_WEB_REQUEST>>>\n" + string(body) + "\n<<<END_AINOVEL_WEB_REQUEST>>>", nil
+}
+
+func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
+	out := make([]wireMessage, 0, len(messages))
+	for i, msg := range messages {
+		projected := wireMessage{Role: msg.Role, Text: msg.TextContent()}
+		for _, call := range msg.ToolCalls() {
+			if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
+				return nil, protocolError("project messages", fmt.Errorf("message %d contains tool call without id/name", i))
+			}
+			projected.ToolCalls = append(projected.ToolCalls, wireHistoryToolCall{
+				ID:        call.ID,
+				Name:      call.Name,
+				Arguments: append(json.RawMessage(nil), call.Args...),
+			})
+		}
+		if msg.Role == agentcore.RoleTool {
+			projected.ToolCallID, _ = msg.Metadata["tool_call_id"].(string)
+			projected.ToolName, _ = msg.Metadata["tool_name"].(string)
+			projected.IsError, _ = msg.Metadata["is_error"].(bool)
+			if strings.TrimSpace(projected.ToolCallID) == "" {
+				return nil, protocolError("project messages", fmt.Errorf("tool result message %d is missing tool_call_id", i))
+			}
+		}
+		out = append(out, projected)
+	}
+	return out, nil
+}
+
+func portableToolChoice(choice any) string {
+	value, ok := choice.(string)
+	if !ok {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "required", "none":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 // ParseResponse validates a captured web answer and converts it to the native
