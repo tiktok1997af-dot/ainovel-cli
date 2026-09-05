@@ -99,16 +99,16 @@ Windows (`windows-latest`):
 - `go vet ./...`: PASS
 - `go test -buildvcs=false -count=1 ./...`: PASS
 
-### Final clean CI run #7
+### Final clean CI run #8
 
-Run ID: `33978610232`  
-Verified final head: `6855e366fa171005dd2c59168423f11150ba148e`
+Run ID: `33978723298`  
+Verified final head: `f0924feaad83777cfb0145dcef9087673381375f`
 
 Ubuntu (`ubuntu-latest`): **PASS** for format, installer syntax, `go vet`, full `go test`, and selected race tests.
 
 Windows (`windows-latest`): **PASS** for format, `go vet`, and full `go test`.
 
-This final run verifies the cleaned branch after removal of the temporary CI trigger and restoration of the original workflow.
+This is the final exact-head verification for W1 before merge.
 
 ## 6. Baseline issue found during verification
 
