@@ -181,6 +181,9 @@ func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 				return nil, protocolError("project messages", fmt.Errorf("message %d block %d has unknown content type %q", i, j, block.Type))
 			}
 		}
+		if projected.Text == "" && len(projected.ToolCalls) == 0 {
+			return nil, protocolError("project messages", fmt.Errorf("message %d has no web-transferable content after projection", i))
+		}
 		if msg.Role == agentcore.RoleTool {
 			projected.ToolCallID, _ = msg.Metadata["tool_call_id"].(string)
 			projected.ToolName, _ = msg.Metadata["tool_name"].(string)
