@@ -20,27 +20,27 @@ const (
 )
 
 type requestPayload struct {
-	Protocol string             `json:"protocol"`
-	Messages []agentcore.Message `json:"messages"`
+	Protocol string               `json:"protocol"`
+	Messages []agentcore.Message  `json:"messages"`
 	Tools    []agentcore.ToolSpec `json:"tools,omitempty"`
-	Call     callProjection      `json:"call,omitempty"`
+	Call     callProjection       `json:"call,omitempty"`
 }
 
 // callProjection intentionally excludes API keys, cache routing identifiers and
 // other provider-only transport fields. A browser prompt must never become a
 // side channel for credentials inherited from legacy call options.
 type callProjection struct {
-	ThinkingLevel  agentcore.ThinkingLevel     `json:"thinking_level,omitempty"`
-	ThinkingBudget int                         `json:"thinking_budget,omitempty"`
-	MaxTokens      int                         `json:"max_tokens,omitempty"`
-	ToolChoice     any                         `json:"tool_choice,omitempty"`
-	ResponseFormat *agentcore.ResponseFormat   `json:"response_format,omitempty"`
+	ThinkingLevel  agentcore.ThinkingLevel   `json:"thinking_level,omitempty"`
+	ThinkingBudget int                       `json:"thinking_budget,omitempty"`
+	MaxTokens      int                       `json:"max_tokens,omitempty"`
+	ToolChoice     any                       `json:"tool_choice,omitempty"`
+	ResponseFormat *agentcore.ResponseFormat `json:"response_format,omitempty"`
 }
 
 type responseEnvelope struct {
-	Kind      string             `json:"kind"`
-	Text      string             `json:"text,omitempty"`
-	ToolCalls []wireToolCall     `json:"tool_calls,omitempty"`
+	Kind      string         `json:"kind"`
+	Text      string         `json:"text,omitempty"`
+	ToolCalls []wireToolCall `json:"tool_calls,omitempty"`
 }
 
 type wireToolCall struct {
