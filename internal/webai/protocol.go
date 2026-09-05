@@ -20,10 +20,10 @@ const (
 )
 
 type requestPayload struct {
-	Protocol string               `json:"protocol"`
-	Messages []wireMessage        `json:"messages"`
-	Tools    []agentcore.ToolSpec `json:"tools,omitempty"`
-	Call     callProjection       `json:"call,omitempty"`
+	Protocol string         `json:"protocol"`
+	Messages []wireMessage  `json:"messages"`
+	Tools    []wireToolSpec `json:"tools,omitempty"`
+	Call     callProjection `json:"call,omitempty"`
 }
 
 // wireMessage is the minimum conversation state allowed to cross the browser
@@ -31,18 +31,26 @@ type requestPayload struct {
 // deliberately excluded. Tool-result correlation keeps only the three fields
 // required by the local agent loop transcript.
 type wireMessage struct {
-	Role       agentcore.Role       `json:"role"`
-	Text       string               `json:"text,omitempty"`
+	Role       agentcore.Role        `json:"role"`
+	Text       string                `json:"text,omitempty"`
 	ToolCalls  []wireHistoryToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	ToolName   string               `json:"tool_name,omitempty"`
-	IsError    bool                 `json:"is_error,omitempty"`
+	ToolCallID string                `json:"tool_call_id,omitempty"`
+	ToolName   string                `json:"tool_name,omitempty"`
+	IsError    bool                  `json:"is_error,omitempty"`
 }
 
 type wireHistoryToolCall struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// wireToolSpec exposes only the semantic contract the web model needs.
+// Provider-side strict/deferred-loading flags remain local implementation data.
+type wireToolSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Parameters  any    `json:"parameters"`
 }
 
 // callProjection intentionally excludes API keys, cache routing identifiers and
@@ -91,14 +99,14 @@ Rules:
 // BuildPrompt serializes one agentcore model request into a deterministic text
 // payload suitable for submission through a logged-in web conversation.
 func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg agentcore.CallConfig) (string, error) {
-	projected, err := projectMessages(messages)
+	projectedMessages, err := projectMessages(messages)
 	if err != nil {
 		return "", err
 	}
 	payload := requestPayload{
 		Protocol: protocolVersion,
-		Messages: projected,
-		Tools:    tools,
+		Messages: projectedMessages,
+		Tools:    projectTools(tools),
 		Call: callProjection{
 			ThinkingLevel:  cfg.ThinkingLevel,
 			ThinkingBudget: cfg.ThinkingBudget,
@@ -139,6 +147,18 @@ func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 		out = append(out, projected)
 	}
 	return out, nil
+}
+
+func projectTools(tools []agentcore.ToolSpec) []wireToolSpec {
+	out := make([]wireToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, wireToolSpec{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+		})
+	}
+	return out
 }
 
 func portableToolChoice(choice any) string {
