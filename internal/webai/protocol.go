@@ -26,10 +26,6 @@ type requestPayload struct {
 	Call     callProjection `json:"call,omitempty"`
 }
 
-// wireMessage is the minimum conversation state allowed to cross the browser
-// boundary. Provider telemetry, timestamps and arbitrary Message.Metadata are
-// deliberately excluded. Tool-result correlation keeps only the three fields
-// required by the local agent loop transcript.
 type wireMessage struct {
 	Role       agentcore.Role        `json:"role"`
 	Text       string                `json:"text,omitempty"`
@@ -45,17 +41,12 @@ type wireHistoryToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-// wireToolSpec exposes only the semantic contract the web model needs.
-// Provider-side strict/deferred-loading flags remain local implementation data.
 type wireToolSpec struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Parameters  any    `json:"parameters"`
 }
 
-// callProjection intentionally excludes API keys, cache routing identifiers and
-// other provider-only transport fields. A browser prompt must never become a
-// side channel for credentials inherited from legacy call options.
 type callProjection struct {
 	ThinkingLevel  agentcore.ThinkingLevel   `json:"thinking_level,omitempty"`
 	ThinkingBudget int                       `json:"thinking_budget,omitempty"`
@@ -96,8 +87,6 @@ Rules:
 - Do not emit commentary outside the response markers.
 - A response is either text or tool_calls, never both.`
 
-// BuildPrompt serializes one agentcore model request into a deterministic text
-// payload suitable for submission through a logged-in web conversation.
 func BuildPrompt(messages []agentcore.Message, tools []agentcore.ToolSpec, cfg agentcore.CallConfig) (string, error) {
 	if err := agentcore.AssertMessageSequence(messages); err != nil {
 		return "", protocolError("validate message sequence", err)
@@ -142,9 +131,6 @@ func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 			case agentcore.ContentText:
 				projected.Text += block.Text
 			case agentcore.ContentThinking:
-				// Provider reasoning/thinking is intentionally not replayed through
-				// the consumer web boundary. It is neither required local state nor
-				// safe transport metadata.
 				continue
 			case agentcore.ContentToolCall:
 				if msg.Role != agentcore.RoleAssistant {
@@ -170,11 +156,7 @@ func projectMessages(messages []agentcore.Message) ([]wireMessage, error) {
 					return nil, protocolError("project messages", fmt.Errorf("message %d tool %q arguments: %w", i, call.Name, err))
 				}
 				seenToolCallIDs[call.ID] = struct{}{}
-				projected.ToolCalls = append(projected.ToolCalls, wireHistoryToolCall{
-					ID:        call.ID,
-					Name:      call.Name,
-					Arguments: append(json.RawMessage(nil), call.Args...),
-				})
+				projected.ToolCalls = append(projected.ToolCalls, wireHistoryToolCall{ID: call.ID, Name: call.Name, Arguments: append(json.RawMessage(nil), call.Args...)})
 			case agentcore.ContentImage, agentcore.ContentToolRef:
 				return nil, protocolError("project messages", fmt.Errorf("message %d block %d uses unsupported web content type %q", i, j, block.Type))
 			default:
@@ -215,11 +197,7 @@ func projectTools(tools []agentcore.ToolSpec) ([]wireToolSpec, error) {
 	}
 	out := make([]wireToolSpec, 0, len(tools))
 	for _, tool := range tools {
-		out = append(out, wireToolSpec{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  tool.Parameters,
-		})
+		out = append(out, wireToolSpec{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
 	}
 	return out, nil
 }
@@ -255,11 +233,6 @@ func portableToolChoice(choice any) string {
 	}
 }
 
-// ParseResponse validates a captured web answer and converts it to the native
-// agentcore message shape. Tool schema validation itself remains enforced by
-// agentcore immediately before local execution; this layer additionally rejects
-// ambiguous registries, unknown tool names and non-object JSON arguments before
-// they enter the loop.
 func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
 	if err := validateToolRegistry(tools); err != nil {
 		return agentcore.Message{}, err
@@ -291,13 +264,7 @@ func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agent
 		if strings.TrimSpace(env.Text) == "" {
 			return agentcore.Message{}, protocolError("validate response", fmt.Errorf("text response is empty"))
 		}
-		return agentcore.Message{
-			Role:       agentcore.RoleAssistant,
-			Content:    []agentcore.ContentBlock{agentcore.TextBlock(env.Text)},
-			StopReason: agentcore.StopReasonStop,
-			Timestamp:  time.Now(),
-		}, nil
-
+		return agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(env.Text)}, StopReason: agentcore.StopReasonStop, Timestamp: time.Now()}, nil
 	case "tool_calls":
 		if env.Text != "" {
 			return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool_calls response must not contain text"))
@@ -324,18 +291,9 @@ func ParseResponse(requestPrompt, raw string, tools []agentcore.ToolSpec) (agent
 			if err := validateJSONObject(call.Arguments); err != nil {
 				return agentcore.Message{}, protocolError("validate response", fmt.Errorf("tool %q arguments: %w", name, err))
 			}
-			blocks = append(blocks, agentcore.ToolCallBlock(agentcore.ToolCall{
-				ID:   stableToolCallID(requestPrompt, raw, i, name),
-				Name: name,
-				Args: append(json.RawMessage(nil), call.Arguments...),
-			}))
+			blocks = append(blocks, agentcore.ToolCallBlock(agentcore.ToolCall{ID: stableToolCallID(requestPrompt, raw, i, name), Name: name, Args: append(json.RawMessage(nil), call.Arguments...)}))
 		}
-		return agentcore.Message{
-			Role:       agentcore.RoleAssistant,
-			Content:    blocks,
-			StopReason: agentcore.StopReasonToolUse,
-			Timestamp:  time.Now(),
-		}, nil
+		return agentcore.Message{Role: agentcore.RoleAssistant, Content: blocks, StopReason: agentcore.StopReasonToolUse, Timestamp: time.Now()}, nil
 	default:
 		return agentcore.Message{}, protocolError("validate response", fmt.Errorf("unknown response kind %q", env.Kind))
 	}
@@ -355,7 +313,32 @@ func validateJSONObject(raw json.RawMessage) error {
 	return nil
 }
 
+// extractEnvelope accepts the canonical single envelope and one very narrow
+// browser-formatting quirk: the outer body may consist solely of one complete
+// duplicate response envelope. That redundant wrapper is removed exactly once.
+// Mixed content, deeper nesting, duplicate markers, and commentary outside the
+// envelope remain protocol errors.
 func extractEnvelope(raw string) (string, error) {
+	body, err := extractSingleEnvelope(raw)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(body, responseStart) && !strings.Contains(body, responseEnd) {
+		return body, nil
+	}
+
+	trimmed := strings.TrimSpace(body)
+	inner, innerErr := extractSingleEnvelope(trimmed)
+	if innerErr != nil {
+		return "", protocolError("extract response", fmt.Errorf("nested response marker"))
+	}
+	if strings.Contains(inner, responseStart) || strings.Contains(inner, responseEnd) {
+		return "", protocolError("extract response", fmt.Errorf("nested response marker depth exceeds one redundant wrapper"))
+	}
+	return inner, nil
+}
+
+func extractSingleEnvelope(raw string) (string, error) {
 	start := strings.Index(raw, responseStart)
 	if start < 0 {
 		return "", protocolError("extract response", fmt.Errorf("missing start marker"))
@@ -371,9 +354,6 @@ func extractEnvelope(raw string) (string, error) {
 	end := bodyStart + endRel
 	if strings.TrimSpace(raw[end+len(responseEnd):]) != "" {
 		return "", protocolError("extract response", fmt.Errorf("unexpected content after end marker"))
-	}
-	if strings.Contains(raw[bodyStart:end], responseStart) || strings.Contains(raw[bodyStart:end], responseEnd) {
-		return "", protocolError("extract response", fmt.Errorf("nested response marker"))
 	}
 	body := strings.TrimSpace(raw[bodyStart:end])
 	if body == "" {
