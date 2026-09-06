@@ -38,33 +38,42 @@ var (
 	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
-// rawTextProtocolPrompt is appended after the legacy ainovel-web/1 instruction.
-// It removes the need to JSON-escape arbitrary assistant text (including a JSON
-// object requested by a higher-level prompt contract) while keeping tool calls
-// on the strict, locally validated JSON path. Legacy JSON text envelopes remain
-// accepted for backward compatibility.
-const rawTextProtocolPrompt = `AINOVEL WEB RESPONSE EXTENSION — this instruction takes precedence for normal assistant text.
-For every normal assistant answer, do NOT put the answer inside a JSON string. Return exactly:
+// rawTextProtocolInstruction replaces the legacy response-format instruction
+// before a request crosses the browser boundary. It deliberately contains only
+// one response marker pair so a browser model is not encouraged to nest an
+// example envelope inside another envelope. The request payload format itself
+// remains ainovel-web/1 and legacy JSON text envelopes remain accepted by the
+// parser for backward compatibility.
+const rawTextProtocolInstruction = `You are the AI backend for ainovel-cli. The browser is only a transport layer.
+Return exactly one response envelope and nothing else.
+
+AINOVEL WEB RESPONSE EXTENSION:
 <<<AINOVEL_WEB_RESPONSE>>>
-TEXT
-<the complete answer verbatim>
+<body>
 <<<END_AINOVEL_WEB_RESPONSE>>>
-The raw TEXT body may itself be JSON, Markdown, prose, quotes, or multiple lines; preserve it verbatim and do not add Markdown fences around the response markers.
-When a local tool is required, continue to use the strict JSON tool_calls envelope from the ainovel-web/1 instruction. Never represent a tool request as TEXT.`
+
+Replace <body> with exactly one of these forms:
+- Normal assistant text: first line is the literal word TEXT, then a newline, then the complete answer verbatim. In shorthand: TEXT\n<the complete answer verbatim>. The body after TEXT may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap normal text in a {"kind":"text"} object.
+- Local tool request: one strict JSON object of the form {"kind":"tool_calls","tool_calls":[{"name":"exact_tool_name","arguments":{}}]}. Use only tool names present in the request and one JSON object matching that tool schema for each arguments value.
+
+Rules:
+- A response is either normal TEXT or tool_calls, never both.
+- Never represent a tool request as TEXT.
+- Do not claim that a tool ran; the local ainovel runtime executes tools only after validating the call.
+- Do not write Markdown fences around the response envelope.
+- Do not emit commentary outside the response markers.
+- Emit the response markers exactly once each.`
 
 const protocolRepairPrompt = `Your immediately previous answer could not be parsed as an ainovel-web/1 response. No local tool from that answer has been executed.
 Do not redo the user's task and do not add commentary. Re-emit the same intended answer once, correcting only the transport format.
-If the intended answer is normal assistant text, return exactly:
+Return exactly one response envelope:
 <<<AINOVEL_WEB_RESPONSE>>>
-TEXT
-<the complete previous answer verbatim; it may itself be JSON, Markdown, prose, quotes, or multiple lines>
+<body>
 <<<END_AINOVEL_WEB_RESPONSE>>>
-Do not JSON-escape or wrap a normal text answer in a {"kind":"text"} object.
-If the intended answer is a local tool request, return exactly:
-<<<AINOVEL_WEB_RESPONSE>>>
-{"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}
-<<<END_AINOVEL_WEB_RESPONSE>>>
-For tool calls only, the envelope must be strict valid JSON with one JSON object for each arguments value. Use no Markdown fence and emit no text outside the markers.`
+Replace <body> as follows:
+- If the intended answer is normal assistant text, use the literal first line TEXT followed by a newline and the complete previous answer verbatim. It may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap it in a {"kind":"text"} object.
+- If the intended answer is a local tool request, use one strict valid JSON object: {"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}.
+For tool calls only, every arguments value must be one JSON object. Use no Markdown fence, emit no text outside the markers, and emit each response marker exactly once.`
 
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
@@ -89,7 +98,11 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	if err != nil {
 		return nil, err
 	}
-	prompt += "\n\n" + rawTextProtocolPrompt
+	if !strings.HasPrefix(prompt, protocolInstruction) {
+		return nil, protocolError("prepare raw text response protocol", fmt.Errorf("legacy protocol instruction prefix is missing"))
+	}
+	prompt = rawTextProtocolInstruction + strings.TrimPrefix(prompt, protocolInstruction)
+
 	raw, err := m.transport.RoundTrip(ctx, prompt)
 	if err != nil {
 		if ctx.Err() != nil {
