@@ -144,21 +144,11 @@ func BuildWorkers(
 		tools.NewSaveVolumeSummaryTool(store),
 	}
 
-	// Provider failover 只记日志,不通知宿主
-	reportFailover := func(ev bootstrap.FailoverEvent) {
-		slog.Warn("provider 切换",
-			"module", "agent",
-			"role", ev.Role,
-			"reason", ev.Reason,
-			"from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
-			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
-			"err", ev.Err,
-		)
-	}
-
-	architectModel := models.ForRoleWithFailover("architect", reportFailover)
-	writerModel := models.ForRoleWithFailover("writer", reportFailover)
-	editorModel := models.ForRoleWithFailover("editor", reportFailover)
+	// WEB-only: every worker uses the same browser-backed model. There is no
+	// cross-provider fallback or provider/model resubmission.
+	architectModel := models.ForRole("architect")
+	writerModel := models.ForRole("writer")
+	editorModel := models.ForRole("editor")
 
 	// Writer 的 ContextManager 由工厂每次调用重建，窗口随模型 swap 动态跟随（见下方工厂）。
 	writerProvider, writerModelName, _ := models.CurrentSelection("writer")

@@ -24,7 +24,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 	runtimelog "github.com/voocel/ainovel-cli/internal/logger"
-	modelreg "github.com/voocel/ainovel-cli/internal/models"
 	"github.com/voocel/ainovel-cli/internal/notify"
 	"github.com/voocel/ainovel-cli/internal/revision"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -100,6 +99,9 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	if err := cfg.ValidateBase(); err != nil {
 		return nil, err
 	}
+	if !cfg.Web.Enabled {
+		return nil, fmt.Errorf("legacy AI provider/API runtime has been removed; enable web.enabled=true and use web.site=gemini-web")
+	}
 	var opts newOptions
 	for _, option := range options {
 		if option != nil {
@@ -140,11 +142,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 
 	slog.Info("启动", "module", "boot", "provider", cfg.Provider, "model", cfg.ModelName, "output", cfg.OutputDir)
 
-	// API-era pricing metadata is never refreshed in WEB-only mode.
-	if !cfg.Web.Enabled {
-		modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
-	}
-
 	store := storepkg.NewStore(cfg.OutputDir)
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
@@ -156,11 +153,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	}
 
 	var models *bootstrap.ModelSet
-	if cfg.Web.Enabled {
-		webSession, models, err = startWebRuntime(context.Background(), cfg, nil)
-	} else {
-		models, err = bootstrap.NewModelSet(cfg)
-	}
+	webSession, models, err = startWebRuntime(context.Background(), cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create models: %w", err)
 	}
