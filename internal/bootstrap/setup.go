@@ -31,31 +31,7 @@ func NeedsSetup() bool {
 	return true
 }
 
-// ProviderPreset is retained only for the legacy W5C removal path. W5B's
-// first-run WEB-only setup never calls ProviderPresets or presents a provider
-// picker. The old /config compatibility branch is removed in W5C.
-type ProviderPreset struct {
-	Name           string
-	Label          string
-	BaseURL        string
-	NeedType       bool
-	APIKeyOptional bool
-}
-
-// ProviderPresets remains temporarily compiled for legacy-config compatibility.
-// New WEB-only users cannot reach this list.
-func ProviderPresets() []ProviderPreset {
-	return []ProviderPreset{
-		{Name: "ollama", Label: "Ollama (Legacy — W5C removal)", APIKeyOptional: true},
-		{Name: "openrouter", Label: "OpenRouter (Legacy — W5C removal)"},
-		{Name: "gemini", Label: "Gemini API (Legacy — W5C removal)"},
-		{Name: "anthropic", Label: "Anthropic API (Legacy — W5C removal)"},
-		{Name: "openai", Label: "OpenAI API (Legacy — W5C removal)"},
-		{Name: "custom", Label: "Custom API proxy (Legacy — W5C removal)", NeedType: true, APIKeyOptional: true},
-	}
-}
-
-type setupProvider struct {
+type setupOption struct {
 	name  string
 	label string
 }
@@ -171,9 +147,9 @@ func printStepDone(label, value string) {
 // ---------- TUI Components ----------
 
 func runLanguageSelect() (setupLanguageOption, error) {
-	items := make([]setupProvider, len(languageOptions))
+	items := make([]setupOption, len(languageOptions))
 	for i, opt := range languageOptions {
-		items[i] = setupProvider{name: opt.code, label: opt.label}
+		items[i] = setupOption{name: opt.code, label: opt.label}
 	}
 	m := setupSelectModel{
 		title: "[1/3] Chọn Ngôn Ngữ Sáng Tác Nội Dung Truyện (giao diện luôn là Tiếng Việt)",
@@ -235,7 +211,7 @@ var (
 
 type setupSelectModel struct {
 	title     string
-	items     []setupProvider
+	items     []setupOption
 	cursor    int
 	cancelled bool
 }

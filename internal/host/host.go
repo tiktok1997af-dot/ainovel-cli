@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +23,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 	runtimelog "github.com/voocel/ainovel-cli/internal/logger"
-	modelreg "github.com/voocel/ainovel-cli/internal/models"
 	"github.com/voocel/ainovel-cli/internal/notify"
 	"github.com/voocel/ainovel-cli/internal/revision"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -100,6 +98,9 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	if err := cfg.ValidateBase(); err != nil {
 		return nil, err
 	}
+	if !cfg.Web.Enabled {
+		return nil, fmt.Errorf("legacy AI provider/API runtime has been removed; enable web.enabled=true and use web.site=gemini-web")
+	}
 	var opts newOptions
 	for _, option := range options {
 		if option != nil {
@@ -140,11 +141,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 
 	slog.Info("启动", "module", "boot", "provider", cfg.Provider, "model", cfg.ModelName, "output", cfg.OutputDir)
 
-	// API-era pricing metadata is never refreshed in WEB-only mode.
-	if !cfg.Web.Enabled {
-		modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
-	}
-
 	store := storepkg.NewStore(cfg.OutputDir)
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
@@ -156,11 +152,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	}
 
 	var models *bootstrap.ModelSet
-	if cfg.Web.Enabled {
-		webSession, models, err = startWebRuntime(context.Background(), cfg, nil)
-	} else {
-		models, err = bootstrap.NewModelSet(cfg)
-	}
+	webSession, models, err = startWebRuntime(context.Background(), cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create models: %w", err)
 	}
@@ -1366,75 +1358,10 @@ func deriveStatusLabel(s UISnapshot) string {
 	}
 }
 
-// ── 模型管理 ──
-
-func (h *Host) ConfiguredProviders() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	providers := make([]string, 0, len(h.cfg.Providers))
-	for name := range h.cfg.Providers {
-		providers = append(providers, name)
-	}
-	sort.Strings(providers)
-	return providers
-}
-
-func (h *Host) ConfiguredModels(provider string) []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.cfg.CandidateModels(provider)
-}
+// ── WEB-only model status / reasoning ──
 
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 	return h.models.CurrentSelection(role)
-}
-
-func (h *Host) SwitchModel(role, provider, model string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if provider == "" || model == "" {
-		return fmt.Errorf("provider and model are required")
-	}
-	if err := h.models.Swap(role, provider, model); err != nil {
-		return err
-	}
-	if role == "" || role == "default" {
-		h.cfg.Provider = provider
-		h.cfg.ModelName = model
-	} else {
-		if h.cfg.Roles == nil {
-			h.cfg.Roles = make(map[string]bootstrap.RoleConfig)
-		}
-		rc := h.cfg.Roles[role]
-		rc.Provider = provider
-		rc.Model = model
-		h.cfg.Roles[role] = rc
-	}
-	// 换模型不改动已存的推理强度意图：只在下发时按新模型能力钳制。
-	if h.configPath != "" {
-		if err := bootstrap.SaveConfig(h.configPath, h.cfg); err != nil {
-			slog.Warn("保存配置失败", "module", "host", "err", err)
-		}
-	}
-	h.applyThinkingLocked(role)
-	// 切到未登记模型时打一行 warn，提示用户走了 128k 兜底——长篇容易被提前压缩。
-	logRole := role
-	if logRole == "" {
-		logRole = "default"
-	}
-	window, source := h.cfg.ResolveContextWindow(provider, model)
-	bootstrap.LogContextWindowChoice(logRole, model, window, source)
-
-	// 无常驻上下文需要联动:writer/architect/editor 的 ContextManager 走
-	// ContextManagerFactory,下次 spawn 自动按新模型窗口重建。
-
-	h.emitEvent(Event{
-		Time:     time.Now(),
-		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("模型已切换：%s → %s/%s", role, provider, model),
-		Level:    "info",
-	})
-	return nil
 }
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。
@@ -1673,11 +1600,7 @@ func (h *Host) SyncChapterRevisions(ctx context.Context) (*revision.Result, erro
 			return nil, err
 		}
 	}
-	model := h.models.ForRoleWithFailover("editor", func(ev bootstrap.FailoverEvent) {
-		slog.Warn("章节修订 provider 切换", "module", "revision", "role", ev.Role,
-			"reason", ev.Reason, "from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
-			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel), "err", ev.Err)
-	})
+	model := h.models.ForRole("editor")
 	model = newUsageTrackedModel(model, "editor", h.usage.Record)
 	service := revision.NewService(h.store, model, h.bundle.Prompts.RevisionAnalyze, h.styleStats)
 	return service.Sync(ctx)
@@ -1756,13 +1679,7 @@ func (h *Host) importCaller(fn string) imp.Caller {
 	if _, _, explicit := h.models.CurrentSelection(role); !explicit {
 		role = "architect"
 	}
-	model := h.models.ForRoleWithFailover(role, func(ev bootstrap.FailoverEvent) {
-		slog.Warn("导入 provider 切换", "module", "import", "role", ev.Role,
-			"reason", ev.Reason,
-			"from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
-			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
-			"err", ev.Err)
-	})
+	model := h.models.ForRole(role)
 	model = newUsageTrackedModel(model, role, h.usage.Record)
 	return imp.Caller{Model: model, Runtime: h.importModelRuntime(role, model)}
 }
@@ -1777,11 +1694,9 @@ func (h *Host) importModelRuntime(role string, model agentcore.ChatModel) imp.Mo
 		name = bootstrap.ModelName(model)
 		provider = bootstrap.ModelProvider(model)
 	}
-	// context / completion 上限：registry 是唯一可信来源（被包装模型的 Info() 不含窗口）。
+	// Context window remains local/provider-neutral. WEB-only mode has no truthful
+	// provider max-output registry, so MaxOutputTokens stays zero (unspecified).
 	rt.ContextTokens, _ = h.cfg.ResolveContextWindow(provider, name)
-	if entry, ok := modelreg.DefaultRegistry().Resolve(name); ok {
-		rt.MaxOutputTokens = entry.MaxTokens
-	}
 	// thinking：按角色 reasoning effort 与模型能力 resolve；不支持则不发（与 arbiter 同策略）。
 	if level, err := agents.ParseThinkingLevel(h.cfg.ResolveReasoningEffort(role)); err == nil {
 		if resolved, ok := agents.ResolveThinkingForModel(model, level); ok {

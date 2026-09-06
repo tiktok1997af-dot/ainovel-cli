@@ -5,23 +5,22 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/errs"
 )
 
 const validGlobal = `{
-  "provider": "openrouter",
-  "model": "google/gemini-2.5-flash",
-  "providers": { "openrouter": { "api_key": "sk-test-123456" } }
+  "web": {"enabled": true, "site": "gemini-web", "profile_name": "default"},
+  "language": "vi",
+  "context_window": 200000
 }`
 
-// writeGlobal 在隔离的 HOME 下写入全局配置，并返回该 HOME。
 func writeGlobal(t *testing.T, content string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Windows 的 os.UserHomeDir 读 USERPROFILE；不设它会读到本机真实 ~/.ainovel。
 	t.Setenv("USERPROFILE", home)
 	dir := filepath.Join(home, ".ainovel")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -35,8 +34,6 @@ func writeGlobal(t *testing.T, content string) string {
 	return home
 }
 
-// writeProjectConfig 在当前工作目录的 ./.ainovel/ 下写入项目级配置。
-// 调用前需先 t.Chdir 到目标目录。
 func writeProjectConfig(t *testing.T, content string) {
 	t.Helper()
 	if err := os.MkdirAll(".ainovel", 0o755); err != nil {
@@ -47,264 +44,160 @@ func writeProjectConfig(t *testing.T, content string) {
 	}
 }
 
-// 根因 3：项目级 ./.ainovel/config.json 存在但是坏 JSON，必须报错，不能静默吞掉退回全局。
 func TestLoadConfig_CorruptProjectFailsLoud(t *testing.T) {
 	writeGlobal(t, validGlobal)
-	proj := t.TempDir()
-	t.Chdir(proj)
-	// 手抄示例多了个尾逗号——最常见的坏 JSON。
-	writeProjectConfig(t, `{ "model": "x", }`)
-
+	t.Chdir(t.TempDir())
+	writeProjectConfig(t, `{ "web": {"enabled": true}, }`)
 	if _, err := LoadConfig(); err == nil {
-		t.Fatal("坏的 ./.ainovel/config.json 应当报错，却被静默忽略了")
+		t.Fatal("corrupt project config must fail loud")
 	}
 }
 
-// 全局是最低优先级基底：坏文件不得阻断更高优先级的项目级覆盖（回归守卫——
-// 上一版误把全局也 fail-loud，导致"坏全局 + 有效项目配置"的用户被无关文件挡住）。
 func TestLoadConfig_CorruptGlobalDoesNotBlockProjectOverride(t *testing.T) {
 	writeGlobal(t, `{ not json`)
-	proj := t.TempDir()
-	t.Chdir(proj)
+	t.Chdir(t.TempDir())
 	writeProjectConfig(t, validGlobal)
-
 	cfg, err := LoadConfig()
 	if err != nil {
-		t.Fatalf("坏全局不应阻断有效项目级配置，得到: %v", err)
+		t.Fatalf("corrupt global must not block project config: %v", err)
 	}
-	if cfg.Provider != "openrouter" {
-		t.Errorf("应使用项目级配置的值，得到 provider=%q", cfg.Provider)
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName {
+		t.Fatalf("project WEB config not loaded: %#v", cfg.Web)
 	}
 }
 
-// 就近编辑：项目目录有 ./.ainovel/config.json 时 EffectiveConfigPath 指向它（绝对路径），
-// 否则回落全局——/config 与 /model 都据此决定写盘位置。
+func TestLoadConfig_LegacyGlobalDoesNotBlockValidProjectOverride(t *testing.T) {
+	writeGlobal(t, `{"provider":"openai","providers":{"openai":{"api_key":"secret"}}}`)
+	t.Chdir(t.TempDir())
+	writeProjectConfig(t, validGlobal)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("valid project WEB config must supersede legacy global config: %v", err)
+	}
+	if !cfg.Web.Enabled {
+		t.Fatal("project WEB config was not selected")
+	}
+}
+
+func TestLoadConfig_LegacyGlobalAloneReturnsMigrationError(t *testing.T) {
+	writeGlobal(t, `{"provider":"openai","providers":{"openai":{"api_key":"secret"}}}`)
+	t.Chdir(t.TempDir())
+	_, err := LoadConfig()
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), LegacyAPIMigrationHint) {
+		t.Fatalf("legacy global config must return migration error: %v", err)
+	}
+}
+
 func TestEffectiveConfigPathPrefersProject(t *testing.T) {
 	writeGlobal(t, validGlobal)
-
-	t.Chdir(t.TempDir()) // 无项目配置
+	t.Chdir(t.TempDir())
 	if got := EffectiveConfigPath(); got != DefaultConfigPath() {
-		t.Fatalf("无项目配置应回落全局，got %q want %q", got, DefaultConfigPath())
+		t.Fatalf("no project config: got %q", got)
 	}
-
 	proj := t.TempDir()
 	t.Chdir(proj)
 	writeProjectConfig(t, validGlobal)
-	wantAbs, err := filepath.Abs(filepath.Join(".ainovel", "config.json"))
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
-	if got := EffectiveConfigPath(); got != wantAbs {
-		t.Fatalf("有项目配置应写项目，got %q want %q", got, wantAbs)
+	want, _ := filepath.Abs(filepath.Join(".ainovel", "config.json"))
+	if got := EffectiveConfigPath(); got != want {
+		t.Fatalf("project config path = %q want %q", got, want)
 	}
 }
 
-// 文件不存在是正常情况（便携/首次），不能报错。
 func TestLoadConfig_MissingFilesNoError(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home) // ~/.ainovel/config.json 不存在
+	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Chdir(t.TempDir()) // 也没有 ./.ainovel/config.json
-
+	t.Chdir(t.TempDir())
 	if _, err := LoadConfig(); err != nil {
-		t.Fatalf("缺失配置文件不应报错，得到: %v", err)
+		t.Fatalf("missing configs should be allowed: %v", err)
 	}
 }
 
-// 正常路径：全局 + 项目级合并生效。
-func TestLoadConfig_ValidMergeWorks(t *testing.T) {
+func TestLoadConfig_WebOverlayMergesBrowserAndCreativeFields(t *testing.T) {
 	writeGlobal(t, validGlobal)
-	proj := t.TempDir()
-	t.Chdir(proj)
+	t.Chdir(t.TempDir())
 	writeProjectConfig(t, `{
-  "model": "google/gemini-2.5-pro",
+  "web": {"profile_name": "project-profile", "browser_path": "/custom/chrome"},
+  "language": "zh",
   "reasoning_effort": "high",
-  "roles": {
-    "writer": {
-      "provider": "openrouter",
-      "model": "google/gemini-2.5-flash",
-      "reasoning_effort": "low"
-    }
-  }
+  "roles": {"writer": {"reasoning_effort": "low"}}
 }`)
-
 	cfg, err := LoadConfig()
 	if err != nil {
-		t.Fatalf("有效配置不应报错: %v", err)
+		t.Fatalf("load: %v", err)
 	}
-	if cfg.Provider != "openrouter" {
-		t.Errorf("provider 应保留全局值 openrouter，得到 %q", cfg.Provider)
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName || cfg.Web.ProfileName != "project-profile" || cfg.Web.BrowserPath != "/custom/chrome" {
+		t.Fatalf("web merge failed: %#v", cfg.Web)
 	}
-	if cfg.ModelName != "google/gemini-2.5-pro" {
-		t.Errorf("model 应被项目级覆盖，得到 %q", cfg.ModelName)
-	}
-	if cfg.ReasoningEffort != "high" {
-		t.Errorf("reasoning_effort 应被项目级覆盖，得到 %q", cfg.ReasoningEffort)
-	}
-	if got := cfg.Roles["writer"].ReasoningEffort; got != "low" {
-		t.Errorf("roles.writer.reasoning_effort 应被项目级覆盖，得到 %q", got)
+	if cfg.Language != "zh" || cfg.ReasoningEffort != "high" || cfg.Roles["writer"].ReasoningEffort != "low" {
+		t.Fatalf("creative merge failed: %#v", cfg)
 	}
 }
 
-func TestMergeConfig_ProviderExtraFields(t *testing.T) {
-	base := Config{
-		Provider:  "openrouter",
-		ModelName: "google/gemini-2.5-flash",
-		Providers: map[string]ProviderConfig{
-			"openrouter": {
-				API:    "chat",
-				APIKey: "sk-test-123456",
-				ExtraBody: map[string]any{
-					"temperature": 0.8,
-				},
-				Extra: map[string]any{
-					"user_agent": "base-client/1.0",
-				},
-			},
-		},
+func TestLoadConfigFileRejectsLegacyAPIKeysBeforeDecode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.json")
+	legacy := `{"provider":"openai","model":"gpt-5","providers":{"openai":{"api_key":"secret","base_url":"https://api.example/v1"}}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	overlay := Config{
-		Providers: map[string]ProviderConfig{
-			"openrouter": {
-				API:     "responses",
-				BaseURL: "https://proxy.example.com/v1",
-				ExtraBody: map[string]any{
-					"min_p": 0.05,
-				},
-				Extra: map[string]any{
-					"user_agent": "override-client/1.0",
-					"headers": map[string]any{
-						"X-Custom-Client": "ainovel",
-					},
-				},
-			},
-		},
-	}
-
-	cfg := mergeConfig(base, overlay)
-	pc := cfg.Providers["openrouter"]
-	if pc.APIKey != "sk-test-123456" {
-		t.Fatalf("APIKey = %q, want inherited key", pc.APIKey)
-	}
-	if pc.API != "responses" {
-		t.Fatalf("API = %q, want responses", pc.API)
-	}
-	if pc.BaseURL != "https://proxy.example.com/v1" {
-		t.Fatalf("BaseURL = %q, want overlay URL", pc.BaseURL)
-	}
-	if _, ok := pc.ExtraBody["temperature"]; ok {
-		t.Fatalf("ExtraBody should be replaced by overlay, got %#v", pc.ExtraBody)
-	}
-	if got := pc.ExtraBody["min_p"]; got != 0.05 {
-		t.Fatalf("ExtraBody[min_p] = %#v, want 0.05", got)
-	}
-	if got := pc.Extra["user_agent"]; got != "override-client/1.0" {
-		t.Fatalf("Extra[user_agent] = %#v, want override-client/1.0", got)
-	}
-	headers, ok := pc.Extra["headers"].(map[string]any)
-	if !ok {
-		t.Fatalf("Extra[headers] missing or invalid: %#v", pc.Extra["headers"])
-	}
-	if got := headers["X-Custom-Client"]; got != "ainovel" {
-		t.Fatalf("Extra.headers[X-Custom-Client] = %#v, want ainovel", got)
+	_, err := LoadConfigFile(path)
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), LegacyAPIMigrationHint) {
+		t.Fatalf("legacy file must fail before decode with migration error: %v", err)
 	}
 }
 
-// 根因 2（issue #37 核心复现）：项目级覆盖 provider 但没声明对应 providers 凭证，
-// ValidateBase 必须报 config 错误（而非放行后在更深处崩溃）。
-func TestValidateBase_ProviderOverrideWithoutCredentials(t *testing.T) {
+func TestSaveConfigPersistsNoRuntimeOrCredentialAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".ainovel", "config.json")
 	cfg := Config{
-		Provider:  "mimo",
-		ModelName: "mimo-v2.5-pro",
-		Providers: map[string]ProviderConfig{
-			"openrouter": {APIKey: "sk-test-123456"},
-		},
+		Web:       WebAIConfig{Enabled: true, Site: WebModelName, ProfileName: "default"},
+		Provider:  WebProviderName,
+		ModelName: WebModelName,
+		Language:  "vi",
 	}
-	cfg.FillDefaults()
-	err := cfg.ValidateBase()
-	if err == nil {
-		t.Fatal("provider 缺凭证应报错")
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("save WEB config: %v", err)
 	}
-	if !errors.Is(err, errs.ErrConfig) {
-		t.Errorf("应包装 errs.ErrConfig，得到: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestValidateBaseRejectsInvalidProviderAPI(t *testing.T) {
-	cfg := Config{
-		Provider:  "openai",
-		ModelName: "gpt-5.1",
-		Providers: map[string]ProviderConfig{
-			"openai": {APIKey: "sk-test-123456", API: "legacy"},
-		},
+	text := string(data)
+	for _, forbidden := range []string{`"provider"`, `"model"`, `"providers"`, `"api_key"`, `"base_url"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("WEB persistence leaked legacy key %s:\n%s", forbidden, text)
+		}
 	}
-	cfg.FillDefaults()
-	err := cfg.ValidateBase()
-	if err == nil {
-		t.Fatal("provider api 非法应报错")
+	var round Config
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("saved JSON: %v", err)
 	}
-	if !errors.Is(err, errs.ErrConfig) {
-		t.Errorf("应包装 errs.ErrConfig，得到: %v", err)
+	if !round.Web.Enabled || round.Web.Site != WebModelName {
+		t.Fatalf("saved WEB config invalid: %#v", round.Web)
 	}
 }
 
-func TestValidateBaseRejectsProviderAPIOnNonOpenAIProvider(t *testing.T) {
-	cfg := Config{
-		Provider:  "anthropic",
-		ModelName: "claude-sonnet-4",
-		Providers: map[string]ProviderConfig{
-			"anthropic": {APIKey: "sk-test-123456", API: "responses"},
-		},
-	}
-	cfg.FillDefaults()
-	err := cfg.ValidateBase()
-	if err == nil {
-		t.Fatal("非 OpenAI provider 配置 api 应报错")
-	}
-	if !errors.Is(err, errs.ErrConfig) {
-		t.Errorf("应包装 errs.ErrConfig，得到: %v", err)
-	}
-}
-
-// 示例配置必须自洽：去注释后是合法 JSON、
-// 顶层 provider 指针不悬空、且点破了“指针”心智——它是用户照抄的样板，自己坏了就坑人。
 func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
-	if exampleConfig == "" {
-		t.Fatal("go:embed 未生效，exampleConfig 为空")
-	}
-	rootExample, err := os.ReadFile(filepath.Join("..", "..", "config.example.jsonc"))
+	root, err := os.ReadFile(filepath.Join("..", "..", "config.example.jsonc"))
 	if err != nil {
-		t.Fatalf("读取根目录 config.example.jsonc: %v", err)
+		t.Fatal(err)
 	}
-	if string(rootExample) != exampleConfig {
-		t.Fatal("根目录 config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
-	}
-	packagedExample, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
+	packaged, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
 	if err != nil {
-		t.Fatalf("读取 config/config.example.jsonc: %v", err)
+		t.Fatal(err)
 	}
-	if string(packagedExample) != exampleConfig {
-		t.Fatal("config/config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+	if string(root) != exampleConfig || string(packaged) != exampleConfig {
+		t.Fatal("example configs must be synchronized")
 	}
 	var cfg Config
 	if err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
-		t.Fatalf("内置示例去注释后不是合法 JSON（用户照抄即坑）: %v", err)
+		t.Fatalf("example JSON: %v", err)
 	}
-	if !cfg.Web.Enabled {
-		t.Fatal("WEB-only 示例必须启用 web.enabled")
-	}
-	if cfg.Web.Site != "gemini-web" {
-		t.Fatalf("WEB-only 示例 site=%q, want gemini-web", cfg.Web.Site)
-	}
-	if len(cfg.Providers) != 0 {
-		t.Fatalf("WEB-only 示例不得包含 legacy providers: %#v", cfg.Providers)
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName {
+		t.Fatalf("example is not WEB-only: %#v", cfg)
 	}
 	cfg.FillDefaults()
-	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
-		t.Fatalf("WEB-only 默认 runtime identity=%s/%s, want web/gemini-web", cfg.Provider, cfg.ModelName)
-	}
 	if err := cfg.ValidateBase(); err != nil {
-		t.Fatalf("WEB-only 示例 ValidateBase: %v", err)
+		t.Fatalf("example ValidateBase: %v", err)
 	}
 }
 
@@ -312,25 +205,15 @@ func TestWriteStartupError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-
-	path := WriteStartupError("boom: provider not configured")
+	path := WriteStartupError("boom: browser config invalid")
 	if path == "" {
-		t.Fatal("应返回落盘路径")
+		t.Fatal("startup error path missing")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("读取 last-error.log: %v", err)
+		t.Fatal(err)
 	}
-	if want := "boom: provider not configured"; !contains(string(data), want) {
-		t.Errorf("日志应包含 %q，实际: %s", want, data)
+	if !strings.Contains(string(data), "boom: browser config invalid") {
+		t.Fatalf("startup log missing message: %s", data)
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

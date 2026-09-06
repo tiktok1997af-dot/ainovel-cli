@@ -1,8 +1,11 @@
 package bootstrap
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/voocel/ainovel-cli/internal/errs"
 )
 
 func TestWebOnlyConfigNeedsNoAPICredential(t *testing.T) {
@@ -14,22 +17,34 @@ func TestWebOnlyConfigNeedsNoAPICredential(t *testing.T) {
 	if err := cfg.ValidateBase(); err != nil {
 		t.Fatalf("ValidateBase: %v", err)
 	}
-	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+	if cfg.Provider != WebProviderName || cfg.ModelName != WebModelName {
 		t.Fatalf("identity = %s/%s", cfg.Provider, cfg.ModelName)
-	}
-	if got := cfg.CandidateModels("web"); len(got) != 1 || got[0] != "gemini-web" {
-		t.Fatalf("CandidateModels = %v", got)
 	}
 }
 
-func TestWebOnlyConfigRejectsLegacyAPIProvider(t *testing.T) {
-	cfg := Config{
-		Web:       WebAIConfig{Enabled: true},
-		Providers: map[string]ProviderConfig{"openai": {APIKey: "must-not-be-used"}},
+func TestDetectLegacyAPIConfigRejectsRemovedProviderSchema(t *testing.T) {
+	cases := []string{
+		`{"provider":"openai","web":{"enabled":true}}`,
+		`{"model":"gpt-5","web":{"enabled":true}}`,
+		`{"providers":{"openai":{"api_key":"must-not-be-used"}},"web":{"enabled":true}}`,
+		`{"roles":{"writer":{"provider":"openai"}},"web":{"enabled":true}}`,
+		`{"roles":{"writer":{"model":"gpt-5"}},"web":{"enabled":true}}`,
+		`{"roles":{"writer":{"fallbacks":[{"provider":"openai","model":"gpt-5"}]}},"web":{"enabled":true}}`,
 	}
-	cfg.FillDefaults()
-	err := cfg.ValidateBase()
-	if err == nil || !strings.Contains(err.Error(), "legacy API providers") {
-		t.Fatalf("expected legacy API rejection, got %v", err)
+	for _, raw := range cases {
+		err := detectLegacyAPIConfig([]byte(raw))
+		if !errors.Is(err, errs.ErrConfig) {
+			t.Fatalf("legacy config must return ErrConfig, raw=%s err=%v", raw, err)
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "web.enabled=true") {
+			t.Fatalf("migration guidance missing for raw=%s: %v", raw, err)
+		}
+	}
+}
+
+func TestDetectLegacyAPIConfigAllowsWebOnlyRoleIntent(t *testing.T) {
+	raw := `{"web":{"enabled":true,"site":"gemini-web"},"roles":{"writer":{"reasoning_effort":"high"}}}`
+	if err := detectLegacyAPIConfig([]byte(raw)); err != nil {
+		t.Fatalf("WEB-only config was rejected: %v", err)
 	}
 }
