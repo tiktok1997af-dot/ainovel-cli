@@ -1,0 +1,215 @@
+name: W5E submit-control stabilizer
+
+on:
+  push:
+    branches:
+      - w5e-submit-stabilizer
+
+permissions:
+  contents: write
+
+jobs:
+  apply-submit-stabilization:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout stabilizer authority
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify exact W5E base and apply class-level patch
+        shell: bash
+        env:
+          EXPECTED_BASE: d48f6e1eb54125d6945c0aa718d0cc04a8961b6f
+          TARGET_BRANCH: w5e-real-production-app-smoke
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | cut -f1)"
+          if [ "$remote_sha" != "$EXPECTED_BASE" ]; then
+            echo "::error::W5E target drift: expected $EXPECTED_BASE, got $remote_sha"
+            exit 1
+          fi
+          git fetch origin "${TARGET_BRANCH}"
+          git switch -C "${TARGET_BRANCH}" FETCH_HEAD
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('internal/webai/sites/gemini_interaction.go')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          '''    composer.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            return {ok: true, reason: ''};
+          })()`
+
+          const geminiClickSendExpression''',
+          '''    composer.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            const preparedText = String(
+              (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
+                ? composer.value
+                : (composer.innerText || composer.textContent || '')
+            ).trim();
+            if (preparedText !== String(prompt).trim()) {
+              return {ok: false, reason: 'prompt composer did not retain prepared text'};
+            }
+            return {ok: true, reason: ''};
+          })()`
+
+          const geminiClickSendExpression''',
+          'prepare verification')
+
+          replace_once(
+          '''  const sendSelectors = [
+            'gem-icon-button.send-button[aria-disabled="false"]',
+            'gem-icon-button.submit[aria-disabled="false"]',
+            '[data-test-id="send-button-container"] gem-icon-button',
+            '[data-test-id="send-button-container"] button',
+            '[data-test-id="send-button"]',
+            'button[aria-label*="Send message" i]',
+            'button[aria-label="Send"]',
+            'button[aria-label*="Submit" i]',
+            'button[aria-label*="Gửi" i]',
+            'gem-icon-button[aria-label*="Send" i]',
+            'gem-icon-button[aria-label*="Submit" i]',
+            'gem-icon-button[aria-label*="Gửi" i]',
+            '[role="button"][aria-label*="Send" i]',
+            '[role="button"][aria-label*="Submit" i]',
+            '[role="button"][aria-label*="Gửi" i]',
+            'button.send-button'
+          ];
+          const findSend = () => {
+            const direct = firstVisible(sendSelectors);
+            if (direct) return direct;
+            for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
+              if (!visible(control)) continue;
+              const aria = String(control.getAttribute('aria-label') || '').trim().toLowerCase();
+              if (aria.includes('send') || aria.includes('submit') || aria.includes('gửi')) return control;
+              const icon = control.querySelector('mat-icon');
+              const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
+              if (iconText === 'send' || iconText === 'send_spark' || iconText === 'arrow_upward') return control;
+            }
+            return null;
+          };
+
+          const sendButton = findSend();
+          if (!sendButton) return {ok: false, retry: true, reason: 'send control not found'};
+          const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
+          if (disabled) return {ok: false, retry: true, reason: 'send control is disabled'};''',
+          '''  const sendSelectors = [
+            '[data-test-id="send-button-container"] button[aria-label*="Send message" i]',
+            '[data-test-id="send-button-container"] button[aria-label*="Send" i]',
+            '[data-test-id="send-button-container"] button',
+            'button[aria-label*="Send message" i]',
+            'button[aria-label="Send"]',
+            'button[aria-label*="Submit" i]',
+            'button[aria-label*="Gửi" i]',
+            'button.send-button',
+            '[data-test-id="send-button"]',
+            'gem-icon-button.send-button[aria-disabled="false"]',
+            'gem-icon-button.submit[aria-disabled="false"]',
+            '[data-test-id="send-button-container"] gem-icon-button',
+            'gem-icon-button[aria-label*="Send" i]',
+            'gem-icon-button[aria-label*="Submit" i]',
+            'gem-icon-button[aria-label*="Gửi" i]',
+            '[role="button"][aria-label*="Send" i]',
+            '[role="button"][aria-label*="Submit" i]',
+            '[role="button"][aria-label*="Gửi" i]'
+          ];
+          const resolveClickTarget = (control) => {
+            if (!control) return null;
+            if (control instanceof HTMLButtonElement) return control;
+            if (typeof control.querySelector === 'function') {
+              const nested = Array.from(control.querySelectorAll('button')).find(visible);
+              if (nested) return nested;
+            }
+            try {
+              if (control.shadowRoot) {
+                const shadowButton = Array.from(control.shadowRoot.querySelectorAll('button')).find(visible);
+                if (shadowButton) return shadowButton;
+              }
+            } catch (_) {}
+            return control;
+          };
+          const isDisabled = (el) => {
+            for (let node = el; node && node !== document.body; node = node.parentElement) {
+              if (Boolean(node.disabled) || node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true') {
+                return true;
+              }
+            }
+            return false;
+          };
+          const resolved = (control) => {
+            const target = resolveClickTarget(control);
+            if (!target || !visible(target)) return null;
+            return {control, target};
+          };
+          const findSend = () => {
+            const direct = firstVisible(sendSelectors);
+            if (direct) {
+              const hit = resolved(direct);
+              if (hit) return hit;
+            }
+            for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
+              if (!visible(control)) continue;
+              const aria = String(control.getAttribute('aria-label') || '').trim().toLowerCase();
+              const icon = control.querySelector('mat-icon');
+              const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
+              if (aria.includes('send') || aria.includes('submit') || aria.includes('gửi') ||
+                  iconText === 'send' || iconText === 'send_spark' || iconText === 'arrow_upward') {
+                const hit = resolved(control);
+                if (hit) return hit;
+              }
+            }
+            return null;
+          };
+
+          const send = findSend();
+          if (!send) return {ok: false, retry: true, reason: 'send control not found'};
+          if (isDisabled(send.control) || isDisabled(send.target)) {
+            return {ok: false, retry: true, reason: 'send control is disabled'};
+          }
+          const clickTarget = send.target;''',
+          'native send target resolution')
+
+          replace_once(
+          '''  sendButton.click();
+            return {ok: true, retry: false, reason: ''};''',
+          '''  clickTarget.click();
+            return {ok: true, retry: false, reason: ''};''',
+          'single click target')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          gofmt -w internal/webai/sites/gemini_interaction.go
+          git diff --check
+          go test -buildvcs=false -count=1 ./internal/webai/sites ./internal/webai
+
+      - name: Commit exact class-level stabilization to W5E branch
+        shell: bash
+        env:
+          TARGET_BRANCH: w5e-real-production-app-smoke
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal/webai/sites/gemini_interaction.go
+          git diff --cached --exit-code && { echo '::error::stabilizer produced no patch'; exit 1; } || true
+          git commit -m 'fix(webai): stabilize Gemini native send action'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
