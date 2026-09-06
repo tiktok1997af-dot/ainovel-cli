@@ -42,8 +42,8 @@ var (
 // before a request crosses the browser boundary. It deliberately contains only
 // one response marker pair so a browser model is not encouraged to nest an
 // example envelope inside another envelope. The request payload format itself
-// remains ainovel-web/1 and legacy JSON text envelopes remain accepted by the
-// parser for backward compatibility.
+// remains ainovel-web/1 and legacy JSON envelopes remain accepted by the parser
+// for backward compatibility.
 const rawTextProtocolInstruction = `You are the AI backend for ainovel-cli. The browser is only a transport layer.
 Return exactly one response envelope and nothing else.
 
@@ -54,13 +54,23 @@ AINOVEL WEB RESPONSE EXTENSION:
 
 Replace <body> with exactly one of these forms:
 - Normal assistant text: first line is the literal word TEXT, then a newline, then the complete answer verbatim. In shorthand: TEXT\n<the complete answer verbatim>. The body after TEXT may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap normal text in a {"kind":"text"} object.
-- Local tool request: one strict JSON object of the form {"kind":"tool_calls","tool_calls":[{"name":"exact_tool_name","arguments":{}}]}. Use only tool names present in the request and one JSON object matching that tool schema for each arguments value.
+- Ordinary local tool request with small/simple arguments: one strict JSON object of the form {"kind":"tool_calls","tool_calls":[{"name":"exact_tool_name","arguments":{}}]}.
+- One local tool request containing one long top-level string argument (for example a chapter body in content): use TOOL_CALL_RAW so that long string is not JSON-escaped. The body form is:
+TOOL_CALL_RAW
+{"name":"exact_tool_name","arguments":{"all_other_arguments":"go here"},"raw_string_field":"content"}
+<<<AINOVEL_RAW_VALUE>>>
+<the complete raw string value verbatim>
+<<<END_AINOVEL_RAW_VALUE>>>
+The metadata arguments object MUST omit the field named by raw_string_field. The runtime inserts the raw value into that top-level field, reconstructs a normal JSON arguments object, and validates the tool/schema locally before execution.
 
 Rules:
-- A response is either normal TEXT or tool_calls, never both.
+- A response is exactly one of TEXT, strict JSON tool_calls, or one TOOL_CALL_RAW; never combine forms.
+- Use TOOL_CALL_RAW only for exactly one tool call and exactly one long top-level string argument. Keep all other arguments in the small metadata JSON object.
+- The raw value must not contain the reserved strings <<<AINOVEL_RAW_VALUE>>> or <<<END_AINOVEL_RAW_VALUE>>>.
+- Use only tool names and argument fields present in the request tool schema.
 - Never represent a tool request as TEXT.
 - Do not claim that a tool ran; the local ainovel runtime executes tools only after validating the call.
-- Do not write Markdown fences around the response envelope.
+- Do not write Markdown fences around the response envelope or raw value.
 - Do not emit commentary outside the response markers.
 - Emit the response markers exactly once each.`
 
@@ -71,9 +81,15 @@ Return exactly one response envelope:
 <body>
 <<<END_AINOVEL_WEB_RESPONSE>>>
 Replace <body> as follows:
-- If the intended answer is normal assistant text, use the literal first line TEXT followed by a newline and the complete previous answer verbatim. It may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap it in a {"kind":"text"} object.
-- If the intended answer is a local tool request, use one strict valid JSON object: {"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}.
-For tool calls only, every arguments value must be one JSON object. Use no Markdown fence, emit no text outside the markers, and emit each response marker exactly once.`
+- Normal assistant text: first line TEXT, then a newline, then the complete previous answer verbatim. Do not JSON-escape or wrap it in a {"kind":"text"} object.
+- Tool request with small/simple arguments: one strict valid JSON object {"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}.
+- Tool request whose intended arguments contain one long top-level string such as content: use exactly:
+TOOL_CALL_RAW
+{"name":"an exact tool name from the immediately preceding request","arguments":{"all_other_arguments":"go here"},"raw_string_field":"content"}
+<<<AINOVEL_RAW_VALUE>>>
+<the complete intended long string value verbatim>
+<<<END_AINOVEL_RAW_VALUE>>>
+For TOOL_CALL_RAW, omit the raw_string_field from metadata arguments. Use only a field actually present in the tool schema. Do not put Markdown fences around the raw value. Emit no text outside the response envelope, and emit each response marker exactly once.`
 
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
