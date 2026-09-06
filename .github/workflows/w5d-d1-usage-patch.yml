@@ -20,6 +20,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Make guarded patcher method-aware
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/w5d_patch_d1_usage.py')
+          s = p.read_text(encoding='utf-8')
+          old = 'm = re.search(r"(?m)^func " + re.escape(name) + r"\\s*\\(", text)'
+          new = 'm = re.search(r"(?m)^func(?:\\s+\\([^\\n)]*\\))?\\s+" + re.escape(name) + r"\\s*\\(", text)'
+          n = s.count(old)
+          if n != 2:
+              raise SystemExit(f'expected 2 function matcher sites, got {n}')
+          p.write_text(s.replace(old, new), encoding='utf-8')
+          PY
       - name: Apply guarded WEB-only usage/pricing refactor
         run: python3 .github/scripts/w5d_patch_d1_usage.py
       - name: Format
