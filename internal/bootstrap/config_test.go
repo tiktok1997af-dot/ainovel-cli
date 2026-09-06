@@ -10,7 +10,7 @@ import (
 )
 
 func webConfig() Config {
-	return Config{Web: WebAIConfig{Enabled: true, Site: "gemini-web"}}
+	return Config{Web: WebAIConfig{Enabled: true, Site: WebModelName}}
 }
 
 func TestConfigResolveReasoningEffort(t *testing.T) {
@@ -37,26 +37,23 @@ func TestValidateBaseRequiresWebOnlyRuntime(t *testing.T) {
 	}
 }
 
-func TestValidateBaseRejectsLegacyAPIConfigWithMigrationHint(t *testing.T) {
-	cfg := Config{
-		Provider: "openai", ModelName: "gpt-5",
-		Providers: map[string]ProviderConfig{"openai": {APIKey: "secret", BaseURL: "https://api.example/v1"}},
-	}
-	err := cfg.ValidateBase()
+func TestDetectLegacyAPIConfigWithMigrationHint(t *testing.T) {
+	legacy := []byte(`{"provider":"openai","model":"gpt-5","providers":{"openai":{"api_key":"secret","base_url":"https://api.example/v1"}}}`)
+	err := detectLegacyAPIConfig(legacy)
 	if !errors.Is(err, errs.ErrConfig) {
 		t.Fatalf("legacy config must wrap ErrConfig: %v", err)
 	}
-	for _, want := range []string{"legacy AI provider/API", "web.enabled=true", "gemini-web", "api_key", "base_url"} {
+	for _, want := range []string{"legacy AI provider/API", "web.enabled=true", "gemini-web", "provider"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("migration error missing %q: %v", want, err)
 		}
 	}
 }
 
-func TestValidateBaseRejectsLegacyRoleRoutingInsideWebMode(t *testing.T) {
-	cfg := webConfig()
-	cfg.Roles = map[string]RoleConfig{"writer": {Provider: "openai", Model: "gpt-5"}}
-	if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), "legacy provider/model/fallback") {
+func TestDetectLegacyRoleRouting(t *testing.T) {
+	legacy := []byte(`{"web":{"enabled":true},"roles":{"writer":{"provider":"openai","model":"gpt-5","fallbacks":[]}}}`)
+	err := detectLegacyAPIConfig(legacy)
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), "roles.writer") {
 		t.Fatalf("legacy role routing must fail closed: %v", err)
 	}
 }
