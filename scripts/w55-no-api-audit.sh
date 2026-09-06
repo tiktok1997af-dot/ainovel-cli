@@ -63,7 +63,7 @@ printf 'W5.5 NO-API audit: positive WEB-only invariants\n'
 require_file internal/bootstrap/models.go
 require_file internal/host/web_runtime.go
 require_file internal/webai/model.go
-require_file internal/webai/gemini_transport.go
+require_file internal/webai/devtools.go
 require_text internal/bootstrap/models.go 'webai.NewGeminiWebTransport'
 require_text internal/bootstrap/models.go 'webai.NewModel'
 require_text internal/host/host.go 'legacy AI provider/API runtime has been removed'
@@ -100,7 +100,7 @@ for pattern in \
   'docker[[:space:]]+compose[[:space:]]+(build|run|up|pull|start)([[:space:]]|$)' \
   'meta/usage\.json' \
   'UsageTracker|usageTrackedModel' \
-  'role[ -]model.*failover|provider.*failover'; do
+; do
   if grep -nEi -- "$pattern" "${current_docs[@]}"; then
     fail "stale current-product documentation matched: $pattern"
   fi

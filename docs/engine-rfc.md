@@ -1,5 +1,8 @@
 # Step 2 RFC:Engine 直接运行 Worker(七道必答题答案)
 
+> **HISTORICAL / SUPERSEDED BY W5 WEB-ONLY (2026-09-06).**
+> Engine RFC is retained as provenance only. Current product authority is `README.md` + `docs/architecture.md`. Provider failover, API prompt-cache/usage-budget semantics and runtime model switching described below are not current product behavior.
+
 > 状态:定稿(2026-07-12)。基于对 host/observer/subagent/usage/cocreate 的代码侦察。
 > 结论:全部七题有低风险答案,进入实施。关联:docs/engine-arbiter.md。
 

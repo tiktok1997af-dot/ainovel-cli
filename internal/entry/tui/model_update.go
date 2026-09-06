@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -592,20 +590,6 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		m.modelConfig = nil
 		return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
-	case modelConfigConnectionMsg:
-		if m.modelConfig == nil {
-			return m, nil, true
-		}
-		m.modelConfig.testing = false
-		m.modelConfig.testCancel = nil
-		if errors.Is(msg.err, context.Canceled) {
-			m.modelConfig.message = "Kiểm tra kết nối đã bị hủy"
-		} else if msg.err != nil {
-			m.modelConfig.message = msg.err.Error()
-		} else {
-			m.modelConfig.message = "Kiểm tra kết nối thành công: " + msg.model
-		}
-		return m, nil, true
 	case startResultMsg:
 		next, cmd := m.handleStartResultMsg(msg)
 		return next, cmd, true
