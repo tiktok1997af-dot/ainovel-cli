@@ -140,11 +140,31 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.ModelName != "" {
 		base.ModelName = overlay.ModelName
 	}
+	if overlay.Web != (WebAIConfig{}) {
+		if overlay.Web.Enabled {
+			base.Web.Enabled = true
+		}
+		if overlay.Web.Site != "" {
+			base.Web.Site = overlay.Web.Site
+		}
+		if overlay.Web.BrowserPath != "" {
+			base.Web.BrowserPath = overlay.Web.BrowserPath
+		}
+		if overlay.Web.ProfileName != "" {
+			base.Web.ProfileName = overlay.Web.ProfileName
+		}
+		if overlay.Web.StartURL != "" {
+			base.Web.StartURL = overlay.Web.StartURL
+		}
+	}
 	if overlay.ReasoningEffort != "" {
 		base.ReasoningEffort = overlay.ReasoningEffort
 	}
 	if overlay.Style != "" {
 		base.Style = overlay.Style
+	}
+	if overlay.Language != "" {
+		base.Language = overlay.Language
 	}
 	if overlay.ContextWindow > 0 {
 		base.ContextWindow = overlay.ContextWindow
@@ -246,24 +266,6 @@ func CloneConfig(cfg Config) Config {
 	return clone
 }
 
-// SaveProviderConfig 补丁式更新目标配置层里单个 provider 的凭证与模型库。
-// 只动 providers 段，绝不触碰顶层 provider/model 选择——“当前用哪个”归 /model。
-// 目标不存在时创建最小配置；目标损坏时拒绝覆盖。
-func SaveProviderConfig(path string, provider string, pc ProviderConfig) error {
-	target, found, err := loadOptionalJSON(path)
-	if err != nil {
-		return err
-	}
-	if !found {
-		target = Config{}
-	}
-	if target.Providers == nil {
-		target.Providers = make(map[string]ProviderConfig)
-	}
-	target.Providers[provider] = pc
-	return SaveConfig(path, target)
-}
-
 // stripJSONComments 去除 JSON 中的 // 行注释，跟踪引号状态避免误删字符串内容。
 func stripJSONComments(data []byte) []byte {
 	out := make([]byte, 0, len(data))
@@ -339,10 +341,21 @@ func WriteStartupError(msg string) string {
 
 // SaveConfig 将配置写入指定路径（JSON 格式，缩进美化）。
 func SaveConfig(path string, cfg Config) error {
+	persist := CloneConfig(cfg)
+	persist.FillDefaults()
+	if err := persist.ValidateBase(); err != nil {
+		return fmt.Errorf("refusing to persist non-WEB configuration: %w", err)
+	}
+	// Provider/model are runtime compatibility aliases only. Never persist them,
+	// and never persist an API provider credential map.
+	persist.Provider = ""
+	persist.ModelName = ""
+	persist.Providers = nil
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(persist, "", "  ")
 	if err != nil {
 		return err
 	}

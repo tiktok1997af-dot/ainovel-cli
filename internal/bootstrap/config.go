@@ -271,109 +271,31 @@ type NotifyConfig struct {
 // IsEnabled 返回告警是否启用（缺省 true）。
 func (n NotifyConfig) IsEnabled() bool { return n.Enabled == nil || *n.Enabled }
 
-// ValidateBase 校验基础配置。
+// LegacyAPIMigrationHint is intentionally stable and user-facing. Old API-era
+// configuration is never interpreted as an alternate runtime path.
+const LegacyAPIMigrationHint = "legacy AI provider/API configuration is no longer supported; set web.enabled=true and web.site=gemini-web, then remove provider/providers/api_key/base_url and role provider/model/fallback routing"
+
+// ValidateBase validates the only supported product runtime: visible browser WEB-only.
 func (c *Config) ValidateBase() error {
-	if c.Web.Enabled {
-		return c.validateWebOnly()
+	if !c.Web.Enabled {
+		if c.hasLegacyAPIRouting() {
+			return fmt.Errorf("%s: %w", LegacyAPIMigrationHint, errs.ErrConfig)
+		}
+		return fmt.Errorf("WEB-only runtime requires web.enabled=true and web.site=gemini-web; login is completed manually in the visible Chrome session: %w", errs.ErrConfig)
 	}
-	if err := validateConfigText("provider", c.Provider); err != nil {
-		return err
-	}
-	if err := validateConfigText("model", c.ModelName); err != nil {
-		return err
-	}
+	return c.validateWebOnly()
+}
 
-	if c.Provider == "" {
-		return fmt.Errorf("provider is required: %w", errs.ErrConfig)
+func (c Config) hasLegacyAPIRouting() bool {
+	if strings.TrimSpace(c.Provider) != "" || strings.TrimSpace(c.ModelName) != "" || len(c.Providers) != 0 {
+		return true
 	}
-	if c.ModelName == "" {
-		return fmt.Errorf("model is required: %w", errs.ErrConfig)
-	}
-
-	// 默认 provider 必须有凭证
-	pc, ok := c.Providers[c.Provider]
-	if !ok {
-		return fmt.Errorf("provider %q 未在 providers 中配置凭证；若在 ./.ainovel/config.json 里覆盖了 provider，需同时声明 providers.%s（含 api_key/base_url），不能只改顶层 provider: %w", c.Provider, c.Provider, errs.ErrConfig)
-	}
-	if pc.RequiresAPIKey(c.Provider) && pc.APIKey == "" {
-		return fmt.Errorf("provider %q has no api_key configured: %w", c.Provider, errs.ErrConfig)
-	}
-	if err := validateProviderConfigText(c.Provider, pc); err != nil {
-		return err
-	}
-	if err := c.validateProviderAPI("default", c.Provider, pc); err != nil {
-		return err
-	}
-	for name, provider := range c.Providers {
-		if err := validateConfigText("provider name", name); err != nil {
-			return err
-		}
-		if err := validateProviderConfigText(name, provider); err != nil {
-			return err
-		}
-		if err := c.validateProviderAPI(fmt.Sprintf("provider %q", name), name, provider); err != nil {
-			return err
+	for _, rc := range c.Roles {
+		if strings.TrimSpace(rc.Provider) != "" || strings.TrimSpace(rc.Model) != "" || len(rc.Fallbacks) != 0 {
+			return true
 		}
 	}
-
-	// 校验角色覆盖
-	for role, rc := range c.Roles {
-		if err := validateConfigText("role name", role); err != nil {
-			return err
-		}
-		if err := validateConfigText(fmt.Sprintf("role %q provider", role), rc.Provider); err != nil {
-			return err
-		}
-		if err := validateConfigText(fmt.Sprintf("role %q model", role), rc.Model); err != nil {
-			return err
-		}
-		if !knownRoles[role] {
-			return fmt.Errorf("unknown role %q in roles config (valid: architect/writer/editor/import_segment/import_analyze/import_synthesize): %w", role, errs.ErrConfig)
-		}
-		if rc.Provider == "" || rc.Model == "" {
-			return fmt.Errorf("role %q must have both provider and model: %w", role, errs.ErrConfig)
-		}
-		if err := c.validateModelRef(
-			fmt.Sprintf("role %q", role),
-			ModelRef{Provider: rc.Provider, Model: rc.Model},
-		); err != nil {
-			return err
-		}
-		for i, fallback := range rc.Fallbacks {
-			if err := validateConfigText(fmt.Sprintf("role %q fallback[%d] provider", role, i), fallback.Provider); err != nil {
-				return err
-			}
-			if err := validateConfigText(fmt.Sprintf("role %q fallback[%d] model", role, i), fallback.Model); err != nil {
-				return err
-			}
-			if err := c.validateModelRef(
-				fmt.Sprintf("role %q fallback[%d]", role, i),
-				fallback,
-			); err != nil {
-				return err
-			}
-		}
-	}
-
-	// 校验预算政策
-	if c.Budget.BookUSD < 0 {
-		return fmt.Errorf("budget.book_usd must be >= 0: %w", errs.ErrConfig)
-	}
-	if c.Budget.Enabled() && (c.Budget.WarnRatio <= 0 || c.Budget.WarnRatio >= 1) {
-		return fmt.Errorf("budget.warn_ratio must be in (0, 1): %w", errs.ErrConfig)
-	}
-
-	// 校验告警配置
-	if err := validateConfigText("notify.command", c.Notify.Command); err != nil {
-		return err
-	}
-	for _, ev := range c.Notify.Events {
-		if !notify.IsKnownKind(ev) {
-			return fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)
-		}
-	}
-
-	return nil
+	return false
 }
 
 func (c *Config) validateWebOnly() error {
