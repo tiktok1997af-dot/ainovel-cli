@@ -47,15 +47,13 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return agentcore.Message{}, legacyErr
 	}
 
-	body := strings.TrimSpace(normalizedRaw)
-	if body == "" {
+	body, wrapped, err := responseBodyForExtensions(normalizedRaw)
+	if err != nil {
+		// A response that mentions a legacy wrapper must satisfy that wrapper
+		// exactly. Never fall back to DOM-body parsing for a partial wrapper.
 		return agentcore.Message{}, legacyErr
 	}
-
-	// A response that mentions an outer wrapper is claiming the legacy protocol.
-	// Keep that path strict so a missing/duplicated marker can never be mistaken
-	// for valid TEXT or a tool request merely because the DOM message ended.
-	if strings.Contains(body, responseStart) || strings.Contains(body, responseEnd) {
+	if body == "" {
 		return agentcore.Message{}, legacyErr
 	}
 
@@ -67,21 +65,51 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return text, err
 	}
 
-	// Reuse the locked legacy JSON validator by supplying the envelope locally.
-	// The model never has to emit these redundant delimiters on the WEB path.
+	// Reuse the locked legacy JSON validator by supplying the envelope locally
+	// for the current bare-body path. A complete legacy wrapper already failed
+	// that same validator above, so returning its original error is equivalent and
+	// avoids accidentally normalizing a malformed legacy body a second time.
 	if strings.HasPrefix(body, "{") {
-		wrapped := responseStart + "\n" + body + "\n" + responseEnd
-		msg, err := ParseResponse(requestPrompt, wrapped, tools)
-		if err == nil {
-			return msg, nil
+		if wrapped {
+			return agentcore.Message{}, legacyErr
 		}
-		if !errors.Is(err, ErrProtocol) {
-			return agentcore.Message{}, err
+		localWrapped := responseStart + "\n" + body + "\n" + responseEnd
+		parsed, parseErr := ParseResponse(requestPrompt, localWrapped, tools)
+		if parseErr == nil {
+			return parsed, nil
 		}
-		return agentcore.Message{}, err
+		return agentcore.Message{}, parseErr
 	}
 
 	return agentcore.Message{}, legacyErr
+}
+
+// responseBodyForExtensions returns the body for TEXT/TOOL_CALL_RAW parsing.
+// If either legacy outer marker is present, the entire response must be one
+// valid complete legacy envelope. This keeps missing/stray/nested wrapper cases
+// strict while allowing old wrapped TEXT and TOOL_CALL_RAW browser sessions to
+// continue working.
+func responseBodyForExtensions(raw string) (body string, wrapped bool, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	mentionsStart := strings.Contains(trimmed, responseStart)
+	mentionsEnd := strings.Contains(trimmed, responseEnd)
+	if !mentionsStart && !mentionsEnd {
+		return trimmed, false, nil
+	}
+	if !mentionsStart || !mentionsEnd {
+		return "", true, protocolError("extract legacy response body", fmt.Errorf("partial legacy response wrapper"))
+	}
+	extracted, extractErr := extractEnvelope(trimmed)
+	if extractErr != nil {
+		return "", true, extractErr
+	}
+	if strings.Contains(extracted, responseStart) || strings.Contains(extracted, responseEnd) {
+		return "", true, protocolError("extract legacy response body", fmt.Errorf("nested legacy response wrapper"))
+	}
+	return strings.TrimSpace(extracted), true, nil
 }
 
 func parseBareTextBody(body string) (agentcore.Message, bool, error) {
@@ -173,7 +201,9 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 
 	valueRegion := rest[valueStart+len(rawValueStart):]
 	rawValue := valueRegion
+	hasLegacyRawEnd := false
 	if valueEndRel := strings.Index(valueRegion, rawValueEnd); valueEndRel >= 0 {
+		hasLegacyRawEnd = true
 		// Backward compatibility with the old framed raw-value form. If the old
 		// end marker appears, it must still be one exact terminal delimiter.
 		if strings.Count(valueRegion, rawValueEnd) != 1 {
@@ -192,7 +222,7 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	// Only trim the trailing protocol newline when an explicit legacy end marker
 	// supplied it. In the DOM-delimited form the end of the assistant message is
 	// the value boundary, so prose whitespace belongs to the value.
-	if strings.Contains(valueRegion, rawValueEnd) {
+	if hasLegacyRawEnd {
 		rawValue = trimOneProtocolLineBreak(rawValue, false)
 	}
 	if strings.TrimSpace(rawValue) == "" {
