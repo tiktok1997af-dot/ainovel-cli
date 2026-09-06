@@ -20,8 +20,8 @@ jobs:
         run: |
           set -euo pipefail
           echo '=== INTERNAL MODELS IMPORTS ==='
-          rg -n 'internal/models|models\.' --glob '*.go' . || true
+          grep -RInE 'internal/models|models\.' --include='*.go' . || true
           echo '=== USAGE API REFERENCES ==='
-          rg -n 'UsageTracker|TotalInputTokens|TotalOutputTokens|TotalCostUSD|TotalSavedUSD|BudgetLimitUSD|CachePerAgent|CachePerModel|OverallCache|MissingAssistantUsage|SavedUSD\(|\.Totals\(\)|\.PerAgent\(\)|\.PerModel\(\)|ReplaySessions|LoadFromStore|StartAutoSave|WaitAutoSave|SaveNow' --glob '*.go' . || true
+          grep -RInE 'UsageTracker|TotalInputTokens|TotalOutputTokens|TotalCostUSD|TotalSavedUSD|BudgetLimitUSD|CachePerAgent|CachePerModel|OverallCache|MissingAssistantUsage|SavedUSD\(|\.Totals\(\)|\.PerAgent\(\)|\.PerModel\(\)|ReplaySessions|LoadFromStore|StartAutoSave|WaitAutoSave|SaveNow' --include='*.go' . || true
           echo '=== USD/CACHE UI REFERENCES ==='
-          rg -n 'formatCostUSD|cacheHitRate|prompt cache|stream_options\.include_usage|cost_usd|saved_usd' internal --glob '*.go' || true
+          grep -RInE 'formatCostUSD|cacheHitRate|prompt cache|stream_options\.include_usage|cost_usd|saved_usd' --include='*.go' internal || true
