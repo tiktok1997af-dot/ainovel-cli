@@ -22,14 +22,33 @@ func (s *scriptedEvaluator) Eval(_ context.Context, expression string) (json.Raw
 	return out, nil
 }
 
-func TestGeminiConversationDecodesSnapshot(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":2,"last_response":" final ","truncated":false}`)}}
+func TestGeminiConversationDecodesSanitizedAckSnapshot(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":2,"user_message_count":3,"composer_present":true,"composer_empty":true,"last_response":" final ","truncated":false}`)}}
 	got, err := (Gemini{}).Conversation(context.Background(), e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Busy || got.ResponseCount != 2 || got.LastResponse != "final" || got.Truncated {
+	if got.Busy || got.ResponseCount != 2 || got.UserMessageCount != 3 || !got.ComposerPresent || !got.ComposerEmpty || got.LastResponse != "final" || got.Truncated {
 		t.Fatalf("unexpected snapshot: %+v", got)
+	}
+}
+
+func TestGeminiConversationExpressionExposesAckSignalsWithoutPromptText(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":0,"user_message_count":0,"composer_present":true,"composer_empty":false,"last_response":"","truncated":false}`)}}
+	if _, err := (Gemini{}).Conversation(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.exprs) != 1 {
+		t.Fatalf("expressions = %d, want 1", len(e.exprs))
+	}
+	expr := e.exprs[0]
+	for _, want := range []string{"user-query", "user_message_count", "composer_present", "composer_empty"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("conversation expression missing SEND ACK marker %q", want)
+		}
+	}
+	if strings.Contains(expr, "return {prompt") || strings.Contains(expr, "prompt_text") {
+		t.Fatal("conversation snapshot must not return prompt content")
 	}
 }
 
