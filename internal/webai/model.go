@@ -2,6 +2,7 @@ package webai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -37,6 +38,18 @@ var (
 	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
+const protocolRepairPrompt = `Your immediately previous answer could not be parsed as the ainovel-web/1 response envelope. No local tool from that answer has been executed.
+Do not redo the user's task and do not add commentary. Re-emit the same intended answer once, correcting only the machine-readable format.
+Return exactly one of these forms and nothing else:
+<<<AINOVEL_WEB_RESPONSE>>>
+{"kind":"text","text":"complete answer with valid JSON escaping"}
+<<<END_AINOVEL_WEB_RESPONSE>>>
+or
+<<<AINOVEL_WEB_RESPONSE>>>
+{"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}
+<<<END_AINOVEL_WEB_RESPONSE>>>
+The envelope must be strict valid JSON: quote every key and string, escape embedded quotes/newlines, use one JSON object for each tool arguments value, use no Markdown fence, and emit no text outside the markers.`
+
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
 		return nil, fmt.Errorf("webai: transport is required")
@@ -68,10 +81,30 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		return nil, err
 	}
 	msg, err := ParseResponse(prompt, raw, tools)
-	if err != nil {
+	if err == nil {
+		return &agentcore.LLMResponse{Message: msg}, nil
+	}
+	if !errors.Is(err, ErrProtocol) {
 		return nil, err
 	}
-	return &agentcore.LLMResponse{Message: msg}, nil
+
+	// Browser models can occasionally return a syntactically malformed envelope
+	// even after following the response markers. No local tool has executed at
+	// this point, so one bounded reformat request in the same web conversation is
+	// safe. This is deliberately not a general retry loop: transport/auth/timeout
+	// errors are never retried here, and a second protocol violation fails hard.
+	repairedRaw, repairErr := m.transport.RoundTrip(ctx, protocolRepairPrompt)
+	if repairErr != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, repairErr
+	}
+	repaired, repairErr := ParseResponse(prompt, repairedRaw, tools)
+	if repairErr != nil {
+		return nil, repairErr
+	}
+	return &agentcore.LLMResponse{Message: repaired}, nil
 }
 
 // GenerateStream deliberately emits one terminal event in W1. True DOM delta
