@@ -97,6 +97,10 @@ jobs:
           grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
           ! grep -Eq 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY' .github/workflows/release.yml .github/scripts/gen-changelog.sh
 
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
   test:
     strategy:
       fail-fast: false
