@@ -2,133 +2,83 @@ package bootstrap
 
 import (
 	"errors"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/notify"
 )
 
-func TestConfigResolveReasoningEffort(t *testing.T) {
-	cfg := Config{
-		ReasoningEffort: "low", // 顶层默认
-		Roles: map[string]RoleConfig{
-			"writer":    {Provider: "p", Model: "m", ReasoningEffort: "high"}, // 角色覆盖
-			"architect": {Provider: "p", Model: "m"},                          // 无 reasoning_effort，应回落默认
-		},
-	}
+func webConfig() Config {
+	return Config{Web: WebAIConfig{Enabled: true, Site: "gemini-web"}}
+}
 
-	cases := []struct {
-		role string
-		want string
-	}{
-		{"writer", "high"},   // 角色覆盖优先
-		{"architect", "low"}, // 角色未配 → 回落顶层默认
-		{"editor", "low"},    // 角色不存在 → 顶层默认
-		{"", "low"},          // 空 → 顶层默认
-		{"default", "low"},   // default → 顶层默认
-		{"arbiter", "low"},   // 非配置角色（裁定恒随顶层默认）
+func TestConfigResolveReasoningEffort(t *testing.T) {
+	cfg := webConfig()
+	cfg.ReasoningEffort = "low"
+	cfg.Roles = map[string]RoleConfig{
+		"writer":    {ReasoningEffort: "high"},
+		"architect": {},
 	}
-	for _, c := range cases {
-		if got := cfg.ResolveReasoningEffort(c.role); got != c.want {
-			t.Errorf("ResolveReasoningEffort(%q) = %q, want %q", c.role, got, c.want)
+	for role, want := range map[string]string{
+		"writer": "high", "architect": "low", "editor": "low", "": "low", "default": "low", "arbiter": "low",
+	} {
+		if got := cfg.ResolveReasoningEffort(role); got != want {
+			t.Errorf("ResolveReasoningEffort(%q) = %q, want %q", role, got, want)
 		}
 	}
+}
 
-	// 顶层默认也为空时，未覆盖角色返回 ""（不覆盖）。
-	empty := Config{Roles: map[string]RoleConfig{"writer": {ReasoningEffort: "xhigh"}}}
-	if got := empty.ResolveReasoningEffort("editor"); got != "" {
-		t.Errorf("空默认下 editor 应返回 \"\"，得 %q", got)
+func TestValidateBaseRequiresWebOnlyRuntime(t *testing.T) {
+	cfg := Config{}
+	err := cfg.ValidateBase()
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), "web.enabled=true") {
+		t.Fatalf("missing WEB-only requirement: %v", err)
 	}
-	if got := empty.ResolveReasoningEffort("writer"); got != "xhigh" {
-		t.Errorf("空默认下 writer 覆盖应生效，得 %q", got)
+}
+
+func TestValidateBaseRejectsLegacyAPIConfigWithMigrationHint(t *testing.T) {
+	cfg := Config{
+		Provider: "openai", ModelName: "gpt-5",
+		Providers: map[string]ProviderConfig{"openai": {APIKey: "secret", BaseURL: "https://api.example/v1"}},
+	}
+	err := cfg.ValidateBase()
+	if !errors.Is(err, errs.ErrConfig) {
+		t.Fatalf("legacy config must wrap ErrConfig: %v", err)
+	}
+	for _, want := range []string{"legacy AI provider/API", "web.enabled=true", "gemini-web", "api_key", "base_url"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("migration error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestValidateBaseRejectsLegacyRoleRoutingInsideWebMode(t *testing.T) {
+	cfg := webConfig()
+	cfg.Roles = map[string]RoleConfig{"writer": {Provider: "openai", Model: "gpt-5"}}
+	if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), "legacy provider/model/fallback") {
+		t.Fatalf("legacy role routing must fail closed: %v", err)
 	}
 }
 
 func TestValidateBaseRejectsNonConfigurableRoles(t *testing.T) {
 	for _, role := range []string{"coordinator", "arbiter"} {
-		t.Run(role, func(t *testing.T) {
-			cfg := Config{
-				Provider:  "openrouter",
-				ModelName: "test-model",
-				Providers: map[string]ProviderConfig{
-					"openrouter": {APIKey: "sk-test-123456"},
-				},
-				Roles: map[string]RoleConfig{
-					role: {Provider: "openrouter", Model: "test-model"},
-				},
-			}
-
-			err := cfg.ValidateBase()
-			if err == nil {
-				t.Fatalf("roles.%s 应被拒绝", role)
-			}
-			if !errors.Is(err, errs.ErrConfig) {
-				t.Fatalf("应包装 errs.ErrConfig，得到: %v", err)
-			}
-		})
+		cfg := webConfig()
+		cfg.Roles = map[string]RoleConfig{role: {ReasoningEffort: "low"}}
+		if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) {
+			t.Fatalf("roles.%s must be rejected, got %v", role, err)
+		}
 	}
 }
 
 func TestValidateBaseNotifyEventsMatchRuntimeContract(t *testing.T) {
-	validConfig := func(events []string) Config {
-		return Config{
-			Provider:  "openrouter",
-			ModelName: "test-model",
-			Providers: map[string]ProviderConfig{
-				"openrouter": {APIKey: "sk-test-123456"},
-			},
-			Notify: NotifyConfig{Events: events},
-		}
-	}
-
-	cfg := validConfig(notify.Kinds())
+	cfg := webConfig()
+	cfg.Notify = NotifyConfig{Events: notify.Kinds()}
 	if err := cfg.ValidateBase(); err != nil {
-		t.Fatalf("当前通知事件契约应全部通过配置校验: %v", err)
+		t.Fatalf("current notify kinds must validate: %v", err)
 	}
-
-	cfg = validConfig([]string{"repeat"})
+	cfg.Notify = NotifyConfig{Events: []string{"repeat"}}
 	if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) {
-		t.Fatalf("旧 repeat 事件应被拒绝，得到: %v", err)
-	}
-}
-
-func TestProviderStreamIdleTimeoutValue(t *testing.T) {
-	cases := []struct {
-		in      string
-		want    time.Duration
-		wantErr bool
-	}{
-		{"", defaultStreamIdleTimeout, false},
-		{"900s", 15 * time.Minute, false},
-		{"15m", 15 * time.Minute, false},
-		{"abc", 0, true},
-		{"-5s", 0, true},
-		{"0", 0, true}, // 不提供"关闭看门狗"——真死流需要有限界
-	}
-	for _, c := range cases {
-		got, err := ProviderConfig{StreamIdleTimeout: c.in}.StreamIdleTimeoutValue()
-		if c.wantErr {
-			if err == nil {
-				t.Errorf("%q 应报错", c.in)
-			}
-			continue
-		}
-		if err != nil || got != c.want {
-			t.Errorf("%q = (%v, %v), want %v", c.in, got, err, c.want)
-		}
-	}
-}
-
-func TestValidateBaseRejectsBadStreamIdleTimeout(t *testing.T) {
-	cfg := Config{
-		Provider:  "openrouter",
-		ModelName: "test-model",
-		Providers: map[string]ProviderConfig{
-			"openrouter": {APIKey: "sk-test-123456", StreamIdleTimeout: "fast"},
-		},
-	}
-	if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) {
-		t.Fatalf("非法 stream_idle_timeout 应拒绝并包装 ErrConfig，得到: %v", err)
+		t.Fatalf("legacy repeat event must be rejected: %v", err)
 	}
 }
