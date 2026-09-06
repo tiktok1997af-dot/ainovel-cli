@@ -22,7 +22,7 @@ jobs:
       - name: Checkout exact W5E candidate
         uses: actions/checkout@v4
         with:
-          ref: d366e8df4c398bbd40f439766275cd19dcb612bd
+          ref: 23bc932c6893705af786cda638f6072b8c845605
           fetch-depth: 0
 
       - name: Setup Go from exact candidate
@@ -51,7 +51,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = 'd366e8df4c398bbd40f439766275cd19dcb612bd'
+          $expected = '23bc932c6893705af786cda638f6072b8c845605'
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $expected) {
             throw "Candidate drift: expected $expected but checked out $actual"
@@ -196,7 +196,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = 'd366e8df4c398bbd40f439766275cd19dcb612bd'
+          $expected = '23bc932c6893705af786cda638f6072b8c845605'
           $path = Join-Path $env:W5E_EVIDENCE_DIR 'w5e-production-smoke-evidence.json'
           if (-not (Test-Path -LiteralPath $path)) {
             throw 'Missing w5e-production-smoke-evidence.json'
