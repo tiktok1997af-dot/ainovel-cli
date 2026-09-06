@@ -32,20 +32,21 @@ func (Gemini) TargetScore(rawURL string) int {
 }
 
 type geminiReadinessPayload struct {
-	Host                    string `json:"host"`
-	Path                    string `json:"path"`
-	HasAccountControl       bool   `json:"has_account_control"`
-	HasComposer             bool   `json:"has_composer"`
-	HasSignIn               bool   `json:"has_sign_in"`
-	SecurityChallenge       bool   `json:"security_challenge"`
-	CandidateAccountLink    bool   `json:"candidate_account_link"`
-	CandidateAccountAria    bool   `json:"candidate_account_aria"`
-	CandidateAccountData    bool   `json:"candidate_account_data"`
-	CandidateAccountImg     bool   `json:"candidate_account_img"`
-	HasOpenShadowRoot       bool   `json:"has_open_shadow_root"`
-	CandidateAccountsIframe bool   `json:"candidate_accounts_iframe"`
-	CandidateOGSIframe      bool   `json:"candidate_ogs_iframe"`
-	CandidateGoogleIframe   bool   `json:"candidate_google_iframe"`
+	Host                    string   `json:"host"`
+	Path                    string   `json:"path"`
+	HasAccountControl       bool     `json:"has_account_control"`
+	HasComposer             bool     `json:"has_composer"`
+	HasSignIn               bool     `json:"has_sign_in"`
+	SecurityChallenge       bool     `json:"security_challenge"`
+	CandidateAccountLink    bool     `json:"candidate_account_link"`
+	CandidateAccountAria    bool     `json:"candidate_account_aria"`
+	CandidateAccountData    bool     `json:"candidate_account_data"`
+	CandidateAccountImg     bool     `json:"candidate_account_img"`
+	HasOpenShadowRoot       bool     `json:"has_open_shadow_root"`
+	CandidateAccountsIframe bool     `json:"candidate_accounts_iframe"`
+	CandidateOGSIframe      bool     `json:"candidate_ogs_iframe"`
+	CandidateGoogleIframe   bool     `json:"candidate_google_iframe"`
+	FrameLocations          []string `json:"frame_locations"`
 }
 
 func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
@@ -69,8 +70,12 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 		if payload.HasSignIn {
 			reason = "Gemini sign-in is required"
 		} else if payload.HasComposer {
+			frames := strings.Join(payload.FrameLocations, ",")
+			if frames == "" {
+				frames = "none"
+			}
 			reason = fmt.Sprintf(
-				"Gemini composer detected without authenticated account control (link=%t aria=%t data=%t img=%t shadow=%t accounts_iframe=%t ogs_iframe=%t google_iframe=%t)",
+				"Gemini composer detected without authenticated account control (link=%t aria=%t data=%t img=%t shadow=%t accounts_iframe=%t ogs_iframe=%t google_iframe=%t frames=%s)",
 				payload.CandidateAccountLink,
 				payload.CandidateAccountAria,
 				payload.CandidateAccountData,
@@ -79,6 +84,7 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 				payload.CandidateAccountsIframe,
 				payload.CandidateOGSIframe,
 				payload.CandidateGoogleIframe,
+				frames,
 			)
 		}
 		return Result{State: ReadinessAuthRequired, Reason: reason}, nil
@@ -89,10 +95,9 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 	return Result{State: ReadinessDegraded, Reason: "authenticated Gemini page detected but composer is not ready"}, nil
 }
 
-// The expression returns booleans and coarse page location only. It does not
-// read cookies, tokens, localStorage, account email/name, conversation text or
-// any project data. Open shadow roots are traversed read-only because modern
-// Gemini UI controls may live below web-component boundaries.
+// The expression returns booleans and coarse page/frame locations only. It
+// strips iframe query strings and fragments and does not read cookies, tokens,
+// localStorage, account email/name, conversation text or project data.
 const geminiReadinessExpression = `(() => {
   const visible = (el) => {
     if (!el) return false;
@@ -190,19 +195,25 @@ const geminiReadinessExpression = `(() => {
   let candidateAccountsIframe = false;
   let candidateOGSIframe = false;
   let candidateGoogleIframe = false;
+  const frameLocations = [];
   for (const frame of document.querySelectorAll('iframe')) {
     const raw = String(frame.getAttribute('src') || '');
     if (!raw) continue;
     try {
       const u = new URL(raw, location.href);
       const h = String(u.hostname || '').toLowerCase();
+      const p = String(u.pathname || '/');
       if (h === 'accounts.google.com') candidateAccountsIframe = true;
       if (h === 'ogs.google.com') candidateOGSIframe = true;
       if (h === 'accounts.google.com' || h === 'ogs.google.com' || h === 'myaccount.google.com' || h.endsWith('.google.com')) {
         candidateGoogleIframe = true;
       }
+      if ((h === 'accounts.google.com' || h === 'ogs.google.com' || h === 'myaccount.google.com' || h.endsWith('.google.com')) && frameLocations.length < 8) {
+        frameLocations.push(h + p);
+      }
     } catch (_) {}
   }
+  frameLocations.sort();
   const securityChallenge = host === 'accounts.google.com' || /\/challenge(?:\/|$)/i.test(path);
   return {
     host,
@@ -218,6 +229,7 @@ const geminiReadinessExpression = `(() => {
     has_open_shadow_root: hasOpenShadowRoot,
     candidate_accounts_iframe: candidateAccountsIframe,
     candidate_ogs_iframe: candidateOGSIframe,
-    candidate_google_iframe: candidateGoogleIframe
+    candidate_google_iframe: candidateGoogleIframe,
+    frame_locations: frameLocations
   };
 })()`
