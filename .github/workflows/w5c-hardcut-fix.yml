@@ -1,0 +1,83 @@
+name: W5C hard-cut runtime patch
+
+on:
+  push:
+    branches:
+      - w5c-remove-legacy-api-runtime
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: w5c-remove-legacy-api-runtime
+          fetch-depth: 0
+
+      - name: Hard-cut Host and Worker API fallback paths
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          host = Path('internal/host/host.go')
+          text = host.read_text()
+
+          import_line = '\tmodelreg "github.com/voocel/ainovel-cli/internal/models"\n'
+          if import_line not in text:
+              raise SystemExit('expected modelreg import not found')
+          text = text.replace(import_line, '', 1)
+
+          validate = '''\tif err := cfg.ValidateBase(); err != nil {\n\t\treturn nil, err\n\t}\n'''
+          guard = '''\tif err := cfg.ValidateBase(); err != nil {\n\t\treturn nil, err\n\t}\n\tif !cfg.Web.Enabled {\n\t\treturn nil, fmt.Errorf("legacy AI provider/API runtime has been removed; enable web.enabled=true and use web.site=gemini-web")\n\t}\n'''
+          if validate not in text:
+              raise SystemExit('expected ValidateBase block not found')
+          text = text.replace(validate, guard, 1)
+
+          pricing = '''\n\t// API-era pricing metadata is never refreshed in WEB-only mode.\n\tif !cfg.Web.Enabled {\n\t\tmodelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())\n\t}\n'''
+          if pricing not in text:
+              raise SystemExit('expected pricing refresh block not found')
+          text = text.replace(pricing, '\n', 1)
+
+          model_boot = '''\tvar models *bootstrap.ModelSet\n\tif cfg.Web.Enabled {\n\t\twebSession, models, err = startWebRuntime(context.Background(), cfg, nil)\n\t} else {\n\t\tmodels, err = bootstrap.NewModelSet(cfg)\n\t}\n'''
+          web_boot = '''\tvar models *bootstrap.ModelSet\n\twebSession, models, err = startWebRuntime(context.Background(), cfg, nil)\n'''
+          if model_boot not in text:
+              raise SystemExit('expected Host model bootstrap branch not found')
+          text = text.replace(model_boot, web_boot, 1)
+          host.write_text(text)
+
+          agents = Path('internal/agents/build.go')
+          text = agents.read_text()
+          start_marker = '\t// Provider failover 只记日志,不通知宿主\n'
+          end_marker = '\n\t// Writer 的 ContextManager'
+          start = text.find(start_marker)
+          if start < 0:
+              raise SystemExit('expected provider failover block start not found')
+          end = text.find(end_marker, start)
+          if end < 0:
+              raise SystemExit('expected provider failover block end not found')
+          replacement = '''\t// WEB-only: every worker uses the same browser-backed model. There is no\n\t// cross-provider fallback or provider/model resubmission.\n\tarchitectModel := models.ForRole("architect")\n\twriterModel := models.ForRole("writer")\n\teditorModel := models.ForRole("editor")\n'''
+          text = text[:start] + replacement + text[end:]
+          agents.write_text(text)
+          PY
+
+      - name: Format patched Go files
+        run: gofmt -w internal/host/host.go internal/agents/build.go
+
+      - name: Commit hard-cut
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No hard-cut changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/host/host.go internal/agents/build.go
+          git commit -m "refactor(w5c): hard-cut Host and worker API fallback paths"
+          git push origin HEAD:w5c-remove-legacy-api-runtime
