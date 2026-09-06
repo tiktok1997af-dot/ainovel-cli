@@ -49,7 +49,6 @@ type Host struct {
 	observer        *observer
 	usage           *UsageTracker
 	usageCancel     context.CancelFunc  // 停掉 autoSaveLoop 并触发最后一次 flush
-	budget          *BudgetSentinel     // 预算政策；未启用为 nil（方法 nil 安全）
 	gate            *ChapterAdvanceGate // 章节许可与一次性暂停的统一政策组件
 	notifier        *notify.Notifier    // 无人值守告警；未启用为 nil（Send nil 安全）
 	configPath      string              // 配置写盘目标：/config、/model 就近写当前生效的那份（项目级存在则写它，否则全局）
@@ -220,24 +219,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	if cfg.Notify.IsEnabled() {
 		h.notifier = notify.New(cfg.Notify.Command, cfg.Notify.Events)
 	}
-	// 预算哨兵:Engine 在每轮循环边界直接调用 HandleBoundary(不再经事件订阅)。
-	if sentinel := NewBudgetSentinel(cfg.Budget,
-		func() float64 { c, _, _, _, _ := usage.Totals(); return c },
-		func(reason string) { h.abortWithEvent(reason, "error") },
-		func(level, summary string) {
-			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
-			h.notifier.Send(notify.Notification{Kind: notify.KindBudget, Level: level, Title: "ainovel: 预算", Body: summary})
-		},
-	); sentinel != nil {
-		h.budget = sentinel
-		usage.SetOnCost(sentinel.OnCost)
-		// 计费盲区告警：模型不报 usage 时成本恒 0，预算永不触发——保险丝没接上必须喊人。
-		usage.SetOnMissingUsage(func() {
-			const blind = "预算盲区: 模型未返回 usage 数据，成本统计为 0，预算上限不会触发（自定义模型请确认注册表价格或上游 include_usage）"
-			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: blind, Level: "warn"})
-			h.notifier.Send(notify.Notification{Kind: notify.KindBudget, Level: "warn", Title: "ainovel: 预算", Body: blind})
-		})
-	}
 	// 统一前进闸门：执行一次性 hold，并阻止 review 模式下无许可的新章。
 	h.gate = NewChapterAdvanceGate(store,
 		func(reason string) {
@@ -278,7 +259,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 		// 同步重询:阻塞引擎循环一次裁定(数秒),换取"干预先于后续创作生效"。
 		reconsult: h.handleIntervention,
 		observer:  h.observer,
-		budget:    h.budget,
 		gate:      h.gate,
 		refresh:   h.refreshWriterRestore,
 		emitEvent: h.emitEvent,
@@ -370,9 +350,6 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 		return err
 	}
 	if err := upgradeProject(h.store); err != nil {
-		return err
-	}
-	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
 	if err := h.store.Checkpoints.Reset(); err != nil {
@@ -559,9 +536,6 @@ func (h *Host) Resume() (string, error) {
 	if err := h.requireCleanChapters(); err != nil {
 		return label, err
 	}
-	if err := h.budget.Refuse(); err != nil {
-		return "", err
-	}
 
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "恢复创作: " + label, Level: "info"})
 	for _, w := range h.store.CheckConsistency() {
@@ -714,10 +688,6 @@ func (h *Host) doIntervention(text string, restart bool) error {
 	}
 
 	if restart && !h.engine.isRunning() {
-		if err := h.budget.Refuse(); err != nil {
-			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: err.Error(), Level: "warn"})
-			return err
-		}
 		h.refreshWriterRestore()
 		if !h.startEngine(nil) {
 			// 此时干预动作已生效并清除 PendingSteer，只是引擎未能立即拉起——不能谎称"已保存"。
@@ -766,9 +736,6 @@ func (h *Host) Continue(text string) error {
 	}
 	h.mu.Unlock()
 	if err := h.requireCleanChapters(); err != nil {
-		return err
-	}
-	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
 
@@ -837,9 +804,6 @@ func (h *Host) AdvanceOneChapter() error {
 	}
 	if meta.AdvanceHold != nil {
 		return fmt.Errorf("仍有一次性暂停意图待处理（%s），请先恢复或完成当前干预", meta.AdvanceHold.Reason)
-	}
-	if err := h.budget.Refuse(); err != nil {
-		return err
 	}
 	progress, err := h.store.Progress.Load()
 	if err != nil {
@@ -1198,7 +1162,7 @@ func (h *Host) Snapshot() UISnapshot {
 		TotalCacheWriteTokens:  cacheWrite,
 		TotalCostUSD:           cost,
 		TotalSavedUSD:          saved,
-		BudgetLimitUSD:         h.budget.Limit(),
+		BudgetLimitUSD:         0,
 		OverallCacheCapable:    overallCapable,
 		OverallRecentCacheRead: recentRead,
 		OverallRecentInput:     recentInput,
@@ -1596,9 +1560,6 @@ func (h *Host) SyncChapterRevisions(ctx context.Context) (*revision.Result, erro
 		if len(changes) == 0 {
 			return &revision.Result{}, nil
 		}
-		if err := h.budget.Refuse(); err != nil {
-			return nil, err
-		}
 	}
 	model := h.models.ForRole("editor")
 	model = newUsageTrackedModel(model, "editor", h.usage.Record)
@@ -1632,9 +1593,6 @@ func truncate(s string, maxRunes int) string {
 func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Event, error) {
 	// 预算启动前置检查与 Start/Resume/Continue 同一纪律：导入是全流程模型调用，
 	// 预算已超时不得启动（§13.1「纳入现有预算哨兵」）。
-	if err := h.budget.Refuse(); err != nil {
-		return nil, err
-	}
 	if err := h.acquireExclusive("导入"); err != nil {
 		return nil, err
 	}
