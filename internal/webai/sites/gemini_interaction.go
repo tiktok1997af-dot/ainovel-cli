@@ -25,6 +25,12 @@ func (Gemini) Conversation(ctx context.Context, evaluator Evaluator) (Conversati
 	if snapshot.ResponseCount < 0 {
 		return ConversationSnapshot{}, fmt.Errorf("gemini conversation snapshot: negative response count")
 	}
+	if snapshot.UserMessageCount < 0 {
+		return ConversationSnapshot{}, fmt.Errorf("gemini conversation snapshot: negative user message count")
+	}
+	if !snapshot.ComposerPresent {
+		snapshot.ComposerEmpty = false
+	}
 	snapshot.LastResponse = strings.TrimSpace(snapshot.LastResponse)
 	return snapshot, nil
 }
@@ -39,12 +45,9 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 	}
 
 	// Keep the side-effecting submit path synchronous from CDP's perspective.
-	// The previous implementation awaited a browser-side Promise while polling
-	// for Gemini's send control. If the renderer context changed around the click,
-	// Chromium could collect that remote Promise and return CDP -32000 even after
-	// the click had already happened. Poll readiness from Go instead, then execute
-	// one short synchronous click expression so there is no pending remote Promise
-	// to collect and no reason to blindly re-submit the prompt.
+	// Poll readiness from Go, then execute exactly one short synchronous click.
+	// A click is not considered delivery acknowledgement; the transport performs
+	// a separate read-only SEND ACK phase after this method returns.
 	prepareExpression := fmt.Sprintf(geminiPreparePromptExpressionTemplate, string(encoded))
 	raw, err := evaluator.Eval(ctx, prepareExpression)
 	if err != nil {
@@ -128,6 +131,15 @@ const geminiConversationExpression = `(() => {
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
+  const firstVisible = (selectors) => {
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (visible(el)) return el;
+      }
+    }
+    return null;
+  };
+
   const stopSelectors = [
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
@@ -150,22 +162,59 @@ const geminiConversationExpression = `(() => {
     }
   }
 
-  const roots = Array.from(document.querySelectorAll(
+  const responseRoots = Array.from(document.querySelectorAll(
     'model-response, [data-test-id="model-response"], .model-response'
   )).filter(visible);
   const texts = [];
-  for (const root of roots) {
+  for (const root of responseRoots) {
     const body = root.querySelector(
       'message-content, .model-response-text, .markdown, [class*="response-text"]'
     ) || root;
     const text = String(body.innerText || body.textContent || '').trim();
     if (text) texts.push(text);
   }
+
+  // Count rendered user turns without returning their text. Gemini has used
+  // user-query as the stable custom element; the fallbacks cover current test-id
+  // and role-based variants. A Set prevents the same element from being counted
+  // twice when more than one selector matches it.
+  const userElements = new Set();
+  for (const selector of [
+    'user-query',
+    '[data-test-id="user-query"]',
+    '.user-query',
+    '[data-message-author-role="user"]'
+  ]) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (visible(el)) userElements.add(el);
+    }
+  }
+  let userMessageCount = 0;
+  for (const root of userElements) {
+    const text = String(root.innerText || root.textContent || '').trim();
+    if (text) userMessageCount++;
+  }
+
+  const composer = firstVisible([
+    'rich-textarea .ql-editor[contenteditable="true"]',
+    'rich-textarea [contenteditable="true"]',
+    'div.ql-editor[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[aria-label="Enter a prompt here"]',
+    'textarea[aria-label*="prompt" i]'
+  ]);
+  const composerText = composer
+    ? String((composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) ? composer.value : (composer.innerText || composer.textContent || '')).trim()
+    : '';
+
   const last = texts.length ? texts[texts.length - 1] : '';
   const max = 1048576;
   return {
     busy,
     response_count: texts.length,
+    user_message_count: userMessageCount,
+    composer_present: Boolean(composer),
+    composer_empty: Boolean(composer) && composerText.length === 0,
     last_response: last.length > max ? last.slice(0, max) : last,
     truncated: last.length > max
   };
