@@ -24,8 +24,14 @@ func TestModelGenerateRawTextPreservesStructuredJSONBody(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("round trips = %d, want 1", len(prompts))
 	}
-	if !strings.Contains(prompts[0], "AINOVEL WEB RESPONSE EXTENSION") || !strings.Contains(prompts[0], "TEXT\n<the complete answer verbatim>") {
+	if !strings.Contains(prompts[0], "AINOVEL WEB RESPONSE EXTENSION") || !strings.Contains(prompts[0], "complete answer verbatim") {
 		t.Fatal("request prompt did not advertise raw TEXT response extension")
+	}
+	if got := strings.Count(prompts[0], responseStart); got != 1 {
+		t.Fatalf("response start marker occurrences = %d, want exactly 1", got)
+	}
+	if got := strings.Count(prompts[0], responseEnd); got != 1 {
+		t.Fatalf("response end marker occurrences = %d, want exactly 1", got)
 	}
 }
 
@@ -50,6 +56,12 @@ func TestModelProtocolRepairCanReturnRawText(t *testing.T) {
 	}
 	if !strings.Contains(prompts[1], "Do not JSON-escape") || !strings.Contains(prompts[1], "TEXT") {
 		t.Fatal("repair prompt did not prefer the raw TEXT form")
+	}
+	if got := strings.Count(prompts[1], responseStart); got != 1 {
+		t.Fatalf("repair response start marker occurrences = %d, want exactly 1", got)
+	}
+	if got := strings.Count(prompts[1], responseEnd); got != 1 {
+		t.Fatalf("repair response end marker occurrences = %d, want exactly 1", got)
 	}
 }
 
