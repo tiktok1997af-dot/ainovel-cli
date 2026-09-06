@@ -139,6 +139,15 @@ const geminiConversationExpression = `(() => {
     }
     return null;
   };
+  const signature = (text) => {
+    const value = String(text || '');
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return value.length + ':' + String(hash >>> 0);
+  };
 
   const stopSelectors = [
     'button[aria-label*="Stop response" i]',
@@ -174,6 +183,35 @@ const geminiConversationExpression = `(() => {
     if (text) texts.push(text);
   }
 
+  // The send click seeds a sanitized capture state containing only response
+  // count and a length/hash signature of the previous response. If the new
+  // ainovel response is still missing its outer closing framing, keep it BUSY
+  // for a bounded grace after every text change. This prevents a temporary
+  // Gemini streaming pause from being mistaken for the final response while
+  // still allowing a truly malformed/truncated stable response to reach the
+  // strict parser and bounded format-repair path after the grace expires.
+  const last = texts.length ? texts[texts.length - 1] : '';
+  const framingState = window.__ainovelWebCaptureState;
+  if (framingState && last) {
+    const sig = signature(last);
+    const changedFromBaseline = texts.length > Number(framingState.responseCount || 0) || sig !== String(framingState.lastSignature || '');
+    if (changedFromBaseline) {
+      if (sig !== String(framingState.currentSignature || '')) {
+        framingState.currentSignature = sig;
+        framingState.lastChangedAt = Date.now();
+      }
+      const trimmed = String(last).trim();
+      const framingComplete = trimmed.startsWith('<<<AINOVEL_WEB_RESPONSE>>>') && trimmed.endsWith('<<<END_AINOVEL_WEB_RESPONSE>>>');
+      if (framingComplete) {
+        window.__ainovelWebCaptureState = null;
+      } else {
+        const framingGraceMs = 6000;
+        const elapsed = Date.now() - Number(framingState.lastChangedAt || 0);
+        if (elapsed < framingGraceMs) busy = true;
+      }
+    }
+  }
+
   // Count rendered user turns without returning their text. Gemini has used
   // user-query as the stable custom element; the fallbacks cover current test-id
   // and role-based variants. A Set prevents the same element from being counted
@@ -207,7 +245,6 @@ const geminiConversationExpression = `(() => {
     ? String((composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) ? composer.value : (composer.innerText || composer.textContent || '')).trim()
     : '';
 
-  const last = texts.length ? texts[texts.length - 1] : '';
   const max = 1048576;
   return {
     busy,
@@ -288,6 +325,15 @@ const geminiClickSendExpression = `(() => {
     }
     return null;
   };
+  const signature = (text) => {
+    const value = String(text || '');
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return value.length + ':' + String(hash >>> 0);
+  };
   const sendSelectors = [
     'gem-icon-button.send-button[aria-disabled="false"]',
     'gem-icon-button.submit[aria-disabled="false"]',
@@ -324,6 +370,27 @@ const geminiClickSendExpression = `(() => {
   if (!sendButton) return {ok: false, retry: true, reason: 'send control not found'};
   const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
   if (disabled) return {ok: false, retry: true, reason: 'send control is disabled'};
+
+  const responseRoots = Array.from(document.querySelectorAll(
+    'model-response, [data-test-id="model-response"], .model-response'
+  )).filter(visible);
+  const texts = [];
+  for (const root of responseRoots) {
+    const body = root.querySelector(
+      'message-content, .model-response-text, .markdown, [class*="response-text"]'
+    ) || root;
+    const text = String(body.innerText || body.textContent || '').trim();
+    if (text) texts.push(text);
+  }
+  const previous = texts.length ? texts[texts.length - 1] : '';
+  const previousSignature = signature(previous);
+  window.__ainovelWebCaptureState = {
+    responseCount: texts.length,
+    lastSignature: previousSignature,
+    currentSignature: previousSignature,
+    lastChangedAt: Date.now()
+  };
+
   sendButton.click();
   return {ok: true, retry: false, reason: ''};
 })()`
