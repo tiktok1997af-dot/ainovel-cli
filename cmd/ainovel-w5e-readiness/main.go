@@ -114,7 +114,11 @@ func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.Sessi
 			if authSince.IsZero() {
 				authSince = time.Now()
 			} else if time.Since(authSince) >= 3*time.Second {
-				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED; complete normal visible Gemini login outside this verifier, then rerun")
+				reason := strings.TrimSpace(snap.Reason)
+				if reason == "" {
+					reason = "no sanitized readiness reason"
+				}
+				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED (%s); complete normal visible Gemini login outside this verifier, then rerun", reason)
 			}
 		} else {
 			authSince = time.Time{}
@@ -122,7 +126,7 @@ func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.Sessi
 
 		select {
 		case <-ctx.Done():
-			return snap, fmt.Errorf("READY timeout after %s (last state %s): %w", timeout, snap.State, ctx.Err())
+			return snap, fmt.Errorf("READY timeout after %s (last state %s, reason %q): %w", timeout, snap.State, strings.TrimSpace(snap.Reason), ctx.Err())
 		case <-ticker.C:
 			var err error
 			snap, err = mgr.Refresh(ctx)
