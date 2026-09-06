@@ -91,6 +91,83 @@ jobs:
           Write-Host "Interactive session: $runnerSession"
           Write-Host "Bash: $bashResolved"
 
+      - name: Stage transient WEB-only desktop config
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $home = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $home '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("w5e-config-backup-" + $env:GITHUB_RUN_ID + ".json")
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) {
+                  $profileName = [string]$existing.web.profile_name
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) {
+                  $browserPath = [string]$existing.web.browser_path
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) {
+                  $startUrl = [string]$existing.web.start_url
+                }
+              }
+            } catch {
+              Write-Host 'Existing config could not be parsed; exact bytes are backed up and will be restored after the smoke.'
+            }
+          } else {
+            $profilesDir = Join-Path $configDir 'browser\profiles'
+            $defaultProfileDir = Join-Path $profilesDir 'default'
+            if (-not (Test-Path -LiteralPath $defaultProfileDir)) {
+              $dirs = @(Get-ChildItem -LiteralPath $profilesDir -Directory -ErrorAction SilentlyContinue)
+              if ($dirs.Count -eq 1) {
+                $profileName = $dirs[0].Name
+              }
+            }
+          }
+
+          $web = [ordered]@{
+            enabled = $true
+            site = 'gemini-web'
+            profile_name = $profileName
+          }
+          if (-not [string]::IsNullOrWhiteSpace($browserPath)) { $web.browser_path = $browserPath }
+          if (-not [string]::IsNullOrWhiteSpace($startUrl)) { $web.start_url = $startUrl }
+
+          $cfg = [ordered]@{
+            web = $web
+            language = 'vi'
+          }
+          $json = $cfg | ConvertTo-Json -Depth 6
+          [System.IO.File]::WriteAllText(
+            $configPath,
+            $json + "`r`n",
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          $envLines = @(
+            "W5E_LOCAL_CONFIG_PATH=$configPath",
+            "W5E_LOCAL_CONFIG_BACKUP=$backupPath",
+            "W5E_LOCAL_CONFIG_HAD_ORIGINAL=$hadOriginal"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_ENV,
+            $envLines + "`r`n",
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "Transient WEB-only config staged for profile '$profileName'."
+          Write-Host "Original config present: $hadOriginal"
+
       - name: Run real production desktop smoke
         shell: powershell
         run: |
@@ -155,3 +232,26 @@ jobs:
             ${{ env.W5E_EVIDENCE_DIR }}/w5e-readiness-evidence.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Restore local config exactly
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:W5E_LOCAL_CONFIG_PATH)) {
+            Write-Host 'No transient local config was staged.'
+            exit 0
+          }
+          if ($env:W5E_LOCAL_CONFIG_HAD_ORIGINAL -eq 'True') {
+            if (Test-Path -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP) {
+              Copy-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Destination $env:W5E_LOCAL_CONFIG_PATH -Force
+              Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+              Write-Host 'Original local config restored exactly.'
+            } else {
+              Write-Error 'Expected local config backup is missing.'
+              exit 1
+            }
+          } else {
+            Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+            Write-Host 'Transient local config removed; original state restored.'
+          }
