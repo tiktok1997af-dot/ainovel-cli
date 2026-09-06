@@ -19,6 +19,12 @@ func (noopInteractionEvaluator) Eval(context.Context, string) (json.RawMessage, 
 }
 func (noopInteractionEvaluator) Close() error { return nil }
 
+type readinessProbeFunc func(context.Context, SessionSnapshot) (ReadinessResult, error)
+
+func (f readinessProbeFunc) Probe(ctx context.Context, snap SessionSnapshot) (ReadinessResult, error) {
+	return f(ctx, snap)
+}
+
 type fakeInteractionAdapter struct {
 	mu        sync.Mutex
 	snapshots []sites.ConversationSnapshot
@@ -78,13 +84,15 @@ func readyTestSession() *SessionManager {
 func testTransport(t *testing.T, session *SessionManager, adapter *fakeInteractionAdapter) *GeminiWebTransport {
 	t.Helper()
 	transport, err := NewGeminiWebTransport(GeminiWebTransportConfig{
-		Session:           session,
-		ResponseTimeout:   100 * time.Millisecond,
-		PollInterval:      time.Millisecond,
-		StableWindow:      2 * time.Millisecond,
-		PreflightRetries:  1,
-		CaptureReconnects: 1,
-		adapter:           adapter,
+		Session:               session,
+		ResponseTimeout:       100 * time.Millisecond,
+		PollInterval:          time.Millisecond,
+		StableWindow:          2 * time.Millisecond,
+		PreflightRetries:      1,
+		CaptureReconnects:     1,
+		AuthRequiredGrace:     8 * time.Millisecond,
+		ReadinessPollInterval: time.Millisecond,
+		adapter:               adapter,
 		evaluatorFactory: func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
 			return noopInteractionEvaluator{}, nil
 		},
@@ -191,6 +199,31 @@ func TestGeminiWebTransportReconnectsCaptureWithoutResubmit(t *testing.T) {
 	}
 	if adapter.submitN != 1 {
 		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+}
+
+func TestGeminiWebTransportTransientAuthRequiredSettlesReady(t *testing.T) {
+	session := readyTestSession()
+	session.snapshot.State = SessionAuthRequired
+	calls := 0
+	session.probe = readinessProbeFunc(func(context.Context, SessionSnapshot) (ReadinessResult, error) {
+		calls++
+		if calls == 1 {
+			return ReadinessResult{State: SessionAuthRequired, Reason: "page still settling"}, nil
+		}
+		return ReadinessResult{State: SessionReady, Reason: "ready"}, nil
+	})
+	transport := testTransport(t, session, &fakeInteractionAdapter{})
+
+	snap, err := transport.ensureReady(context.Background())
+	if err != nil {
+		t.Fatalf("ensureReady() error = %v", err)
+	}
+	if snap.State != SessionReady {
+		t.Fatalf("state = %s, want READY", snap.State)
+	}
+	if calls < 2 {
+		t.Fatalf("probe calls = %d, want at least 2", calls)
 	}
 }
 
