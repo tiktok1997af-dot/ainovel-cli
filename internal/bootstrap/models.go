@@ -299,8 +299,13 @@ func ModelProvider(m agentcore.ChatModel) string {
 }
 
 // NewModelSet 根据配置创建多模型集合。
-// 相同 provider+model 组合复用同一个实例。
+// WEB-only 配置在这里被截流到可见浏览器路径；只有尚未迁移的 legacy 配置
+// 才会进入下面的 provider/API 构造逻辑。W5C 会删除 legacy 分支本身。
 func NewModelSet(cfg Config) (*ModelSet, error) {
+	if isWebOnlyConfig(cfg) {
+		return newWebOnlyModelSet(cfg)
+	}
+
 	cache := make(map[string]agentcore.ChatModel)
 
 	// 创建默认模型
