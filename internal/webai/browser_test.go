@@ -14,7 +14,11 @@ func TestBrowserLaunchArgsInspectionEnablesLoopbackDevTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"} {
+	for _, want := range []string{
+		"--remote-debugging-address=127.0.0.1",
+		"--remote-debugging-port=0",
+		"--hide-crash-restore-bubble",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("inspection args missing %q: %v", want, args)
 		}
@@ -36,8 +40,10 @@ func TestBrowserLaunchArgsNormalLoginContainsNoDevToolsOrAutomation(t *testing.T
 			t.Fatalf("normal login args contain forbidden %q: %v", forbidden, args)
 		}
 	}
-	if !strings.Contains(joined, "--user-data-dir=profile") {
-		t.Fatalf("normal login must reuse dedicated profile: %v", args)
+	for _, want := range []string{"--user-data-dir=profile", "--hide-crash-restore-bubble"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("normal login args missing %q: %v", want, args)
+		}
 	}
 }
 
