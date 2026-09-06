@@ -20,7 +20,14 @@ import (
 	"github.com/voocel/ainovel-cli/internal/webai/sites"
 )
 
-const devToolsActivePortFile = "DevToolsActivePort"
+const (
+	devToolsActivePortFile = "DevToolsActivePort"
+	// Gemini's bounded submit routine may wait up to 6s for the send control to
+	// become enabled. The CDP socket deadline must outlive that browser-side wait;
+	// otherwise Runtime.evaluate can be cut off while the page is still behaving
+	// correctly, leaving a timed-out socket and an ambiguous submit result.
+	cdpEvaluationTimeout = 12 * time.Second
+)
 
 // DevToolsReadinessProbe inspects a locally launched Chrome page through the
 // loopback DevTools endpoint. It is read-only and never submits model prompts.
@@ -278,7 +285,7 @@ func (e *cdpEvaluator) Eval(ctx context.Context, expression string) (json.RawMes
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(cdpEvaluationTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
