@@ -1,0 +1,48 @@
+name: W5D D1 WEB-only usage patch
+
+on:
+  push:
+    branches:
+      - w5d-cost-update-docs-safety
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[w5d-d1-usage]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: w5d-cost-update-docs-safety
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Apply guarded WEB-only usage/pricing refactor
+        run: python3 .github/scripts/w5d_patch_d1_usage.py
+      - name: Format
+        run: gofmt -w $(git ls-files '*.go' --modified --others --exclude-standard)
+      - name: Vet
+        run: go vet ./...
+      - name: Full tests
+        run: go test ./...
+      - name: Active-source NO-BILLING residue gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RInE 'internal/models|TotalCostUSD|TotalSavedUSD|BudgetLimitUSD|MissingAssistantUsage|CachePerAgent|CachePerModel|stream_options\.include_usage|cost_usd|saved_usd|max_cost_delta_ratio|CostDeltaRatio|InputTokenDeltaRatio|OutputTokenDeltaRatio' --include='*.go' --include='*.json' internal evals
+      - name: Commit verified refactor
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo 'No D1 source changes'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'refactor(w5d): remove API billing and usage telemetry [w5d-d1-usage]'
+          git push origin HEAD:w5d-cost-update-docs-safety
