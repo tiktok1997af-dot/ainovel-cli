@@ -38,17 +38,33 @@ var (
 	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
-const protocolRepairPrompt = `Your immediately previous answer could not be parsed as the ainovel-web/1 response envelope. No local tool from that answer has been executed.
-Do not redo the user's task and do not add commentary. Re-emit the same intended answer once, correcting only the machine-readable format.
-Return exactly one of these forms and nothing else:
+// rawTextProtocolPrompt is appended after the legacy ainovel-web/1 instruction.
+// It removes the need to JSON-escape arbitrary assistant text (including a JSON
+// object requested by a higher-level prompt contract) while keeping tool calls
+// on the strict, locally validated JSON path. Legacy JSON text envelopes remain
+// accepted for backward compatibility.
+const rawTextProtocolPrompt = `AINOVEL WEB RESPONSE EXTENSION — this instruction takes precedence for normal assistant text.
+For every normal assistant answer, do NOT put the answer inside a JSON string. Return exactly:
 <<<AINOVEL_WEB_RESPONSE>>>
-{"kind":"text","text":"complete answer with valid JSON escaping"}
+TEXT
+<the complete answer verbatim>
 <<<END_AINOVEL_WEB_RESPONSE>>>
-or
+The raw TEXT body may itself be JSON, Markdown, prose, quotes, or multiple lines; preserve it verbatim and do not add Markdown fences around the response markers.
+When a local tool is required, continue to use the strict JSON tool_calls envelope from the ainovel-web/1 instruction. Never represent a tool request as TEXT.`
+
+const protocolRepairPrompt = `Your immediately previous answer could not be parsed as an ainovel-web/1 response. No local tool from that answer has been executed.
+Do not redo the user's task and do not add commentary. Re-emit the same intended answer once, correcting only the transport format.
+If the intended answer is normal assistant text, return exactly:
+<<<AINOVEL_WEB_RESPONSE>>>
+TEXT
+<the complete previous answer verbatim; it may itself be JSON, Markdown, prose, quotes, or multiple lines>
+<<<END_AINOVEL_WEB_RESPONSE>>>
+Do not JSON-escape or wrap a normal text answer in a {"kind":"text"} object.
+If the intended answer is a local tool request, return exactly:
 <<<AINOVEL_WEB_RESPONSE>>>
 {"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}
 <<<END_AINOVEL_WEB_RESPONSE>>>
-The envelope must be strict valid JSON: quote every key and string, escape embedded quotes/newlines, use one JSON object for each tool arguments value, use no Markdown fence, and emit no text outside the markers.`
+For tool calls only, the envelope must be strict valid JSON with one JSON object for each arguments value. Use no Markdown fence and emit no text outside the markers.`
 
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
@@ -73,6 +89,7 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	if err != nil {
 		return nil, err
 	}
+	prompt += "\n\n" + rawTextProtocolPrompt
 	raw, err := m.transport.RoundTrip(ctx, prompt)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -80,7 +97,7 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		}
 		return nil, err
 	}
-	msg, err := ParseResponse(prompt, raw, tools)
+	msg, err := parseResponseWithRawText(prompt, raw, tools)
 	if err == nil {
 		return &agentcore.LLMResponse{Message: msg}, nil
 	}
@@ -100,7 +117,7 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		}
 		return nil, repairErr
 	}
-	repaired, repairErr := ParseResponse(prompt, repairedRaw, tools)
+	repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
 	if repairErr != nil {
 		return nil, repairErr
 	}
