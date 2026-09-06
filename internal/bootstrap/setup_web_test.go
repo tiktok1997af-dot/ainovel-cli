@@ -11,17 +11,14 @@ func TestNewWebSetupConfigCreatesBrowserOnlyRuntime(t *testing.T) {
 	if !cfg.Web.Enabled {
 		t.Fatal("web.enabled must be true")
 	}
-	if cfg.Web.Site != "gemini-web" {
+	if cfg.Web.Site != WebModelName {
 		t.Fatalf("web.site = %q", cfg.Web.Site)
 	}
 	if cfg.Web.ProfileName != "default" {
 		t.Fatalf("web.profile_name = %q", cfg.Web.ProfileName)
 	}
-	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+	if cfg.Provider != WebProviderName || cfg.ModelName != WebModelName {
 		t.Fatalf("runtime identity = %s/%s", cfg.Provider, cfg.ModelName)
-	}
-	if len(cfg.Providers) != 0 {
-		t.Fatalf("first-run WEB config created legacy providers: %#v", cfg.Providers)
 	}
 	if err := cfg.ValidateBase(); err != nil {
 		t.Fatalf("ValidateBase: %v", err)
@@ -35,7 +32,10 @@ func TestNewWebSetupConfigSerializedFormHasNoAICredentialFields(t *testing.T) {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	serialized := strings.ToLower(string(data))
-	for _, forbidden := range []string{"api_key", "base_url", "extra_body", "stream_idle_timeout", "\"providers\":"} {
+	for _, forbidden := range []string{
+		"api_key", "base_url", "extra_body", "stream_idle_timeout",
+		`"providers":`, `"provider":`, `"model":`, `"fallbacks":`,
+	} {
 		if strings.Contains(serialized, forbidden) {
 			t.Fatalf("WEB first-run config contains forbidden API-era field %q: %s", forbidden, serialized)
 		}
@@ -47,7 +47,10 @@ func TestNewWebSetupConfigSerializedFormHasNoAICredentialFields(t *testing.T) {
 
 func TestEmbeddedExampleContainsNoCredentialPlaceholder(t *testing.T) {
 	lower := strings.ToLower(exampleConfig)
-	for _, forbidden := range []string{"sk-or-", "sk-ant-", "your_open", "your_gemini", "\"providers\":"} {
+	for _, forbidden := range []string{
+		"sk-or-", "sk-ant-", "your_open", "your_gemini",
+		`"providers":`, `"provider":`, `"model":`, `"fallbacks":`,
+	} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("WEB-only example still contains credential/provider example %q", forbidden)
 		}
