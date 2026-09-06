@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,13 +107,13 @@ func testTransport(t *testing.T, session *SessionManager, adapter *fakeInteracti
 	return transport
 }
 
-func TestGeminiWebTransportCapturesStableFinalResponse(t *testing.T) {
+func TestGeminiWebTransportRequiresSendAckBeforeCapture(t *testing.T) {
 	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
-		{ResponseCount: 1, LastResponse: "old"},
-		{Busy: true, ResponseCount: 1, LastResponse: "old"},
-		{Busy: false, ResponseCount: 2, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
-		{Busy: false, ResponseCount: 2, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
-		{Busy: false, ResponseCount: 2, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
+		{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{Busy: true, ResponseCount: 1, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
+		{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
+		{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "<<<AINOVEL_WEB_RESPONSE>>>\n{\"kind\":\"text\",\"text\":\"ok\"}\n<<<END_AINOVEL_WEB_RESPONSE>>>"},
 	}}
 	session := readyTestSession()
 	transport := testTransport(t, session, adapter)
@@ -131,15 +132,79 @@ func TestGeminiWebTransportCapturesStableFinalResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiWebTransportAcceptsRenderedUserTurnAsSendAck(t *testing.T) {
+	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
+		{ResponseCount: 1, UserMessageCount: 4, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{ResponseCount: 1, UserMessageCount: 5, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{ResponseCount: 2, UserMessageCount: 5, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+		{ResponseCount: 2, UserMessageCount: 5, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+		{ResponseCount: 2, UserMessageCount: 5, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+	}}
+	session := readyTestSession()
+	transport := testTransport(t, session, adapter)
+	got, err := transport.RoundTrip(context.Background(), "one prompt")
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if got != "final" {
+		t.Fatalf("final = %q, want final", got)
+	}
+	if adapter.submitN != 1 {
+		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+}
+
+func TestGeminiWebTransportSuccessfulClickWithoutSendAckFailsFast(t *testing.T) {
+	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
+		{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: false, LastResponse: "old"},
+	}}
+	session := readyTestSession()
+	transport := testTransport(t, session, adapter)
+	_, err := transport.RoundTrip(context.Background(), "one prompt")
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr.Kind != ErrorTransport {
+		t.Fatalf("err = %v, want ErrorTransport", err)
+	}
+	if webErr.Retryable() {
+		t.Fatal("missing SEND ACK must not be retryable")
+	}
+	if !strings.Contains(err.Error(), "prompt remained in the composer") {
+		t.Fatalf("err = %v, want composer-stuck SEND ACK diagnostic", err)
+	}
+	if adapter.submitN != 1 {
+		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+	if state := session.Snapshot().State; state != SessionDegraded {
+		t.Fatalf("session state = %s, want DEGRADED", state)
+	}
+}
+
+func TestGeminiWebTransportComposerClearAloneIsNotSendAck(t *testing.T) {
+	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
+		{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+		{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+	}}
+	session := readyTestSession()
+	transport := testTransport(t, session, adapter)
+	_, err := transport.RoundTrip(context.Background(), "one prompt")
+	if err == nil || !strings.Contains(err.Error(), "composer cleared but no new user turn") {
+		t.Fatalf("err = %v, want cleared-without-ACK failure", err)
+	}
+	if adapter.submitN != 1 {
+		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+}
+
 func TestGeminiWebTransportConfirmsAmbiguousSubmitWithoutResubmit(t *testing.T) {
 	adapter := &fakeInteractionAdapter{
 		submitErr: fmt.Errorf("CDP error -32000: Promise was collected"),
 		snapshots: []sites.ConversationSnapshot{
-			{ResponseCount: 1, LastResponse: "old"},
-			{Busy: true, ResponseCount: 1, LastResponse: "old"},
-			{Busy: false, ResponseCount: 2, LastResponse: "final"},
-			{Busy: false, ResponseCount: 2, LastResponse: "final"},
-			{Busy: false, ResponseCount: 2, LastResponse: "final"},
+			{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+			{Busy: true, ResponseCount: 1, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+			{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+			{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+			{Busy: false, ResponseCount: 2, UserMessageCount: 2, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
 		},
 	}
 	session := readyTestSession()
@@ -163,8 +228,8 @@ func TestGeminiWebTransportUnconfirmedSubmitErrorNeverResubmits(t *testing.T) {
 	adapter := &fakeInteractionAdapter{
 		submitErr: fmt.Errorf("ambiguous renderer failure"),
 		snapshots: []sites.ConversationSnapshot{
-			{ResponseCount: 1, LastResponse: "old"},
-			{ResponseCount: 1, LastResponse: "old"},
+			{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"},
+			{ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: false, LastResponse: "old"},
 		},
 	}
 	session := readyTestSession()
@@ -180,12 +245,15 @@ func TestGeminiWebTransportUnconfirmedSubmitErrorNeverResubmits(t *testing.T) {
 	if adapter.submitN != 1 {
 		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
 	}
+	if state := session.Snapshot().State; state != SessionDegraded {
+		t.Fatalf("session state = %s, want DEGRADED", state)
+	}
 }
 
 func TestGeminiWebTransportTimeoutCancelsWithoutAutoResubmit(t *testing.T) {
 	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
-		{ResponseCount: 0},
-		{Busy: true, ResponseCount: 0},
+		{ResponseCount: 0, UserMessageCount: 0, ComposerPresent: true, ComposerEmpty: true},
+		{Busy: true, ResponseCount: 0, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true},
 	}}
 	session := readyTestSession()
 	transport := testTransport(t, session, adapter)
@@ -208,8 +276,8 @@ func TestGeminiWebTransportTimeoutCancelsWithoutAutoResubmit(t *testing.T) {
 
 func TestGeminiWebTransportParentCancellationRequestsStop(t *testing.T) {
 	adapter := &fakeInteractionAdapter{snapshots: []sites.ConversationSnapshot{
-		{ResponseCount: 0},
-		{Busy: true, ResponseCount: 0},
+		{ResponseCount: 0, UserMessageCount: 0, ComposerPresent: true, ComposerEmpty: true},
+		{Busy: true, ResponseCount: 0, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true},
 	}}
 	session := readyTestSession()
 	transport := testTransport(t, session, adapter)
@@ -227,12 +295,13 @@ func TestGeminiWebTransportParentCancellationRequestsStop(t *testing.T) {
 func TestGeminiWebTransportReconnectsCaptureWithoutResubmit(t *testing.T) {
 	adapter := &fakeInteractionAdapter{
 		snapshots: []sites.ConversationSnapshot{
-			{ResponseCount: 0},
-			{Busy: false, ResponseCount: 1, LastResponse: "final"},
-			{Busy: false, ResponseCount: 1, LastResponse: "final"},
-			{Busy: false, ResponseCount: 1, LastResponse: "final"},
+			{ResponseCount: 0, UserMessageCount: 0, ComposerPresent: true, ComposerEmpty: true},
+			{Busy: true, ResponseCount: 0, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true},
+			{Busy: false, ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+			{Busy: false, ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
+			{Busy: false, ResponseCount: 1, UserMessageCount: 1, ComposerPresent: true, ComposerEmpty: true, LastResponse: "final"},
 		},
-		snapErrs: []error{nil, fmt.Errorf("temporary websocket read failure"), nil, nil, nil},
+		snapErrs: []error{nil, nil, fmt.Errorf("temporary websocket read failure"), nil, nil, nil},
 	}
 	session := readyTestSession()
 	transport := testTransport(t, session, adapter)
@@ -253,6 +322,22 @@ func TestGeminiWebTransportReconnectsCaptureWithoutResubmit(t *testing.T) {
 	}
 	if adapter.submitN != 1 {
 		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+}
+
+func TestSubmitAcknowledgedUsesOnlyIndependentSignals(t *testing.T) {
+	baseline := sites.ConversationSnapshot{ResponseCount: 2, UserMessageCount: 3, LastResponse: "old"}
+	if submitAcknowledged(baseline, "old", sites.ConversationSnapshot{ResponseCount: 2, UserMessageCount: 3, ComposerPresent: true, ComposerEmpty: true, LastResponse: "old"}) {
+		t.Fatal("composer clear alone must not acknowledge submit")
+	}
+	if !submitAcknowledged(baseline, "old", sites.ConversationSnapshot{ResponseCount: 2, UserMessageCount: 4, LastResponse: "old"}) {
+		t.Fatal("new rendered user turn should acknowledge submit")
+	}
+	if !submitAcknowledged(baseline, "old", sites.ConversationSnapshot{Busy: true, ResponseCount: 2, UserMessageCount: 3, LastResponse: "old"}) {
+		t.Fatal("idle-to-BUSY transition should acknowledge submit")
+	}
+	if !submitAcknowledged(baseline, "old", sites.ConversationSnapshot{ResponseCount: 3, UserMessageCount: 3, LastResponse: "new"}) {
+		t.Fatal("new assistant response should acknowledge submit")
 	}
 }
 
