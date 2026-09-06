@@ -23,16 +23,20 @@ type rawToolCallMetadata struct {
 	RawStringField string                     `json:"raw_string_field"`
 }
 
-// parseResponseWithRawText preserves the strict legacy JSON protocol while
-// accepting two explicit WEB-only extensions:
-//   - TEXT for arbitrary assistant text without JSON-string escaping.
-//   - TOOL_CALL_RAW for exactly one tool call whose one top-level string
-//     argument is carried verbatim outside the small metadata JSON object.
+// parseResponseWithRawText accepts the authoritative WEB message-body protocol
+// while retaining the strict legacy outer-envelope protocol for compatibility.
 //
-// The raw tool form does not execute anything. It reconstructs one ordinary
-// JSON arguments object, validates registry/name/object invariants, and returns
-// the native agentcore tool-call block. Agentcore still applies the tool schema
-// immediately before local execution.
+// A Gemini DOM model-response already gives the runtime an exact assistant
+// message boundary. Requiring the model to reproduce a second outer end marker
+// inside that DOM message created a systemic truncation failure mode, so current
+// WEB requests use one of these whole-message bodies instead:
+//   - TEXT + newline + arbitrary assistant text.
+//   - one strict legacy JSON body (normally kind=tool_calls).
+//   - TOOL_CALL_RAW for exactly one tool call with one long top-level string.
+//
+// Malformed/partial legacy wrappers are never silently reinterpreted as a bare
+// body. No local tool executes here: reconstructed calls still pass registry,
+// object and downstream tool-schema validation before execution.
 func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
 	normalizedRaw := normalizeSingleRedundantResponseWrapper(raw)
 	msg, legacyErr := ParseResponse(requestPrompt, normalizedRaw, tools)
@@ -43,8 +47,15 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return agentcore.Message{}, legacyErr
 	}
 
-	body, extractErr := extractEnvelope(normalizedRaw)
-	if extractErr != nil {
+	body := strings.TrimSpace(normalizedRaw)
+	if body == "" {
+		return agentcore.Message{}, legacyErr
+	}
+
+	// A response that mentions an outer wrapper is claiming the legacy protocol.
+	// Keep that path strict so a missing/duplicated marker can never be mistaken
+	// for valid TEXT or a tool request merely because the DOM message ended.
+	if strings.Contains(body, responseStart) || strings.Contains(body, responseEnd) {
 		return agentcore.Message{}, legacyErr
 	}
 
@@ -52,6 +63,28 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return parseRawToolCallResponse(requestPrompt, normalizedRaw, body, tools)
 	}
 
+	if text, ok, err := parseBareTextBody(body); ok || err != nil {
+		return text, err
+	}
+
+	// Reuse the locked legacy JSON validator by supplying the envelope locally.
+	// The model never has to emit these redundant delimiters on the WEB path.
+	if strings.HasPrefix(body, "{") {
+		wrapped := responseStart + "\n" + body + "\n" + responseEnd
+		msg, err := ParseResponse(requestPrompt, wrapped, tools)
+		if err == nil {
+			return msg, nil
+		}
+		if !errors.Is(err, ErrProtocol) {
+			return agentcore.Message{}, err
+		}
+		return agentcore.Message{}, err
+	}
+
+	return agentcore.Message{}, legacyErr
+}
+
+func parseBareTextBody(body string) (agentcore.Message, bool, error) {
 	var text string
 	switch {
 	case strings.HasPrefix(body, "TEXT\r\n"):
@@ -59,12 +92,15 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 	case strings.HasPrefix(body, "TEXT\n"):
 		text = body[len("TEXT\n"):]
 	case body == "TEXT":
-		return agentcore.Message{}, protocolError("validate raw text response", fmt.Errorf("raw TEXT response is empty"))
+		return agentcore.Message{}, true, protocolError("validate raw text response", fmt.Errorf("raw TEXT response is empty"))
 	default:
-		return agentcore.Message{}, legacyErr
+		return agentcore.Message{}, false, nil
 	}
 	if strings.TrimSpace(text) == "" {
-		return agentcore.Message{}, protocolError("validate raw text response", fmt.Errorf("raw TEXT response is empty"))
+		return agentcore.Message{}, true, protocolError("validate raw text response", fmt.Errorf("raw TEXT response is empty"))
+	}
+	if strings.Contains(text, responseStart) || strings.Contains(text, responseEnd) {
+		return agentcore.Message{}, true, protocolError("validate raw text response", fmt.Errorf("reserved response marker inside TEXT body"))
 	}
 
 	return agentcore.Message{
@@ -72,7 +108,7 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		Content:    []agentcore.ContentBlock{agentcore.TextBlock(text)},
 		StopReason: agentcore.StopReasonStop,
 		Timestamp:  time.Now(),
-	}, nil
+	}, true, nil
 }
 
 // normalizeSingleRedundantResponseWrapper tolerates exactly one redundant
@@ -97,17 +133,10 @@ func normalizeSingleRedundantResponseWrapper(raw string) string {
 		return raw
 	}
 
-	// Some web responses echo a second start marker but only one final end
-	// marker. Because the duplicate start is immediate and the complete trimmed
-	// response contains no outside content, dropping only the first start marker
-	// yields the single authoritative envelope.
 	if endCount == 1 {
 		return afterOuterStart
 	}
 
-	// Fully balanced redundant wrapper:
-	// START START <body> END END. Strip only the outer pair and require the
-	// remaining body to be one exact envelope.
 	if endCount == 2 && strings.HasSuffix(afterOuterStart, responseEnd) {
 		inner := strings.TrimSpace(strings.TrimSuffix(afterOuterStart, responseEnd))
 		if strings.HasPrefix(inner, responseStart) && strings.HasSuffix(inner, responseEnd) &&
@@ -134,26 +163,38 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	if valueStart < 0 {
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("missing raw value start marker"))
 	}
+	if strings.Count(rest, rawValueStart) != 1 {
+		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value start marker"))
+	}
 	metadataText := strings.TrimSpace(rest[:valueStart])
 	if metadataText == "" {
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw tool call metadata is empty"))
 	}
 
 	valueRegion := rest[valueStart+len(rawValueStart):]
-	valueEndRel := strings.Index(valueRegion, rawValueEnd)
-	if valueEndRel < 0 {
-		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("missing raw value end marker"))
-	}
-	rawValue := valueRegion[:valueEndRel]
-	trailing := valueRegion[valueEndRel+len(rawValueEnd):]
-	if strings.TrimSpace(trailing) != "" {
-		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("unexpected content after raw value end marker"))
+	rawValue := valueRegion
+	if valueEndRel := strings.Index(valueRegion, rawValueEnd); valueEndRel >= 0 {
+		// Backward compatibility with the old framed raw-value form. If the old
+		// end marker appears, it must still be one exact terminal delimiter.
+		if strings.Count(valueRegion, rawValueEnd) != 1 {
+			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value end marker"))
+		}
+		rawValue = valueRegion[:valueEndRel]
+		trailing := valueRegion[valueEndRel+len(rawValueEnd):]
+		if strings.TrimSpace(trailing) != "" {
+			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("unexpected content after raw value end marker"))
+		}
 	}
 	if strings.Contains(rawValue, rawValueStart) || strings.Contains(rawValue, rawValueEnd) {
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value marker"))
 	}
 	rawValue = trimOneProtocolLineBreak(rawValue, true)
-	rawValue = trimOneProtocolLineBreak(rawValue, false)
+	// Only trim the trailing protocol newline when an explicit legacy end marker
+	// supplied it. In the DOM-delimited form the end of the assistant message is
+	// the value boundary, so prose whitespace belongs to the value.
+	if strings.Contains(valueRegion, rawValueEnd) {
+		rawValue = trimOneProtocolLineBreak(rawValue, false)
+	}
 	if strings.TrimSpace(rawValue) == "" {
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
 	}
