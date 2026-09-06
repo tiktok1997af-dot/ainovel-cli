@@ -95,8 +95,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $home = [Environment]::GetFolderPath('UserProfile')
-          $configDir = Join-Path $home '.ainovel'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
           $configPath = Join-Path $configDir 'config.json'
           $backupPath = Join-Path $env:RUNNER_TEMP ("w5e-config-backup-" + $env:GITHUB_RUN_ID + ".json")
           New-Item -ItemType Directory -Force -Path $configDir | Out-Null
