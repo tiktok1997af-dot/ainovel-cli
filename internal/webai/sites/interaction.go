@@ -6,13 +6,16 @@ import "context"
 // in-flight generation from a stable final model response and to confirm that a
 // submitted prompt actually became a Gemini user turn. It intentionally
 // contains no prompt text, cookies, auth tokens, localStorage values or account
-// identity.
+// identity. SubmitAction/ComposerLength are sanitized structural diagnostics;
+// they never contain composer text.
 type ConversationSnapshot struct {
 	Busy             bool   `json:"busy"`
 	ResponseCount    int    `json:"response_count"`
 	UserMessageCount int    `json:"user_message_count"`
 	ComposerPresent  bool   `json:"composer_present"`
 	ComposerEmpty    bool   `json:"composer_empty"`
+	ComposerLength   int    `json:"composer_length"`
+	SubmitAction     string `json:"submit_action"`
 	LastResponse     string `json:"last_response"`
 	Truncated        bool   `json:"truncated"`
 }
