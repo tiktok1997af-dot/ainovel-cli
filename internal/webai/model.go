@@ -41,55 +41,44 @@ var (
 const maxProtocolFormatRepairs = 2
 
 // rawTextProtocolInstruction replaces the legacy response-format instruction
-// before a request crosses the browser boundary. It deliberately contains only
-// one response marker pair so a browser model is not encouraged to nest an
-// example envelope inside another envelope. The request payload format itself
-// remains ainovel-web/1 and legacy JSON envelopes remain accepted by the parser
-// for backward compatibility.
+// before a request crosses the browser boundary. Gemini's rendered assistant
+// message is already a reliable outer boundary, so the model is intentionally
+// NOT asked to reproduce another start/end wrapper inside the message. Legacy
+// wrapped responses remain parser-compatible for already-existing sessions.
 const rawTextProtocolInstruction = `You are the AI backend for ainovel-cli. The browser is only a transport layer.
-Return exactly one response envelope and nothing else.
+Return exactly one AINOVEL response body as the entire assistant message and nothing else. The assistant-message boundary is the response boundary; do not add an outer response wrapper, start marker, end marker, preface, epilogue, or Markdown fence.
 
-AINOVEL WEB RESPONSE EXTENSION:
-<<<AINOVEL_WEB_RESPONSE>>>
-<body>
-<<<END_AINOVEL_WEB_RESPONSE>>>
-
-Replace <body> with exactly one of these forms:
-- Normal assistant text: first line is the literal word TEXT, then a newline, then the complete answer verbatim. In shorthand: TEXT\n<the complete answer verbatim>. The body after TEXT may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap normal text in a {"kind":"text"} object.
+Use exactly one of these whole-message forms:
+- Normal assistant text: first line is the literal word TEXT, then a newline, then the complete answer verbatim. In shorthand: TEXT\n<the complete answer verbatim>. The text after TEXT may itself be JSON, Markdown, prose, quotes, or multiple lines. Do not JSON-escape or wrap normal text in a {"kind":"text"} object.
 - Ordinary local tool request with small/simple arguments: one strict JSON object of the form {"kind":"tool_calls","tool_calls":[{"name":"exact_tool_name","arguments":{}}]}.
-- One local tool request containing one long top-level string argument (for example a chapter body in content): use TOOL_CALL_RAW so that long string is not JSON-escaped. The body form is:
+- One local tool request containing one long top-level string argument (for example a chapter body in content): use this whole-message form:
 TOOL_CALL_RAW
 {"name":"exact_tool_name","arguments":{"all_other_arguments":"go here"},"raw_string_field":"content"}
 <<<AINOVEL_RAW_VALUE>>>
-<the complete raw string value verbatim>
-<<<END_AINOVEL_RAW_VALUE>>>
-The metadata arguments object MUST omit the field named by raw_string_field. The runtime inserts the raw value into that top-level field, reconstructs a normal JSON arguments object, and validates the tool/schema locally before execution.
+<the complete raw string value verbatim until the end of this assistant message>
+The metadata arguments object MUST omit the field named by raw_string_field. The assistant-message boundary terminates the raw string; do not append a closing delimiter. The runtime inserts the raw value into that top-level field, reconstructs a normal JSON arguments object, and validates the tool/schema locally before execution.
 
 Rules:
 - A response is exactly one of TEXT, strict JSON tool_calls, or one TOOL_CALL_RAW; never combine forms.
 - Use TOOL_CALL_RAW only for exactly one tool call and exactly one long top-level string argument. Keep all other arguments in the small metadata JSON object.
-- The raw value must not contain the reserved strings <<<AINOVEL_RAW_VALUE>>> or <<<END_AINOVEL_RAW_VALUE>>>.
+- The raw value must not contain the reserved string <<<AINOVEL_RAW_VALUE>>>.
 - Use only tool names and argument fields present in the request tool schema.
 - Never represent a tool request as TEXT.
 - Do not claim that a tool ran; the local ainovel runtime executes tools only after validating the call.
-- Do not write Markdown fences around the response envelope or raw value.
-- Do not emit commentary outside the response markers.
-- Emit the response markers exactly once each.`
+- Do not write Markdown fences around any response form.
+- Do not emit commentary before or after the selected response form.`
 
-// protocolRepairPrompt intentionally does NOT repeat the literal outer response
-// markers. Gemini already has the full ainovel request immediately earlier in
-// the same browser conversation; repeating the marker example in a repair turn
-// can itself encourage an extra echoed/nested wrapper. This prompt asks only for
-// a format correction of the already-intended answer. No local tool is executed
-// until a later parse succeeds.
+// protocolRepairPrompt asks only for a format correction of the already-intended
+// answer. No local tool from the malformed response has executed. The repair
+// also uses the DOM-delimited whole-message body so it cannot recreate the old
+// missing-outer-end-marker failure mode.
 const protocolRepairPrompt = `Your previous answer could not be parsed as an ainovel-web/1 response. No local tool from that answer has been executed.
 Do not redo the user's task, do not change the intended answer, and do not add commentary.
-Re-emit only the same intended answer using the exact AINOVEL response framing and body forms already defined earlier in this same conversation.
-Emit exactly one outer response envelope. Never quote, explain, duplicate, or place an AINOVEL response start/end marker inside the envelope body.
-For normal assistant text, the body starts with the literal word TEXT, then one newline, then the complete intended text verbatim.
-For a small local tool request, the body is one strict valid JSON object with kind tool_calls and only exact tool names/argument fields from the original request.
-For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined in the original request and preserve the intended raw string verbatim.
-Do not claim a tool ran. Do not use Markdown fences. This is a transport-format repair only.`
+Re-emit only the same intended answer using one exact AINOVEL whole-message body already defined earlier in this conversation. Do not add any outer response wrapper or Markdown fence.
+For normal assistant text, start with the literal word TEXT, then one newline, then the complete intended text verbatim.
+For a small local tool request, emit only one strict valid JSON object with kind tool_calls and exact tool names/argument fields from the original request.
+For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined; after the raw-value start delimiter, preserve the complete intended raw string until the end of the assistant message and do not append a closing delimiter.
+Do not claim a tool ran. This is a transport-format repair only.`
 
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
@@ -134,12 +123,11 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		return nil, parseErr
 	}
 
-	// Browser models can occasionally return a syntactically malformed response
-	// envelope even after following the contract. No local tool has executed at
-	// this point, so a very small bounded number of format-only repair turns in
-	// the same web conversation is safe. This is deliberately not a general retry
-	// loop: transport/auth/timeout errors return immediately, and after the second
-	// format repair another protocol violation fails hard.
+	// Browser models can occasionally return a malformed response body even after
+	// following the contract. No local tool has executed at this point, so a very
+	// small bounded number of format-only repair turns in the same web conversation
+	// is safe. Transport/auth/timeout failures return immediately; another protocol
+	// violation after the second repair fails hard.
 	lastProtocolErr := parseErr
 	for attempt := 0; attempt < maxProtocolFormatRepairs; attempt++ {
 		repairedRaw, repairErr := m.transport.RoundTrip(ctx, protocolRepairPrompt)
