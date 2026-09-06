@@ -58,7 +58,13 @@ jobs:
       - name: Apply guarded WEB-only usage/pricing refactor
         run: python3 .github/scripts/w5d_patch_d1_usage.py
       - name: Format
-        run: gofmt -w $(git ls-files '*.go' --modified --others --exclude-standard)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t gofiles < <({ git diff --name-only --diff-filter=ACMRT -- '*.go'; git ls-files --others --exclude-standard -- '*.go'; } | sort -u)
+          if (( ${#gofiles[@]} > 0 )); then
+            gofmt -w "${gofiles[@]}"
+          fi
       - name: Vet
         run: go vet ./...
       - name: Full tests
