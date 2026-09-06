@@ -183,31 +183,32 @@ const geminiConversationExpression = `(() => {
     if (text) texts.push(text);
   }
 
-  // The send click seeds a sanitized capture state containing only response
-  // count and a length/hash signature of the previous response. If the new
-  // ainovel response is still missing its outer closing framing, keep it BUSY
-  // for a bounded grace after every text change. This prevents a temporary
-  // Gemini streaming pause from being mistaken for the final response while
-  // still allowing a truly malformed/truncated stable response to reach the
-  // strict parser and bounded format-repair path after the grace expires.
+  // A send click seeds sanitized capture state containing only response count,
+  // a length/hash signature and timestamps. Gemini can briefly hide its Stop
+  // control while a response is still changing. Treat recent DOM text activity
+  // as BUSY for a short bounded grace independent of any protocol markers.
+  // This prevents early capture without coupling transport completion to model-
+  // generated framing. No prompt or response text is stored in page state.
   const last = texts.length ? texts[texts.length - 1] : '';
-  const framingState = window.__ainovelWebCaptureState;
-  if (framingState && last) {
+  const captureState = window.__ainovelWebCaptureState;
+  if (captureState && last) {
     const sig = signature(last);
-    const changedFromBaseline = texts.length > Number(framingState.responseCount || 0) || sig !== String(framingState.lastSignature || '');
+    const changedFromBaseline = texts.length > Number(captureState.responseCount || 0) || sig !== String(captureState.lastSignature || '');
     if (changedFromBaseline) {
-      if (sig !== String(framingState.currentSignature || '')) {
-        framingState.currentSignature = sig;
-        framingState.lastChangedAt = Date.now();
+      if (!captureState.observedChange) {
+        captureState.observedChange = true;
+        captureState.currentSignature = sig;
+        captureState.lastChangedAt = Date.now();
+      } else if (sig !== String(captureState.currentSignature || '')) {
+        captureState.currentSignature = sig;
+        captureState.lastChangedAt = Date.now();
       }
-      const trimmed = String(last).trim();
-      const framingComplete = trimmed.startsWith('<<<AINOVEL_WEB_RESPONSE>>>') && trimmed.endsWith('<<<END_AINOVEL_WEB_RESPONSE>>>');
-      if (framingComplete) {
-        window.__ainovelWebCaptureState = null;
+      const activityGraceMs = 2500;
+      const elapsed = Date.now() - Number(captureState.lastChangedAt || 0);
+      if (elapsed < activityGraceMs) {
+        busy = true;
       } else {
-        const framingGraceMs = 6000;
-        const elapsed = Date.now() - Number(framingState.lastChangedAt || 0);
-        if (elapsed < framingGraceMs) busy = true;
+        window.__ainovelWebCaptureState = null;
       }
     }
   }
@@ -388,7 +389,8 @@ const geminiClickSendExpression = `(() => {
     responseCount: texts.length,
     lastSignature: previousSignature,
     currentSignature: previousSignature,
-    lastChangedAt: Date.now()
+    lastChangedAt: Date.now(),
+    observedChange: false
   };
 
   sendButton.click();
