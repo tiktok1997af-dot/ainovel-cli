@@ -1,8 +1,10 @@
 # W5B — BROWSER-ONLY SETUP & TUI MIGRATION v0.1
 
-Status: OPEN
+Status: PASS / LOCKED
 
 Base authority: W5A PASS / LOCKED at `995d280db154503724185460425af29fceeb7ad1`.
+
+Lock-authorizing implementation head: `c14184c1c51b5f07392d12e1af72c3e68d057a5f`.
 
 ## Product UX boundary
 
@@ -12,25 +14,25 @@ Initial supported AI website: Gemini Web.
 
 ## First-run setup
 
-The setup wizard must:
-1. choose creative language;
-2. explain that AI runs through the user's visible logged-in Gemini Web session;
-3. optionally accept a Chrome executable path (blank = auto-detect);
-4. accept a persistent browser profile name (default `default`);
-5. save `web.enabled=true`, `web.site=gemini-web` and no `providers` credential entries.
+The setup wizard now:
+1. chooses creative language;
+2. explains that AI runs through the user's visible logged-in Gemini Web session;
+3. optionally accepts a Chrome executable path (blank = auto-detect);
+4. accepts a persistent browser profile name (default `default`);
+5. saves `web.enabled=true`, `web.site=gemini-web` and no `providers` credential entries.
 
-It must not ask for API Key, Base URL, provider protocol, provider name, or model ID.
+It does not ask for API Key, Base URL, provider protocol, provider name, or model ID.
 
 ## `/model`
 
-In WEB-only mode `/model` is a read-only browser AI status surface, not a provider/model switcher. It shows only non-secret data:
+In WEB-only mode `/model` is a read-only browser AI status surface, not a provider/model switcher. It reports non-secret browser/session information such as:
 - transport: WEB-only;
 - site/model label: Gemini Web;
 - readiness state (STARTING/AUTH_REQUIRED/READY/BUSY/DEGRADED/FAILED/STOPPED);
 - browser PID/profile where useful;
 - manual-login guidance for AUTH_REQUIRED.
 
-No provider switching or API fallback is reachable from this surface.
+Provider/model switching and API fallback are not reachable from this surface.
 
 ## `/config`
 
@@ -43,17 +45,32 @@ Changes are persisted safely and take effect on the next application restart; th
 
 No cookies, Google credentials, session tokens, API credentials, Base URLs, or provider definitions are displayed or accepted.
 
+## Example configuration contract
+
+All shipped example configs are synchronized and WEB-only. After JSONC comments are removed they parse as valid JSON, contain `web.enabled=true` + `web.site=gemini-web`, contain no provider credential registry, and resolve through `FillDefaults()` to the compatibility runtime identity `web/gemini-web` before `ValidateBase()` passes.
+
 ## Compatibility boundary
 
-Legacy provider-shaped internals remain temporarily compiled only for W5C migration/removal. W5B makes them unreachable from a newly configured WEB-only product. W5C remains the blocking gate that deletes the legacy API runtime itself.
+Legacy provider-shaped internals remain temporarily compiled only for W5C migration/removal. W5B makes them unreachable from a newly configured WEB-only product. W5C is the blocking gate that deletes the legacy API runtime itself.
 
-## W5B gate
+## Verification evidence
 
-PASS requires:
-- deterministic setup/config tests proving no API credential/provider entry is created;
-- TUI tests proving WEB-only `/model` cannot switch providers;
-- TUI tests proving WEB-only `/config` contains browser fields and no API Key/Base URL/provider controls;
-- config persistence test;
-- gofmt / go vet / full Linux + Windows tests PASS.
+Lock authorization was established on clean implementation head `c14184c1c51b5f07392d12e1af72c3e68d057a5f` by GitHub Actions CI run **#68** (`34013675990`):
 
-Only then may W5B be locked and W5C opened.
+- Ubuntu 24.04 / Go 1.25.5:
+  - gofmt: PASS
+  - installer syntax: PASS
+  - `go vet ./...`: PASS
+  - `go test -buildvcs=false -count=1 ./...`: PASS
+  - critical-state race tests: PASS
+- Windows / Go 1.25.5:
+  - gofmt: PASS
+  - `go vet ./...`: PASS
+  - `go test -buildvcs=false -count=1 ./...`: PASS
+- deterministic setup/config tests proving no API credential/provider entry is created: PASS
+- TUI WEB-only `/model` non-switching contract: PASS
+- TUI WEB-only `/config` browser-only contract: PASS
+- browser config persistence contract: PASS
+- temporary CI repair workflows used during development were removed before the lock-authorizing run: PASS
+
+W5B is locked. The lock commit itself must also remain green under the repository's standard CI before integration into the W5 branch. W5C may open only after that integration succeeds.
