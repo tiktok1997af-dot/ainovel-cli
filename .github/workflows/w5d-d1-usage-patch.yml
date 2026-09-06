@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Make guarded patcher method-aware
+      - name: Prepare guarded patcher for Go methods and remaining Host wrappers
         shell: bash
         run: |
           python3 - <<'PY'
@@ -32,7 +32,13 @@ jobs:
           n = s.count(old)
           if n != 2:
               raise SystemExit(f'expected 2 function matcher sites, got {n}')
-          p.write_text(s.replace(old, new), encoding='utf-8')
+          s = s.replace(old, new)
+          marker = 'if "h.usage" in host or "UsageTracker" in host or "newUsageTrackedModel" in host:\n'
+          if s.count(marker) != 1:
+              raise SystemExit('host residue assertion marker mismatch')
+          extra = '''host = must_replace(host, '\\tmodel = newUsageTrackedModel(model, "editor", h.usage.Record)\\n', '', "revision usage wrapper")\nhost = must_replace(host, '\\tmodel = newUsageTrackedModel(model, role, h.usage.Record)\\n', '', "import usage wrapper")\n'''
+          s = s.replace(marker, extra + marker, 1)
+          p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded WEB-only usage/pricing refactor
         run: python3 .github/scripts/w5d_patch_d1_usage.py
