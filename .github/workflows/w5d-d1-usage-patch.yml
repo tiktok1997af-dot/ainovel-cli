@@ -47,6 +47,12 @@ jobs:
           event_extra = '''events = re.sub(r'(?ms)^// AgentCacheStat .*?(?=// AgentContextSnapshot)', '', events)\n'''
           s = s.replace(event_marker, event_marker + event_extra, 1)
 
+          sidebar_old = '"renderCacheSidebar", "renderCacheCategory", "renderCacheAgent", "formatTokensCompact",'
+          sidebar_new = '"renderCacheSidebar", "renderCacheCategory", "renderCacheAgent", "renderCacheAgentLine", "colorPercent", "formatTokensCompact",'
+          if s.count(sidebar_old) != 1:
+              raise SystemExit('cache sidebar helper list marker mismatch')
+          s = s.replace(sidebar_old, sidebar_new, 1)
+
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded WEB-only usage/pricing refactor
