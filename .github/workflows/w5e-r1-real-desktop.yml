@@ -180,10 +180,13 @@ jobs:
           $cleanProfileDir = Join-Path $userHome (".ainovel\browser\profiles\" + $cleanProfile)
           $diagExe = Join-Path $env:RUNNER_TEMP 'ainovel-w5e-readiness-control.exe'
           $diagEvidence = Join-Path $env:RUNNER_TEMP 'w5e-clean-control-evidence.json'
+          $stdoutPath = Join-Path $env:RUNNER_TEMP 'w5e-clean-control.stdout.txt'
+          $stderrPath = Join-Path $env:RUNNER_TEMP 'w5e-clean-control.stderr.txt'
 
           Remove-Item -LiteralPath $cleanProfileDir -Recurse -Force -ErrorAction SilentlyContinue
           & go build -o $diagExe ./cmd/ainovel-w5e-readiness
           if ($LASTEXITCODE -ne 0) { throw 'Failed to build clean-profile readiness control helper.' }
+          $global:LASTEXITCODE = 0
 
           $cfg.web.profile_name = $cleanProfile
           $json = $cfg | ConvertTo-Json -Depth 6
@@ -194,17 +197,27 @@ jobs:
           )
 
           $controlExit = 1
-          $previousErrorAction = $ErrorActionPreference
           try {
-            $ErrorActionPreference = 'Continue'
-            $controlOutput = @(& $diagExe -timeout 20s -evidence $diagEvidence 2>&1)
-            $controlExit = $LASTEXITCODE
-            $ErrorActionPreference = $previousErrorAction
-            foreach ($line in $controlOutput) {
-              Write-Host ("CLEAN-CONTROL: " + [string]$line)
+            $proc = Start-Process `
+              -FilePath $diagExe `
+              -ArgumentList @('-timeout','20s','-evidence',$diagEvidence) `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath `
+              -NoNewWindow `
+              -Wait `
+              -PassThru
+            $controlExit = [int]$proc.ExitCode
+
+            foreach ($path in @($stdoutPath, $stderrPath)) {
+              if (Test-Path -LiteralPath $path) {
+                foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                  if (-not [string]::IsNullOrWhiteSpace([string]$line)) {
+                    Write-Host ("CLEAN-CONTROL: " + [string]$line)
+                  }
+                }
+              }
             }
           } finally {
-            $ErrorActionPreference = $previousErrorAction
             $cfg.web.profile_name = $loggedProfile
             $restoreJson = $cfg | ConvertTo-Json -Depth 6
             [System.IO.File]::WriteAllText(
@@ -214,11 +227,14 @@ jobs:
             )
             Remove-Item -LiteralPath $cleanProfileDir -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $diagEvidence -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
           }
 
           if ($controlExit -eq 0) {
             throw 'Clean unauthenticated profile unexpectedly reached READY; authenticated signal is not selective enough.'
           }
+          $global:LASTEXITCODE = 0
           Write-Host 'Clean-profile control produced expected AUTH_REQUIRED/non-READY and was removed.'
 
       - name: Run real production desktop smoke
