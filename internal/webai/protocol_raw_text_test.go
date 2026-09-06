@@ -10,6 +10,8 @@ import (
 
 func TestModelGenerateRawTextPreservesStructuredJSONBody(t *testing.T) {
 	body := `{"planner":"architect_long","task":"write two chapters","reason":"long-form workflow"}`
+	// Keep a legacy wrapped response here to prove old browser conversations stay
+	// compatible even though new requests advertise the DOM-delimited body form.
 	transport := &fakeTransport{responses: []string{wrappedResponse("TEXT\n" + body)}}
 	model := mustModel(t, transport)
 
@@ -24,14 +26,11 @@ func TestModelGenerateRawTextPreservesStructuredJSONBody(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("round trips = %d, want 1", len(prompts))
 	}
-	if !strings.Contains(prompts[0], "AINOVEL WEB RESPONSE EXTENSION") || !strings.Contains(prompts[0], "complete answer verbatim") {
-		t.Fatal("request prompt did not advertise raw TEXT response extension")
+	if !strings.Contains(prompts[0], "assistant-message boundary") || !strings.Contains(prompts[0], "complete answer verbatim") {
+		t.Fatal("request prompt did not advertise DOM-delimited raw TEXT response")
 	}
-	if got := strings.Count(prompts[0], responseStart); got != 1 {
-		t.Fatalf("response start marker occurrences = %d, want exactly 1", got)
-	}
-	if got := strings.Count(prompts[0], responseEnd); got != 1 {
-		t.Fatalf("response end marker occurrences = %d, want exactly 1", got)
+	if strings.Contains(prompts[0], responseStart) || strings.Contains(prompts[0], responseEnd) {
+		t.Fatal("current request prompt must not advertise legacy outer response markers")
 	}
 }
 
@@ -39,7 +38,7 @@ func TestModelProtocolRepairCanReturnRawText(t *testing.T) {
 	body := `{"planner":"architect_long","task":"write two chapters","reason":"long-form workflow"}`
 	transport := &fakeTransport{responses: []string{
 		wrappedResponse(`{"kind":"text","text":"{"planner":"architect_long" nope}`),
-		wrappedResponse("TEXT\n" + body),
+		"TEXT\n" + body,
 	}}
 	model := mustModel(t, transport)
 
@@ -57,11 +56,8 @@ func TestModelProtocolRepairCanReturnRawText(t *testing.T) {
 	if !strings.Contains(prompts[1], "literal word TEXT") || !strings.Contains(prompts[1], "complete intended text verbatim") {
 		t.Fatal("repair prompt did not prefer the raw TEXT form")
 	}
-	if got := strings.Count(prompts[1], responseStart); got != 0 {
-		t.Fatalf("repair response start marker occurrences = %d, want 0 literal marker echoes", got)
-	}
-	if got := strings.Count(prompts[1], responseEnd); got != 0 {
-		t.Fatalf("repair response end marker occurrences = %d, want 0 literal marker echoes", got)
+	if strings.Contains(prompts[1], responseStart) || strings.Contains(prompts[1], responseEnd) {
+		t.Fatal("repair prompt must not echo or request legacy outer response markers")
 	}
 }
 
