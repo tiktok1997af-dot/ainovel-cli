@@ -152,7 +152,7 @@ func TestWebModelAuthRequiredShowsManualLoginGuidance(t *testing.T) {
 			Model:       "gemini-web",
 			ProfileName: "default",
 			HasSession:  true,
-			Session: webai.SessionSnapshot{State: webai.SessionAuthRequired},
+			Session:     webai.SessionSnapshot{State: webai.SessionAuthRequired},
 		},
 	}
 	plain := ansi.Strip(renderModelSwitchBar(120, st))

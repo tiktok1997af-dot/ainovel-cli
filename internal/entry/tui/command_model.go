@@ -140,7 +140,7 @@ func normalizeRoleKey(role string) string {
 	}
 }
 
-func (s *modelSwitchState) role() string { return modelRoleOptions[s.roleIdx].Key }
+func (s *modelSwitchState) role() string      { return modelRoleOptions[s.roleIdx].Key }
 func (s *modelSwitchState) roleLabel() string { return modelRoleOptions[s.roleIdx].Label }
 
 func (s *modelSwitchState) provider() string {
@@ -233,6 +233,7 @@ func (s *modelSwitchState) syncSelection(rt modelRuntime) {
 				s.providerIdx = i
 				break
 			}
+		}
 	}
 	s.syncModels(rt, model)
 	s.syncThinking(rt)
