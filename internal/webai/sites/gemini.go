@@ -32,12 +32,16 @@ func (Gemini) TargetScore(rawURL string) int {
 }
 
 type geminiReadinessPayload struct {
-	Host              string `json:"host"`
-	Path              string `json:"path"`
-	HasAccountControl bool   `json:"has_account_control"`
-	HasComposer       bool   `json:"has_composer"`
-	HasSignIn         bool   `json:"has_sign_in"`
-	SecurityChallenge bool   `json:"security_challenge"`
+	Host                 string `json:"host"`
+	Path                 string `json:"path"`
+	HasAccountControl    bool   `json:"has_account_control"`
+	HasComposer          bool   `json:"has_composer"`
+	HasSignIn            bool   `json:"has_sign_in"`
+	SecurityChallenge    bool   `json:"security_challenge"`
+	CandidateAccountLink bool   `json:"candidate_account_link"`
+	CandidateAccountAria bool   `json:"candidate_account_aria"`
+	CandidateAccountData bool   `json:"candidate_account_data"`
+	CandidateAccountImg  bool   `json:"candidate_account_img"`
 }
 
 func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
@@ -61,7 +65,13 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 		if payload.HasSignIn {
 			reason = "Gemini sign-in is required"
 		} else if payload.HasComposer {
-			reason = "Gemini public composer detected without authenticated account control"
+			reason = fmt.Sprintf(
+				"Gemini public composer detected without authenticated account control (candidate_link=%t candidate_aria=%t candidate_data=%t candidate_img=%t)",
+				payload.CandidateAccountLink,
+				payload.CandidateAccountAria,
+				payload.CandidateAccountData,
+				payload.CandidateAccountImg,
+			)
 		}
 		return Result{State: ReadinessAuthRequired, Reason: reason}, nil
 	}
@@ -98,6 +108,28 @@ const geminiReadinessExpression = `(() => {
     '[aria-label*="Google Account" i]',
     '[aria-label*="Tài khoản Google" i]'
   ]);
+  const candidateAccountLink = firstVisible([
+    'a[href*="myaccount.google.com"]',
+    'a[href*="accounts.google.com/SignOutOptions"]',
+    'a[href*="accounts.google.com/ManageAccount"]'
+  ]);
+  const candidateAccountAria = firstVisible([
+    'button[aria-label*="account" i]',
+    'button[aria-label*="tài khoản" i]',
+    '[role="button"][aria-label*="account" i]',
+    '[role="button"][aria-label*="tài khoản" i]'
+  ]);
+  const candidateAccountData = firstVisible([
+    '[data-test-id*="account" i]',
+    '[data-testid*="account" i]',
+    '[data-test-id*="avatar" i]',
+    '[data-testid*="avatar" i]'
+  ]);
+  const candidateAccountImg = firstVisible([
+    'button img[src*="googleusercontent.com"]',
+    'a img[src*="googleusercontent.com"]',
+    '[role="button"] img[src*="googleusercontent.com"]'
+  ]);
   const composer = firstVisible([
     'div.ql-editor',
     'rich-textarea [contenteditable="true"]',
@@ -122,6 +154,10 @@ const geminiReadinessExpression = `(() => {
     has_account_control: Boolean(account),
     has_composer: Boolean(composer),
     has_sign_in: signIn,
-    security_challenge: securityChallenge
+    security_challenge: securityChallenge,
+    candidate_account_link: Boolean(candidateAccountLink),
+    candidate_account_aria: Boolean(candidateAccountAria),
+    candidate_account_data: Boolean(candidateAccountData),
+    candidate_account_img: Boolean(candidateAccountImg)
   };
 })()`
