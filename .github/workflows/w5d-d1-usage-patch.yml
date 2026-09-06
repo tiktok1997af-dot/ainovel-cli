@@ -20,24 +20,33 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Prepare guarded patcher for Go methods and remaining Host wrappers
+      - name: Prepare guarded patcher for remaining audited seams
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('.github/scripts/w5d_patch_d1_usage.py')
           s = p.read_text(encoding='utf-8')
+
           old = 'm = re.search(r"(?m)^func " + re.escape(name) + r"\\s*\\(", text)'
           new = 'm = re.search(r"(?m)^func(?:\\s+\\([^\\n)]*\\))?\\s+" + re.escape(name) + r"\\s*\\(", text)'
           n = s.count(old)
           if n != 2:
               raise SystemExit(f'expected 2 function matcher sites, got {n}')
           s = s.replace(old, new)
+
           marker = 'if "h.usage" in host or "UsageTracker" in host or "newUsageTrackedModel" in host:\n'
           if s.count(marker) != 1:
               raise SystemExit('host residue assertion marker mismatch')
           extra = '''host = must_replace(host, '\\tmodel = newUsageTrackedModel(model, "editor", h.usage.Record)\\n', '', "revision usage wrapper")\nhost = must_replace(host, '\\tmodel = newUsageTrackedModel(model, role, h.usage.Record)\\n', '', "import usage wrapper")\n'''
           s = s.replace(marker, extra + marker, 1)
+
+          event_marker = 'events = remove_struct_type(events, "AgentCacheStat")\n'
+          if s.count(event_marker) != 1:
+              raise SystemExit('AgentCacheStat removal marker mismatch')
+          event_extra = '''events = re.sub(r'(?ms)^// AgentCacheStat .*?(?=// AgentContextSnapshot)', '', events)\n'''
+          s = s.replace(event_marker, event_marker + event_extra, 1)
+
           p.write_text(s, encoding='utf-8')
           PY
       - name: Apply guarded WEB-only usage/pricing refactor
