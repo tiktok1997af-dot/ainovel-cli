@@ -1,0 +1,120 @@
+name: W5E R1 real desktop production execution
+
+on:
+  push:
+    branches:
+      - w5e-r1-desktop-orchestrator
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w5e-r1-real-desktop
+  cancel-in-progress: false
+
+jobs:
+  real-desktop-production-smoke:
+    name: Real Windows desktop / Gemini production smoke
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact W5E candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 526c80facd146990e79f05e01dce5a4890fa9f38
+          fetch-depth: 0
+
+      - name: Verify exact candidate and interactive desktop session
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '526c80facd146990e79f05e01dce5a4890fa9f38'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) {
+            throw "Candidate drift: expected $expected but checked out $actual"
+          }
+
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $interactiveExplorer = Get-Process explorer -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $runnerSession } |
+            Select-Object -First 1
+          if ($null -eq $interactiveExplorer) {
+            throw 'Runner is not in an interactive Windows desktop session. Start the self-hosted runner with run.cmd from the logged-in desktop session; do not run it as a Windows service.'
+          }
+
+          $loggedOnUser = (Get-CimInstance Win32_ComputerSystem).UserName
+          if ([string]::IsNullOrWhiteSpace($loggedOnUser)) {
+            throw 'No interactive logged-on Windows user detected.'
+          }
+
+          foreach ($required in @('go','git','bash')) {
+            if (-not (Get-Command $required -ErrorAction SilentlyContinue)) {
+              throw "Required command is unavailable on the desktop runner: $required"
+            }
+          }
+
+          if (-not (Test-Path -LiteralPath 'scripts/w5e-production-smoke.ps1')) {
+            throw 'Exact candidate does not contain scripts/w5e-production-smoke.ps1'
+          }
+
+          Write-Host "W5E R1 executor precondition PASS"
+          Write-Host "Candidate: $actual"
+          Write-Host "Interactive session: $runnerSession"
+
+      - name: Run real production desktop smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("ainovel-w5e-r1-" + $env:GITHUB_RUN_ID)
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          "W5E_EVIDENCE_DIR=$evidenceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          ./scripts/w5e-production-smoke.ps1 `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -EvidenceDir $evidenceDir `
+            -ReadinessTimeoutSeconds 60 `
+            -FirstChapterTimeoutSeconds 1200 `
+            -ResumeTimeoutSeconds 1200
+
+      - name: Validate sanitized W5E authority evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '526c80facd146990e79f05e01dce5a4890fa9f38'
+          $path = Join-Path $env:W5E_EVIDENCE_DIR 'w5e-production-smoke-evidence.json'
+          if (-not (Test-Path -LiteralPath $path)) {
+            throw 'Missing w5e-production-smoke-evidence.json'
+          }
+
+          $ev = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$ev.schema -ne 'ainovel-w5e-production-smoke/1') { throw 'Unexpected evidence schema' }
+          if ([string]$ev.git_sha -ne $expected) { throw 'Evidence candidate SHA mismatch' }
+          if (-not [bool]$ev.first_ready) { throw 'first_ready is not true' }
+          if (-not [bool]$ev.restart_ready) { throw 'restart_ready is not true' }
+          if (-not [bool]$ev.restart_resume_detected) { throw 'restart_resume_detected is not true' }
+          if ([string]$ev.runtime_no_api_marker_scan -ne 'PASS') { throw 'runtime NO-API scan did not pass' }
+          if ([string]$ev.w55_static_no_api_gate -ne 'PASS') { throw 'W5.5 static gate did not pass' }
+          if ([string]$ev.chapter_1_sha256_before_restart -ne [string]$ev.chapter_1_sha256_after_restart) { throw 'Chapter 1 persistence hash mismatch' }
+
+          $tools = @($ev.observed_local_tools | ForEach-Object { [string]$_ })
+          foreach ($requiredTool in @('draft_chapter','commit_chapter')) {
+            if ($tools -notcontains $requiredTool) { throw "Missing required local tool evidence: $requiredTool" }
+          }
+
+          $completed = @($ev.final_progress.completed_chapters | ForEach-Object { [int]$_ })
+          if ($completed -notcontains 1 -or $completed -notcontains 2) { throw 'Final progress does not contain completed chapters 1 and 2' }
+
+          Write-Host 'W5E-R1 REAL DESKTOP PRODUCTION EXECUTION: PASS'
+          Write-Host "Authority evidence: $path"
+
+      - name: Upload sanitized authority evidence only
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w5e-r1-production-smoke-evidence
+          path: |
+            ${{ env.W5E_EVIDENCE_DIR }}/w5e-production-smoke-evidence.json
+            ${{ env.W5E_EVIDENCE_DIR }}/w5e-readiness-evidence.json
+          if-no-files-found: error
+          retention-days: 30
