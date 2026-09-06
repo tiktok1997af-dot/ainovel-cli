@@ -1,0 +1,29 @@
+name: W5C C4 residue audit
+
+on:
+  push:
+    branches:
+      - w5c-remove-legacy-api-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: w5c-remove-legacy-api-runtime
+      - name: Production API-era residue
+        shell: bash
+        run: |
+          set +e
+          echo '=== GO DIRECT IMPORTS / LITELLM ==='
+          grep -RIn --include='*.go' --exclude='*_test.go' -E 'github.com/voocel/litellm|agentcore/llm' . || true
+          echo '=== CONFIG/API SYMBOLS ==='
+          grep -RIn --include='*.go' --exclude='*_test.go' -E 'ProviderConfig|\.Providers|APIKey|BaseURL|\.API\b|ExtraBody|StreamIdleTimeout|RequiresAPIKey|ProviderType|ModelRef|Fallbacks|CandidateModels|DefaultProviderConfig|NewModelSet|ForRoleWithFailover|FailoverEvent|modelreg|StartPricingRefresh' internal cmd || true
+          echo '=== JSON/API LITERALS ==='
+          grep -RIn --include='*.go' --exclude='*_test.go' -E 'api_key|base_url|providers|provider/model|fallback' internal cmd || true
+          echo '=== GO MOD ==='
+          grep -n 'voocel/litellm' go.mod go.sum || true
