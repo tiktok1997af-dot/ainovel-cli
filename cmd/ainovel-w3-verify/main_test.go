@@ -18,3 +18,26 @@ func TestRunRejectsBadTimeout(t *testing.T) {
 		t.Fatalf("code = %d, want 2", code)
 	}
 }
+
+func TestReadyWaitTreatsStartupAuthAndDegradedAsTransient(t *testing.T) {
+	for _, state := range []webai.SessionState{
+		webai.SessionStarting,
+		webai.SessionAuthRequired,
+		webai.SessionDegraded,
+	} {
+		if readyWaitTerminalState(state) {
+			t.Fatalf("state %s must remain retryable during Chrome/Gemini startup", state)
+		}
+	}
+}
+
+func TestReadyWaitFailsImmediatelyOnlyForTerminalSessionStates(t *testing.T) {
+	for _, state := range []webai.SessionState{
+		webai.SessionFailed,
+		webai.SessionStopped,
+	} {
+		if !readyWaitTerminalState(state) {
+			t.Fatalf("state %s must be terminal while waiting for READY", state)
+		}
+	}
+}
