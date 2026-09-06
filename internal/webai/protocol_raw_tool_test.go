@@ -110,7 +110,10 @@ func TestModelRepairsMalformedLongToolCallIntoRawToolForm(t *testing.T) {
 	if !strings.Contains(prompts[0], rawToolCallPrefix) || !strings.Contains(prompts[0], rawValueStart) {
 		t.Fatal("initial request did not advertise raw tool transport")
 	}
-	if !strings.Contains(prompts[1], rawToolCallPrefix) || !strings.Contains(prompts[1], "raw_string_field") {
+	if !strings.Contains(prompts[1], rawToolCallPrefix) || !strings.Contains(prompts[1], "long top-level string") {
 		t.Fatal("repair prompt did not advertise raw tool transport")
+	}
+	if strings.Contains(prompts[1], responseStart) || strings.Contains(prompts[1], responseEnd) {
+		t.Fatal("repair prompt must not echo literal outer response markers")
 	}
 }
