@@ -22,7 +22,7 @@ jobs:
       - name: Checkout exact W5E candidate
         uses: actions/checkout@v4
         with:
-          ref: eb1d10ee03dd974c93a2c123169614024c06b778
+          ref: aa17b7dc3affbe831eb0a1ba24a430e4623ec0e5
           fetch-depth: 0
 
       - name: Setup Go from exact candidate
@@ -51,7 +51,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = 'eb1d10ee03dd974c93a2c123169614024c06b778'
+          $expected = 'aa17b7dc3affbe831eb0a1ba24a430e4623ec0e5'
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $expected) {
             throw "Candidate drift: expected $expected but checked out $actual"
@@ -168,6 +168,55 @@ jobs:
           Write-Host "Transient WEB-only config staged for profile '$profileName'."
           Write-Host "Original config present: $hadOriginal"
 
+      - name: Compare clean unauthenticated profile control
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $configPath = $env:W5E_LOCAL_CONFIG_PATH
+          $cfg = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $loggedProfile = [string]$cfg.web.profile_name
+          $cleanProfile = "w5e-r1-clean-control-$env:GITHUB_RUN_ID"
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $cleanProfileDir = Join-Path $userHome (".ainovel\browser\profiles\" + $cleanProfile)
+          $diagExe = Join-Path $env:RUNNER_TEMP 'ainovel-w5e-readiness-control.exe'
+          $diagEvidence = Join-Path $env:RUNNER_TEMP 'w5e-clean-control-evidence.json'
+
+          Remove-Item -LiteralPath $cleanProfileDir -Recurse -Force -ErrorAction SilentlyContinue
+          & go build -o $diagExe ./cmd/ainovel-w5e-readiness
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to build clean-profile readiness control helper.' }
+
+          $cfg.web.profile_name = $cleanProfile
+          $json = $cfg | ConvertTo-Json -Depth 6
+          [System.IO.File]::WriteAllText(
+            $configPath,
+            $json + "`r`n",
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          $controlExit = 1
+          try {
+            $controlOutput = & $diagExe -timeout 20s -evidence $diagEvidence 2>&1
+            $controlExit = $LASTEXITCODE
+            foreach ($line in @($controlOutput)) {
+              Write-Host ("CLEAN-CONTROL: " + [string]$line)
+            }
+          } finally {
+            $cfg.web.profile_name = $loggedProfile
+            $restoreJson = $cfg | ConvertTo-Json -Depth 6
+            [System.IO.File]::WriteAllText(
+              $configPath,
+              $restoreJson + "`r`n",
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+            Remove-Item -LiteralPath $cleanProfileDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $diagEvidence -Force -ErrorAction SilentlyContinue
+          }
+
+          if ($controlExit -eq 0) {
+            throw 'Clean unauthenticated profile unexpectedly reached READY; authenticated signal is not selective enough.'
+          }
+          Write-Host 'Clean-profile control produced the expected non-READY result and was removed.'
+
       - name: Run real production desktop smoke
         shell: powershell
         run: |
@@ -195,7 +244,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = 'eb1d10ee03dd974c93a2c123169614024c06b778'
+          $expected = 'aa17b7dc3affbe831eb0a1ba24a430e4623ec0e5'
           $path = Join-Path $env:W5E_EVIDENCE_DIR 'w5e-production-smoke-evidence.json'
           if (-not (Test-Path -LiteralPath $path)) {
             throw 'Missing w5e-production-smoke-evidence.json'
