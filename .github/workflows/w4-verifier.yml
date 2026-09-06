@@ -1,0 +1,41 @@
+name: W4 Tool-Call Verifier Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-verifier:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build W4 verifier
+        shell: pwsh
+        env:
+          GOWORK: "off"
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -o dist/ainovel-w4-verify.exe ./cmd/ainovel-w4-verify
+          Copy-Item scripts/w4-verify-windows.cmd dist/START_W4_VERIFY.cmd
+          Get-FileHash dist/ainovel-w4-verify.exe -Algorithm SHA256 | Format-List
+
+      - name: Upload W4 verifier
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w4-verifier-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
