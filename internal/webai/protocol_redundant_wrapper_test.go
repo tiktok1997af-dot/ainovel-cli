@@ -50,11 +50,18 @@ func TestRedundantWrapperNormalizationRejectsEmbeddedMarker(t *testing.T) {
 		t.Fatalf("embedded marker was incorrectly normalized: %q", got)
 	}
 
-	transport := &fakeTransport{responses: []string{raw, raw}}
+	responses := make([]string, 1+maxProtocolFormatRepairs)
+	for i := range responses {
+		responses[i] = raw
+	}
+	transport := &fakeTransport{responses: responses}
 	model := mustModel(t, transport)
 	_, err := model.Generate(context.Background(), []agentcore.Message{agentcore.UserMsg("plan")}, nil)
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("err = %v, want ErrProtocol", err)
+	}
+	if got := len(transport.promptSnapshot()); got != 1+maxProtocolFormatRepairs {
+		t.Fatalf("round trips = %d, want bounded strict rejection", got)
 	}
 }
 
