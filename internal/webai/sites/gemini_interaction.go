@@ -28,9 +28,14 @@ func (Gemini) Conversation(ctx context.Context, evaluator Evaluator) (Conversati
 	if snapshot.UserMessageCount < 0 {
 		return ConversationSnapshot{}, fmt.Errorf("gemini conversation snapshot: negative user message count")
 	}
+	if snapshot.ComposerLength < 0 {
+		return ConversationSnapshot{}, fmt.Errorf("gemini conversation snapshot: negative composer length")
+	}
 	if !snapshot.ComposerPresent {
 		snapshot.ComposerEmpty = false
+		snapshot.ComposerLength = 0
 	}
+	snapshot.SubmitAction = strings.TrimSpace(snapshot.SubmitAction)
 	snapshot.LastResponse = strings.TrimSpace(snapshot.LastResponse)
 	return snapshot, nil
 }
@@ -45,17 +50,19 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 	}
 
 	// Keep the side-effecting submit path synchronous from CDP's perspective.
-	// Poll readiness from Go, then execute exactly one short synchronous click.
-	// A click is not considered delivery acknowledgement; the transport performs
-	// a separate read-only SEND ACK phase after this method returns.
+	// Prompt preparation may probe/mutate only the composer. The send phase polls
+	// readiness without side effects until one canonical actionable control is
+	// found, then performs exactly one click. A click is not delivery ACK; the
+	// transport independently confirms a rendered user turn/BUSY/response.
 	prepareExpression := fmt.Sprintf(geminiPreparePromptExpressionTemplate, string(encoded))
 	raw, err := evaluator.Eval(ctx, prepareExpression)
 	if err != nil {
 		return err
 	}
 	var prepared struct {
-		OK     bool   `json:"ok"`
-		Reason string `json:"reason"`
+		OK             bool   `json:"ok"`
+		Reason         string `json:"reason"`
+		ComposerLength int    `json:"composer_length"`
 	}
 	if err := json.Unmarshal(raw, &prepared); err != nil {
 		return fmt.Errorf("gemini prepare prompt result: %w", err)
@@ -66,6 +73,9 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 			reason = "prompt composer is not ready"
 		}
 		return fmt.Errorf("gemini submit: %s", reason)
+	}
+	if prepared.ComposerLength <= 0 {
+		return fmt.Errorf("gemini submit: prepared composer is empty")
 	}
 
 	deadline := time.Now().Add(geminiSendWait)
@@ -184,11 +194,10 @@ const geminiConversationExpression = `(() => {
   }
 
   // A send click seeds sanitized capture state containing only response count,
-  // a length/hash signature and timestamps. Gemini can briefly hide its Stop
-  // control while a response is still changing. Treat recent DOM text activity
-  // as BUSY for a short bounded grace independent of any protocol markers.
-  // This prevents early capture without coupling transport completion to model-
-  // generated framing. No prompt or response text is stored in page state.
+  // a length/hash signature, composer length, action strategy and timestamps.
+  // Gemini can briefly hide its Stop control while a response is still changing.
+  // Treat recent DOM text activity as BUSY for a short bounded grace independent
+  // of any protocol markers. No prompt or response text is stored in page state.
   const last = texts.length ? texts[texts.length - 1] : '';
   const captureState = window.__ainovelWebCaptureState;
   if (captureState && last) {
@@ -253,6 +262,8 @@ const geminiConversationExpression = `(() => {
     user_message_count: userMessageCount,
     composer_present: Boolean(composer),
     composer_empty: Boolean(composer) && composerText.length === 0,
+    composer_length: composerText.length,
+    submit_action: captureState ? String(captureState.submitAction || '') : '',
     last_response: last.length > max ? last.slice(0, max) : last,
     truncated: last.length > max
   };
@@ -275,6 +286,12 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     }
     return null;
   };
+  const readComposer = (composer) => String(
+    (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
+      ? composer.value
+      : (composer.innerText || composer.textContent || '')
+  );
+  const samePrompt = (actual) => String(actual || '').replace(/\r\n/g, '\n').trim() === String(prompt).replace(/\r\n/g, '\n').trim();
 
   const composer = firstVisible([
     'rich-textarea .ql-editor[contenteditable="true"]',
@@ -284,13 +301,16 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     '[aria-label="Enter a prompt here"]',
     'textarea[aria-label*="prompt" i]'
   ]);
-  if (!composer) return {ok: false, reason: 'prompt composer not found'};
+  if (!composer) return {ok: false, reason: 'prompt composer not found', composer_length: 0};
   composer.focus();
 
   if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
     const proto = composer instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (setter) setter.call(composer, prompt); else composer.value = prompt;
+    try {
+      composer.dispatchEvent(new InputEvent('beforeinput', {bubbles: true, cancelable: true, inputType: 'insertText', data: prompt}));
+    } catch (_) {}
     composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
     composer.dispatchEvent(new Event('change', {bubbles: true}));
   } else {
@@ -299,15 +319,29 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     range.selectNodeContents(composer);
     selection.removeAllRanges();
     selection.addRange(range);
+    try {
+      composer.dispatchEvent(new InputEvent('beforeinput', {bubbles: true, cancelable: true, inputType: 'insertText', data: prompt}));
+    } catch (_) {}
     let inserted = false;
     try { inserted = document.execCommand('insertText', false, prompt); } catch (_) {}
-    if (!inserted || String(composer.innerText || '').trim() !== String(prompt).trim()) {
+    if (!inserted || !samePrompt(readComposer(composer))) {
+      // Last-resort framework-compatible mutation. The event is dispatched after
+      // the DOM value is present so controlled editors can read the actual value.
       composer.textContent = prompt;
       composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
     }
     composer.dispatchEvent(new Event('change', {bubbles: true}));
   }
-  return {ok: true, reason: ''};
+
+  const actual = readComposer(composer);
+  if (!samePrompt(actual)) {
+    return {ok: false, reason: 'prompt composer did not retain prepared text', composer_length: String(actual || '').trim().length};
+  }
+  const composerLength = String(actual || '').trim().length;
+  if (composerLength === 0) {
+    return {ok: false, reason: 'prompt composer is empty after prepare', composer_length: 0};
+  }
+  return {ok: true, reason: '', composer_length: composerLength};
 })()`
 
 const geminiClickSendExpression = `(() => {
@@ -318,14 +352,9 @@ const geminiClickSendExpression = `(() => {
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
-  const firstVisible = (selectors) => {
-    for (const selector of selectors) {
-      for (const el of document.querySelectorAll(selector)) {
-        if (visible(el)) return el;
-      }
-    }
-    return null;
-  };
+  const disabled = (el) => Boolean(el && (
+    el.disabled || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true'
+  ));
   const signature = (text) => {
     const value = String(text || '');
     let hash = 2166136261;
@@ -335,42 +364,122 @@ const geminiClickSendExpression = `(() => {
     }
     return value.length + ':' + String(hash >>> 0);
   };
+  const composerSelectors = [
+    'rich-textarea .ql-editor[contenteditable="true"]',
+    'rich-textarea [contenteditable="true"]',
+    'div.ql-editor[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[aria-label="Enter a prompt here"]',
+    'textarea[aria-label*="prompt" i]'
+  ];
+  const firstVisible = (selectors) => {
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (visible(el)) return el;
+      }
+    }
+    return null;
+  };
+  const explicitSendSemantic = (el) => {
+    if (!el) return false;
+    const aria = String(el.getAttribute('aria-label') || '').trim().toLowerCase();
+    if (aria.includes('send') || aria.includes('submit') || aria.includes('gửi')) return true;
+    const cls = String(el.className || '').toLowerCase();
+    if (cls.includes('send-button') || cls.includes('submit')) return true;
+    const testID = String(el.getAttribute('data-test-id') || '').toLowerCase();
+    if (testID === 'send-button') return true;
+    const icon = el.querySelector && el.querySelector('mat-icon');
+    const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
+    return iconText === 'send' || iconText === 'send_spark' || iconText === 'arrow_upward';
+  };
+  const nativeDescendant = (candidate) => {
+    if (!candidate) return null;
+    if (candidate instanceof HTMLButtonElement) return candidate;
+    for (const root of [candidate.shadowRoot, candidate]) {
+      if (!root || !root.querySelectorAll) continue;
+      for (const button of root.querySelectorAll('button')) {
+        if (visible(button)) return button;
+      }
+    }
+    return null;
+  };
+  const canonicalAction = (candidate) => {
+    if (!candidate) return null;
+    const native = nativeDescendant(candidate);
+    if (native) {
+      return {
+        element: native,
+        strategy: candidate instanceof HTMLButtonElement
+          ? 'native-button'
+          : (candidate.shadowRoot && candidate.shadowRoot.contains(native) ? 'shadow-native-button' : 'nested-native-button')
+      };
+    }
+    const tag = String(candidate.tagName || '').toLowerCase();
+    if (tag === 'gem-icon-button' && explicitSendSemantic(candidate)) {
+      return {element: candidate, strategy: 'custom-send-host'};
+    }
+    if (candidate.getAttribute('role') === 'button' && explicitSendSemantic(candidate)) {
+      return {element: candidate, strategy: 'semantic-role-button'};
+    }
+    return null;
+  };
   const sendSelectors = [
-    'gem-icon-button.send-button[aria-disabled="false"]',
-    'gem-icon-button.submit[aria-disabled="false"]',
-    '[data-test-id="send-button-container"] gem-icon-button',
     '[data-test-id="send-button-container"] button',
-    '[data-test-id="send-button"]',
+    'button[data-test-id="send-button"]',
     'button[aria-label*="Send message" i]',
     'button[aria-label="Send"]',
     'button[aria-label*="Submit" i]',
     'button[aria-label*="Gửi" i]',
+    'button.send-button',
+    'gem-icon-button.send-button',
+    'gem-icon-button.submit',
+    '[data-test-id="send-button-container"] gem-icon-button',
+    '[data-test-id="send-button"]',
     'gem-icon-button[aria-label*="Send" i]',
     'gem-icon-button[aria-label*="Submit" i]',
     'gem-icon-button[aria-label*="Gửi" i]',
     '[role="button"][aria-label*="Send" i]',
     '[role="button"][aria-label*="Submit" i]',
-    '[role="button"][aria-label*="Gửi" i]',
-    'button.send-button'
+    '[role="button"][aria-label*="Gửi" i]'
   ];
-  const findSend = () => {
-    const direct = firstVisible(sendSelectors);
-    if (direct) return direct;
+  const findSendAction = () => {
+    const composer = firstVisible(composerSelectors);
+    if (composer) {
+      const form = composer.closest && composer.closest('form');
+      if (form) {
+        for (const button of form.querySelectorAll('button[type="submit"], button:not([type])')) {
+          if (!visible(button) || !explicitSendSemantic(button)) continue;
+          return canonicalAction(button);
+        }
+      }
+    }
+    for (const selector of sendSelectors) {
+      for (const candidate of document.querySelectorAll(selector)) {
+        if (!visible(candidate)) continue;
+        const action = canonicalAction(candidate);
+        if (action) return action;
+      }
+    }
     for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
-      if (!visible(control)) continue;
-      const aria = String(control.getAttribute('aria-label') || '').trim().toLowerCase();
-      if (aria.includes('send') || aria.includes('submit') || aria.includes('gửi')) return control;
-      const icon = control.querySelector('mat-icon');
-      const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
-      if (iconText === 'send' || iconText === 'send_spark' || iconText === 'arrow_upward') return control;
+      if (!visible(control) || !explicitSendSemantic(control)) continue;
+      const action = canonicalAction(control);
+      if (action) return action;
     }
     return null;
   };
 
-  const sendButton = findSend();
-  if (!sendButton) return {ok: false, retry: true, reason: 'send control not found'};
-  const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
-  if (disabled) return {ok: false, retry: true, reason: 'send control is disabled'};
+  const composer = firstVisible(composerSelectors);
+  if (!composer) return {ok: false, retry: false, reason: 'prompt composer disappeared before send'};
+  const composerText = String(
+    (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
+      ? composer.value
+      : (composer.innerText || composer.textContent || '')
+  ).trim();
+  if (!composerText) return {ok: false, retry: false, reason: 'prompt composer is empty before send'};
+
+  const action = findSendAction();
+  if (!action) return {ok: false, retry: true, reason: 'actionable send control not found'};
+  if (disabled(action.element)) return {ok: false, retry: true, reason: 'actionable send control is disabled'};
 
   const responseRoots = Array.from(document.querySelectorAll(
     'model-response, [data-test-id="model-response"], .model-response'
@@ -390,11 +499,14 @@ const geminiClickSendExpression = `(() => {
     lastSignature: previousSignature,
     currentSignature: previousSignature,
     lastChangedAt: Date.now(),
-    observedChange: false
+    observedChange: false,
+    composerLengthBeforeClick: composerText.length,
+    submitAction: action.strategy
   };
 
-  sendButton.click();
-  return {ok: true, retry: false, reason: ''};
+  action.element.focus();
+  action.element.click();
+  return {ok: true, retry: false, reason: '', action: action.strategy};
 })()`
 
 const geminiCancelExpression = `(() => {
@@ -405,30 +517,58 @@ const geminiCancelExpression = `(() => {
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
+  const disabled = (el) => Boolean(el && (
+    el.disabled || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true'
+  ));
+  const explicitStopSemantic = (el) => {
+    if (!el) return false;
+    const aria = String(el.getAttribute('aria-label') || '').trim().toLowerCase();
+    if (aria.includes('stop') || aria.includes('dừng')) return true;
+    const icon = el.querySelector && el.querySelector('mat-icon');
+    const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
+    return iconText === 'stop' || iconText === 'stop_circle';
+  };
+  const canonicalAction = (candidate) => {
+    if (!candidate) return null;
+    if (candidate instanceof HTMLButtonElement) return candidate;
+    for (const root of [candidate.shadowRoot, candidate]) {
+      if (!root || !root.querySelectorAll) continue;
+      for (const button of root.querySelectorAll('button')) {
+        if (visible(button)) return button;
+      }
+    }
+    if (String(candidate.tagName || '').toLowerCase() === 'gem-icon-button' && explicitStopSemantic(candidate)) return candidate;
+    if (candidate.getAttribute('role') === 'button' && explicitStopSemantic(candidate)) return candidate;
+    return null;
+  };
   const selectors = [
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
     'button[aria-label*="Dừng" i]',
+    '[data-test-id="stop-button"] button',
+    'button[data-test-id="stop-button"]',
+    'button.stop-button',
     'gem-icon-button[aria-label*="Stop" i]',
     'gem-icon-button[aria-label*="Dừng" i]',
-    '[data-test-id="stop-button"]',
-    'button.stop-button'
+    '[data-test-id="stop-button"]'
   ];
   for (const selector of selectors) {
-    for (const button of document.querySelectorAll(selector)) {
-      if (!visible(button)) continue;
-      button.click();
+    for (const candidate of document.querySelectorAll(selector)) {
+      if (!visible(candidate)) continue;
+      const action = canonicalAction(candidate);
+      if (!action || disabled(action)) continue;
+      action.focus();
+      action.click();
       return {clicked: true};
     }
   }
   for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
-    if (!visible(control)) continue;
-    const icon = control.querySelector('mat-icon');
-    const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
-    if (iconText === 'stop' || iconText === 'stop_circle') {
-      control.click();
-      return {clicked: true};
-    }
+    if (!visible(control) || !explicitStopSemantic(control)) continue;
+    const action = canonicalAction(control);
+    if (!action || disabled(action)) continue;
+    action.focus();
+    action.click();
+    return {clicked: true};
   }
   return {clicked: false};
 })()`
