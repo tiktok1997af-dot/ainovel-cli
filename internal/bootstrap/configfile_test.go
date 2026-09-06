@@ -279,18 +279,32 @@ func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
 	if string(rootExample) != exampleConfig {
 		t.Fatal("根目录 config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
 	}
+	packagedExample, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
+	if err != nil {
+		t.Fatalf("读取 config/config.example.jsonc: %v", err)
+	}
+	if string(packagedExample) != exampleConfig {
+		t.Fatal("config/config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+	}
 	var cfg Config
 	if err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
 		t.Fatalf("内置示例去注释后不是合法 JSON（用户照抄即坑）: %v", err)
 	}
-	if cfg.Provider == "" || cfg.ModelName == "" {
-		t.Fatal("示例应给出默认 provider/model")
+	if !cfg.Web.Enabled {
+		t.Fatal("WEB-only 示例必须启用 web.enabled")
 	}
-	if _, ok := cfg.Providers[cfg.Provider]; !ok {
-		t.Errorf("示例顶层 provider %q 未指向 providers 中的条目——指针正面样板自己悬空了", cfg.Provider)
+	if cfg.Web.Site != "gemini-web" {
+		t.Fatalf("WEB-only 示例 site=%q, want gemini-web", cfg.Web.Site)
 	}
-	if !contains(exampleConfig, "指针") {
-		t.Error("示例应点破“provider 是指针”——别让 #37 的认知陷阱回潮")
+	if len(cfg.Providers) != 0 {
+		t.Fatalf("WEB-only 示例不得包含 legacy providers: %#v", cfg.Providers)
+	}
+	cfg.FillDefaults()
+	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+		t.Fatalf("WEB-only 默认 runtime identity=%s/%s, want web/gemini-web", cfg.Provider, cfg.ModelName)
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		t.Fatalf("WEB-only 示例 ValidateBase: %v", err)
 	}
 }
 
