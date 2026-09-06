@@ -48,6 +48,28 @@ func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
 	}
 }
 
+func TestGeminiSubmitSupportsCurrentCustomSendControls(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"ok":true,"reason":""}`)}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.exprs) != 1 {
+		t.Fatalf("expressions = %d", len(e.exprs))
+	}
+	expr := e.exprs[0]
+	for _, want := range []string{
+		"gem-icon-button.send-button",
+		"gem-icon-button.submit",
+		"send-button-container",
+		"arrow_upward",
+		"Date.now() + 6000",
+	} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("submit expression missing current Gemini compatibility marker %q", want)
+		}
+	}
+}
+
 func TestGeminiCancelReportsClicked(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"clicked":true}`)}}
 	clicked, err := (Gemini{}).Cancel(context.Background(), e)
