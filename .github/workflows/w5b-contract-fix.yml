@@ -23,51 +23,52 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import textwrap
           path = Path('internal/bootstrap/configfile_test.go')
           text = path.read_text()
           start = text.index('func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {')
           end = text.index('\nfunc TestWriteStartupError', start)
-          replacement = r'''func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
-	if exampleConfig == "" {
-		t.Fatal("go:embed 未生效，exampleConfig 为空")
-	}
-	rootExample, err := os.ReadFile(filepath.Join("..", "..", "config.example.jsonc"))
-	if err != nil {
-		t.Fatalf("读取根目录 config.example.jsonc: %v", err)
-	}
-	if string(rootExample) != exampleConfig {
-		t.Fatal("根目录 config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
-	}
-	packagedExample, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
-	if err != nil {
-		t.Fatalf("读取 config/config.example.jsonc: %v", err)
-	}
-	if string(packagedExample) != exampleConfig {
-		t.Fatal("config/config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
-	}
-
-	var cfg Config
-	if err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
-		t.Fatalf("内置示例去注释后不是合法 JSON（用户照抄即坑）: %v", err)
-	}
-	if !cfg.Web.Enabled {
-		t.Fatal("WEB-only 示例必须启用 web.enabled")
-	}
-	if cfg.Web.Site != "gemini-web" {
-		t.Fatalf("WEB-only 示例 site=%q, want gemini-web", cfg.Web.Site)
-	}
-	if len(cfg.Providers) != 0 {
-		t.Fatalf("WEB-only 示例不得包含 legacy providers: %#v", cfg.Providers)
-	}
-	cfg.FillDefaults()
-	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
-		t.Fatalf("WEB-only 默认 runtime identity=%s/%s, want web/gemini-web", cfg.Provider, cfg.ModelName)
-	}
-	if err := cfg.ValidateBase(); err != nil {
-		t.Fatalf("WEB-only 示例 ValidateBase: %v", err)
-	}
-}
-'''
+          replacement = textwrap.dedent('''\
+          func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
+          \tif exampleConfig == "" {
+          \t\tt.Fatal("go:embed 未生效，exampleConfig 为空")
+          \t}
+          \trootExample, err := os.ReadFile(filepath.Join("..", "..", "config.example.jsonc"))
+          \tif err != nil {
+          \t\tt.Fatalf("读取根目录 config.example.jsonc: %v", err)
+          \t}
+          \tif string(rootExample) != exampleConfig {
+          \t\tt.Fatal("根目录 config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+          \t}
+          \tpackagedExample, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
+          \tif err != nil {
+          \t\tt.Fatalf("读取 config/config.example.jsonc: %v", err)
+          \t}
+          \tif string(packagedExample) != exampleConfig {
+          \t\tt.Fatal("config/config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+          \t}
+          \tvar cfg Config
+          \tif err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
+          \t\tt.Fatalf("内置示例去注释后不是合法 JSON（用户照抄即坑）: %v", err)
+          \t}
+          \tif !cfg.Web.Enabled {
+          \t\tt.Fatal("WEB-only 示例必须启用 web.enabled")
+          \t}
+          \tif cfg.Web.Site != "gemini-web" {
+          \t\tt.Fatalf("WEB-only 示例 site=%q, want gemini-web", cfg.Web.Site)
+          \t}
+          \tif len(cfg.Providers) != 0 {
+          \t\tt.Fatalf("WEB-only 示例不得包含 legacy providers: %#v", cfg.Providers)
+          \t}
+          \tcfg.FillDefaults()
+          \tif cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+          \t\tt.Fatalf("WEB-only 默认 runtime identity=%s/%s, want web/gemini-web", cfg.Provider, cfg.ModelName)
+          \t}
+          \tif err := cfg.ValidateBase(); err != nil {
+          \t\tt.Fatalf("WEB-only 示例 ValidateBase: %v", err)
+          \t}
+          }
+          ''')
           path.write_text(text[:start] + replacement + text[end:])
           PY
 
