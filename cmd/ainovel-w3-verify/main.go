@@ -19,7 +19,10 @@ import (
 	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
-const expectedText = "W3_LIVE_OK"
+const (
+	expectedText        = "W3_LIVE_OK"
+	initialReadyTimeout = 45 * time.Second
+)
 
 type w2EvidenceSummary struct {
 	Schema      string `json:"schema"`
@@ -86,7 +89,7 @@ func run(argv []string) int {
 		fmt.Fprintf(os.Stderr, "W3E FAILED: %v\n", err)
 		return 1
 	}
-	ready, err := waitReady(ctx, session, 30*time.Second)
+	ready, err := waitReady(ctx, session, initialReadyTimeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "W3E FAILED: %v\n", err)
 		return 1
@@ -145,6 +148,9 @@ func run(argv []string) int {
 }
 
 func waitReady(ctx context.Context, session *webai.SessionManager, timeout time.Duration) (webai.SessionSnapshot, error) {
+	if timeout <= 0 {
+		return session.Snapshot(), fmt.Errorf("Gemini READY timeout must be positive")
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -154,17 +160,34 @@ func waitReady(ctx context.Context, session *webai.SessionManager, timeout time.
 		if snap.State == webai.SessionReady {
 			return snap, nil
 		}
-		if snap.State == webai.SessionAuthRequired {
-			return snap, fmt.Errorf("W2 profile is no longer authenticated; run W2 login verification again")
+		if readyWaitTerminalState(snap.State) {
+			return snap, fmt.Errorf("browser session entered %s while waiting for Gemini READY: %s", snap.State, snap.Reason)
 		}
 		select {
 		case <-ctx.Done():
 			return session.Snapshot(), ctx.Err()
 		case <-deadline.C:
-			return session.Snapshot(), fmt.Errorf("timed out waiting for Gemini READY")
+			last := session.Snapshot()
+			if last.State == webai.SessionAuthRequired {
+				return last, fmt.Errorf("W2 profile remained AUTH_REQUIRED for %s; run W2 login verification again", timeout)
+			}
+			return last, fmt.Errorf("timed out after %s waiting for Gemini READY (last state %s: %s)", timeout, last.State, last.Reason)
 		case <-ticker.C:
+			// Chrome DevTools and Gemini account controls can appear a few seconds
+			// after the process starts. DEGRADED/AUTH_REQUIRED during this startup
+			// window are transitional; keep polling instead of declaring logout on
+			// the first unauthenticated-looking DOM snapshot.
 			_, _ = session.Refresh(ctx)
 		}
+	}
+}
+
+func readyWaitTerminalState(state webai.SessionState) bool {
+	switch state {
+	case webai.SessionFailed, webai.SessionStopped:
+		return true
+	default:
+		return false
 	}
 }
 
