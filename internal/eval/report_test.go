@@ -5,7 +5,6 @@ import "testing"
 func TestAggregateRepeatSummary(t *testing.T) {
 	c := writerSmokeCase()
 	pass := cleanResult()
-	pass.Metrics.Usage = UsageMetrics{UsageRecorded: true, CostUSD: 0.1}
 	pass.Metrics.ToolCalls = 10
 	warn := pass
 	warn.Outcome = Warn
@@ -28,8 +27,7 @@ func TestAggregateRepeatSummary(t *testing.T) {
 	if cr.Summary.HardFailRuns != 1 || cr.Summary.WarningRuns != 1 {
 		t.Fatalf("summary runs 不正确: %+v", cr.Summary)
 	}
-	if cr.Summary.CostUSD == nil || cr.Summary.CostUSD.Avg != 0.1 ||
-		cr.Summary.ToolCalls == nil || cr.Summary.ToolCalls.Avg != 10 {
+	if cr.Summary.ToolCalls == nil || cr.Summary.ToolCalls.Avg != 10 {
 		t.Fatalf("range summary 不正确: %+v", cr.Summary)
 	}
 

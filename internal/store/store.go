@@ -30,7 +30,6 @@ type Store struct {
 	World          *WorldStore
 	Checkpoints    *CheckpointStore
 	Sessions       *SessionStore
-	Usage          *UsageStore
 	Simulation     *SimulationStore
 	Decisions      *DecisionStore
 	ChapterRecords *ChapterRecordStore
@@ -69,7 +68,6 @@ func NewStore(dir string) *Store {
 		World:          NewWorldStore(newIO(dir)),
 		Checkpoints:    NewCheckpointStore(io),
 		Sessions:       NewSessionStore(newIO(dir)),
-		Usage:          NewUsageStore(newIO(dir)),
 		Simulation:     NewSimulationStore(newIO(dir)),
 		Decisions:      NewDecisionStore(newIO(dir)),
 		ChapterRecords: NewChapterRecordStore(newIO(dir)),

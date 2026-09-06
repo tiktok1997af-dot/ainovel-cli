@@ -10,6 +10,97 @@ permissions:
   contents: read
 
 jobs:
+  web-only-residue-audit:
+    name: WEB-only residue audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject temporary verifier and packaging residue
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_paths=(
+            .github/workflows/w2-verifier.yml
+            .github/workflows/w3-verifier.yml
+            .github/workflows/w4-verifier.yml
+            cmd/ainovel-w2-verify
+            cmd/ainovel-w3-verify
+            cmd/ainovel-w4-verify
+            scripts/w2-verify-windows.cmd
+            scripts/w3-verify-windows.cmd
+            scripts/w4-verify-windows.cmd
+            docs/.w5d-pr-scope-placeholder
+            Dockerfile
+            docker-compose.yml
+            .dockerignore
+            .github/workflows/docker.yml
+          )
+          for path in "${forbidden_paths[@]}"; do
+            if [ -e "$path" ]; then
+              echo "::error file=$path::temporary/unsupported residue must not exist on the WEB-only lock head"
+              exit 1
+            fi
+          done
+
+      - name: Reject active AI API runtime and release residue
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          check_absent() {
+            local pattern="$1"
+            shift
+            if grep -RInE --exclude='*_test.go' --exclude='w55-no-api-audit.sh' -- "$pattern" "$@"; then
+              echo "::error::forbidden WEB-only residue matched: $pattern"
+              failed=1
+            fi
+          }
+
+          check_absent 'llm\.NewModel[[:space:]]*\(' internal cmd
+          check_absent 'With(APIKey|BaseURL)[[:space:]]*\(' internal cmd
+          check_absent 'ForRoleWithFailover|failoverModel' internal cmd
+          check_absent 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY' .github/workflows/release.yml .github/scripts scripts internal cmd
+          check_absent 'api\.openai\.com|api\.anthropic\.com|openrouter\.ai/api|generativelanguage\.googleapis\.com' .github/workflows/release.yml .github/scripts scripts internal cmd
+          check_absent 'github\.com/voocel/ainovel-cli/releases|ghcr\.io/voocel/ainovel-cli' .github/workflows/release.yml .github/scripts scripts internal cmd
+
+          test "$failed" -eq 0
+
+      - name: Reject stale current-product instructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_docs=(
+            README.md
+            HUONG_DAN_SU_DUNG.md
+            docs/architecture.md
+            docs/context-management.md
+            docs/import-pipeline.md
+            docs/observability.md
+          )
+          failed=0
+          for pattern in '"api_key"[[:space:]]*:' 'docker[[:space:]]+compose[[:space:]]+(build|run|up|pull|start)([[:space:]]|$)' 'ollama[[:space:]]+create' 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY'; do
+            if grep -nEi -- "$pattern" "${current_docs[@]}"; then
+              echo "::error::stale current-product instruction matched: $pattern"
+              failed=1
+            fi
+          done
+          test "$failed" -eq 0
+
+      - name: Verify fork-locked release surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'const ProductRepository = "tiktok1997af-dot/ainovel-cli"' internal/version/repository.go
+          grep -Fq 'REPO="tiktok1997af-dot/ainovel-cli"' scripts/install.sh
+          grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
+          ! grep -Eq 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY' .github/workflows/release.yml .github/scripts/gen-changelog.sh
+
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
   test:
     strategy:
       fail-fast: false

@@ -82,7 +82,7 @@ Judge 不发明新评分维度——维度严格等于 `domain.DimensionScore` �
 
 ### 2.7 每次只验证一个变量
 
-A/B 的硬约束：同需求、同配置、同模型/provider、同风格、隔离输出目录。Baseline = 当前正式 prompt，Variant = 只替换本次要验证的 prompt 文件。一次实验不要同时改 Writer/Architect/Editor/Arbiter。
+A/B 的硬约束：同需求、同配置、同一 `web/gemini-web` 浏览器运行时、同风格、隔离输出目录。Baseline = 当前正式 prompt，Variant = 只替换本次要验证的 prompt 文件。一次实验不要同时改 Writer/Architect/Editor/Arbiter。
 
 ---
 
@@ -99,7 +99,7 @@ A/B 的硬约束：同需求、同配置、同模型/provider、同风格、隔�
    ├── diag.Diagnose(store)      → Report{Stats, Findings}      （事实 + 运行时）
    ├── stylestat.Compute(input)  → 全书文体统计                 （质量回归骨干）
    ├── case 契约断言             → 期望 checkpoint/phase/工具契约（diag 不覆盖的）
-   ├── usage / cost / token      → 从 meta/usage.json 读
+   ├── WEB runtime identity      → 固定 `web/gemini-web`（不生成账单/token/cache 估算）
    └── tool_calls                → 从 meta/sessions/*.jsonl 读真实工具调用
    ▼
 [Graders]
@@ -114,7 +114,7 @@ A/B 的硬约束：同需求、同配置、同模型/provider、同风格、隔�
 
 依赖方向：`eval → host → agents → tools → store → domain`，横向复用 `diag` / `stylestat`。评测层**不反向依赖**运行时控制流，只读 Store 与只读评测器。
 
-> **当前实现覆盖确定性主线**：无 `--variant` 时为 `mode=single`；传 `--variant` 时为 `mode=ab`，同一 case 隔离运行 baseline 与 variant，并生成 delta。Collectors 已接 `diag.Diagnose`、case 契约、`stylestat.Compute`、`meta/usage.json`、session tool call 计数；Graders 已接确定性门禁、baseline/variant diag delta、cost/token/tool call delta、stylestat delta。Runner 直接 `host.New` 装配并自带章数上限截停，**不复用无章数上限的 `headless.Run`**。LLM Judge 与 Human 仍是后续可选层，不参与当前确定性门禁。
+> **当前实现覆盖确定性主线**：无 `--variant` 时为 `mode=single`；传 `--variant` 时为 `mode=ab`，同一 case 隔离运行 baseline 与 variant，并生成 delta。Collectors 已接 `diag.Diagnose`、case 契约、`stylestat.Compute`、session tool call 计数；Graders 已接确定性门禁、baseline/variant diag delta、tool-call delta、stylestat delta。Runner 直接 `host.New` 装配并自带章数上限截停，**不复用无章数上限的 `headless.Run`**。Gemini Web 不向本地桥提供权威账单、token 或 provider-cache 遥测，因此评测系统不采集、不推算、也不以这些数值做门禁。LLM Judge 与 Human 仍是后续可选层，不参与当前确定性门禁。
 
 ---
 

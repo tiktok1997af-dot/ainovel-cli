@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/litellm"
+	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
 // flakyModel 前 fails 次返回可重试错误，之后按 mockModel 响应。
@@ -57,22 +57,23 @@ func TestCallStructuredNotifiesRetries(t *testing.T) {
 	}
 }
 
-// TestBriefErrIncludesAdapterFacts 守护错误回显的可诊断性：网关 message 可能只有一句
-// "Provider returned error"，回显必须补上 litellm 携带的结构化事实（分类/HTTP 状态/provider/模型），
-// 且事实在前——截断时优先保住它们；非适配器错误保持原样。
-func TestBriefErrIncludesAdapterFacts(t *testing.T) {
-	le := &litellm.LiteLLMError{
-		Type: litellm.ErrorTypeProvider, StatusCode: 502,
-		Provider: "openai", Model: "gpt-x", Message: "Provider returned error",
+// TestBriefErrIncludesWebTransportFacts 守护 WEB-only 错误回显的可诊断性：
+// importer 只依赖 browser transport taxonomy，不依赖 HTTP provider/LiteLLM 类型。
+func TestBriefErrIncludesWebTransportFacts(t *testing.T) {
+	webErr := &webai.Error{
+		Kind:  webai.ErrorTransport,
+		Op:    "gemini.submit",
+		Cause: errors.New("connection refused"),
+		Retry: true,
 	}
-	got := briefErr(fmt.Errorf("外层包装：%w", le))
-	for _, want := range []string{"上游服务错误", "HTTP 502", "openai", "gpt-x", "Provider returned error"} {
+	got := briefErr(fmt.Errorf("外层包装：%w", webErr))
+	for _, want := range []string{"transport", "gemini.submit", "connection refused"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("回显应包含 %q，得 %q", want, got)
 		}
 	}
-	if !strings.HasPrefix(got, "上游服务错误") {
-		t.Fatalf("结构化事实应在前，得 %q", got)
+	if !strings.HasPrefix(got, "transport") {
+		t.Fatalf("WEB transport facts 应在前，得 %q", got)
 	}
 	if got := briefErr(errors.New("普通错误")); got != "普通错误" {
 		t.Fatalf("非适配器错误应保持原样，得 %q", got)

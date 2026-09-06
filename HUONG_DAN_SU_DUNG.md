@@ -1,273 +1,312 @@
-# Hướng Dẫn Sử Dụng ainovel-cli (Tiếng Việt)
+# Hướng Dẫn Sử Dụng ainovel-cli — WEB-only Gemini
 
-`ainovel-cli` là công cụ dòng lệnh (CLI) sáng tác tiểu thuyết dài kỳ tự động bằng AI với kiến trúc **Đa Agent (Coordinator → Architect → Writer → Editor)**. Giao diện người dùng (TUI) được Việt hóa 100% thân thiện và hỗ trợ sáng tác linh hoạt bằng cả **Tiếng Việt (mặc định)** hoặc **Tiếng Trung**.
+Tài liệu này mô tả **runtime hiện tại** của `ainovel-cli`.
 
----
+> `ainovel-cli` chỉ dùng **Gemini Web trong cửa sổ Google Chrome hiển thị**. Người dùng tự đăng nhập vào Gemini trong browser profile bền vững. Không có AI API key, Base URL, Ollama, provider switching hay Docker runtime.
 
-## 📑 Mục Lục
-1. [Yêu Cầu Hệ Thống](#1-yêu-cầu-hệ-thống)
-2. [Cài Đặt Nhanh](#2-cài-đặt-nhanh)
-3. [Tùy Chọn Ngôn Ngữ Sáng Tác (Tiếng Việt / Tiếng Trung)](#3-tùy-chọn-ngôn-ngữ-sáng-tác-tiếng-việt--tiếng-trung)
-4. [Cấu Hình Nhà Cung Cấp AI (LLM)](#4-cấu-hình-nhà-cung-cấp-ai-llm)
-   - [Cách 1: Dùng Ollama Cục Bộ (Miễn phí, 100% Offline)](#cách-1-dùng-ollama-cục-bộ-miễn-phí-100-offline)
-   - [Cách 2: Dùng Cloud API (OpenRouter, Gemini, Claude, OpenAI, DeepSeek)](#cách-2-dùng-cloud-api-openrouter-gemini-claude-openai-deepseek)
-   - [Cách 3: Phối hợp nhiều Model theo vai trò (Tối ưu chi phí & chất lượng)](#cách-3-phối-hợp-nhiều-model-theo-vai-trò-tối-ưu-chi-phí--chất-lượng)
-5. [Bắt Đầu Sáng Tác](#5-bắt-đầu-sáng-tác)
-   - [Giao diện TUI trực quan](#giao-diện-tui-trực-quan)
-   - [Chế độ Headless (Chạy ngầm server)](#chế-độ-headless-chạy-ngầm-server)
-6. [Quản Lý Sáng Tác Nhiều Truyện Độc Lập](#6-quản-lý-sáng-tác-nhiều-truyện-độc-lập)
-7. [Bảng Lệnh Điều Khiển Trong TUI (Slash Commands)](#7-bảng-lệnh-điều-khiển-trong-tui-slash-commands)
-8. [Xuất Truyện (TXT / EPUB)](#8-xuất-truyện-txt--epub)
-9. [Quy Tắc & Lưu Ý Quan Trọng](#9-quy-tắc--lưu-ý-quan-trọng)
+## 1. Chuẩn bị
 
----
+Bạn cần:
 
-## 1. Yêu Cầu Hệ Thống
+- Google Chrome cài trên máy desktop;
+- tài khoản có thể đăng nhập và sử dụng Gemini Web;
+- binary `ainovel-cli` phù hợp hệ điều hành;
+- kết nối mạng tới Gemini Web.
 
-- **Khuyến nghị nhất**: Đã cài đặt [Docker](https://www.docker.com/) & Docker Desktop (Windows / macOS / Linux).
-- **Hoặc Chạy từ Source**: Máy đã cài đặt [Go](https://go.dev/) ≥ 1.21.
-- **LLM**: 
-  - Máy có GPU (Nvidia VRAM ≥ 12GB) nếu muốn chạy Ollama cục bộ với model Qwen 2.5 / 3.5.
-  - Hoặc API Key từ OpenRouter, Anthropic, Google Gemini, OpenAI, DeepSeek.
+Không cần và không nên chuẩn bị Gemini API key, OpenAI key, Anthropic key, OpenRouter key hay DeepSeek key.
 
----
+## 2. Cài đặt
 
-## 2. Cài Đặt Nhanh
+Release chính thức của fork:
 
-### Bước 1: Clone Repo & Chuẩn Bị Thư Mục
+`https://github.com/tiktok1997af-dot/ainovel-cli/releases`
+
+### Linux/macOS
+
 ```bash
-git clone https://github.com/AnhDT955/Ainovel-cli.git
-cd Ainovel-cli
-
-# Tạo thư mục chứa cấu hình và thư mục chứa truyện
-mkdir -p config workspace novels
+curl -fsSL https://raw.githubusercontent.com/tiktok1997af-dot/ainovel-cli/main/scripts/install.sh | sh
 ```
 
-### Bước 2: Build Docker Image
+Installer chỉ tải artifact/checksum từ repository này, dùng HTTPS và xác minh SHA-256.
+
+### Windows
+
+Tải archive phù hợp từ GitHub Releases, giải nén `ainovel-cli.exe` và chạy trực tiếp hoặc thêm thư mục chứa binary vào `PATH`.
+
+### Build từ source
+
 ```bash
-docker compose build
-```
-*(Nếu build từ source Go: `go build -o ainovel-cli ./cmd/ainovel-cli`)*
-
----
-
-## 3. Tùy Chọn Ngôn Ngữ Sáng Tác (Tiếng Việt / Tiếng Trung)
-
-Trong file cấu hình `config/config.json`, bạn có thể chỉ định trường `"language"`:
-- `"language": "vi"` (Mặc định): Toàn bộ dàn ý, nhân vật, bối cảnh thế giới, quy chuẩn văn phong chống sáo rỗng AI và nội dung từng chương sẽ được sinh ra bằng **Tiếng Việt** tự nhiên, mượt mà.
-- `"language": "zh"`: Nội dung truyện được sinh ra bằng **Tiếng Trung** nguyên bản (phù hợp nếu bạn viết truyện Trung hoặc muốn dịch sau).
-
-> 💡 **Ghi chú**: Giao diện hiển thị, bảng điều khiển TUI, trạng thái và các thông báo lỗi luôn hiển thị **100% bằng Tiếng Việt**.
-
----
-
-## 4. Cấu Hình Nhà Cung Cấp AI (LLM)
-
-Tạo file `config/config.json` trong thư mục `Ainovel-cli`:
-
-### Cách 1: Dùng Ollama Cục Bộ (Miễn phí, 100% Offline)
-
-1. **Tạo model trên Ollama với cửa sổ ngữ cảnh (Context Window) 65536 tokens**:
-   - Mở PowerShell / Terminal và chạy:
-     ```powershell
-     @"
-     FROM qwen2.5:14b
-     PARAMETER num_ctx 65536
-     "@ | Out-File -FilePath "$env:TEMP\ainovel.Modelfile" -Encoding ascii
-
-     ollama create ainovel-qwen -f "$env:TEMP\ainovel.Modelfile"
-     ```
-2. **Nội dung `config/config.json`**:
-   ```json
-   {
-     "language": "vi",
-     "provider": "ollama",
-     "model": "ainovel-qwen",
-     "providers": {
-       "ollama": {
-         "base_url": "http://host.docker.internal:11434/v1",
-         "stream_idle_timeout": "300s"
-       }
-     },
-     "context_window": 65536,
-     "thinking": "off",
-     "style": "default"
-   }
-   ```
-   > ⚠️ **Lưu ý**: `context_window` trong `config.json` **bắt buộc phải khớp** với `num_ctx` đã đặt trong Modelfile của Ollama.
-
----
-
-### Cách 2: Dùng Cloud API (OpenRouter, Gemini, Claude, OpenAI, DeepSeek)
-
-#### Ví dụ OpenRouter:
-```json
-{
-  "language": "vi",
-  "provider": "openrouter",
-  "model": "anthropic/claude-3.5-sonnet",
-  "providers": {
-    "openrouter": {
-      "api_key": "sk-or-v1-YOUR_OPENROUTER_API_KEY"
-    }
-  },
-  "context_window": 128000,
-  "thinking": "off",
-  "style": "default"
-}
+git clone https://github.com/tiktok1997af-dot/ainovel-cli.git
+cd ainovel-cli
+go build -o ainovel-cli ./cmd/ainovel-cli
 ```
 
-#### Ví dụ Google Gemini:
-```json
-{
-  "language": "vi",
-  "provider": "gemini",
-  "model": "gemini-2.5-pro",
-  "providers": {
-    "gemini": {
-      "api_key": "YOUR_GEMINI_API_KEY"
-    }
-  },
-  "context_window": 1000000,
-  "style": "default"
-}
+## 3. Thiết lập lần đầu
+
+Chạy:
+
+```bash
+ainovel-cli
 ```
 
-#### Ví dụ DeepSeek API:
-```json
-{
-  "language": "vi",
-  "provider": "deepseek",
-  "model": "deepseek-chat",
-  "providers": {
-    "deepseek": {
-      "api_key": "YOUR_DEEPSEEK_API_KEY"
-    }
-  },
-  "context_window": 64000,
-  "style": "default"
-}
-```
+Nếu chưa có cấu hình, Setup Wizard sẽ chạy trước TUI.
 
----
+Wizard hiện chỉ cấu hình WEB runtime:
 
-### Cách 3: Phối hợp nhiều Model theo vai trò (Tối ưu chi phí & chất lượng)
-Hệ thống cho phép gán model mạnh (Claude 3.5 Sonnet / DeepSeek Reasoner) làm **Biên tập / Kiến trúc sư** và model nhanh/rẻ (DeepSeek Chat / Ollama) làm **Người viết**:
+1. **Ngôn ngữ sáng tác**: `vi` hoặc `zh`.
+2. **Chrome executable**: có thể để trống để tự dò.
+3. **Persistent profile name**: mặc định `default`.
+
+Wizard không hỏi:
+
+- provider AI;
+- API key;
+- Base URL;
+- model ID kiểu API;
+- Ollama;
+- fallback provider.
+
+Sau đó ainovel-cli mở cửa sổ Chrome do nó quản lý.
+
+### Nếu hiện `AUTH_REQUIRED`
+
+1. Chuyển sang cửa sổ Chrome vừa được mở.
+2. Đăng nhập tài khoản Google/Gemini **trực tiếp trên website**.
+3. Hoàn tất mọi bước xác minh mà Google yêu cầu.
+4. Giữ nguyên browser profile đó.
+5. Quay lại ainovel-cli và chờ readiness chuyển sang `READY`.
+
+Không nhập mật khẩu Google, cookie hay session token vào TUI/config.
+
+## 4. Cấu hình mẫu
 
 ```json
 {
+  "web": {
+    "enabled": true,
+    "site": "gemini-web",
+    "profile_name": "default"
+  },
   "language": "vi",
-  "provider": "ollama",
-  "model": "ainovel-qwen",
-  "providers": {
-    "ollama": { "base_url": "http://host.docker.internal:11434/v1" },
-    "openrouter": { "api_key": "sk-or-v1-YOUR_KEY" }
-  },
-  "roles": {
-    "architect": { "provider": "openrouter", "model": "anthropic/claude-3.5-sonnet" },
-    "editor": { "provider": "openrouter", "model": "anthropic/claude-3.5-sonnet" },
-    "writer": { "provider": "ollama", "model": "ainovel-qwen" }
-  },
-  "context_window": 65536,
-  "style": "default"
+  "reasoning_effort": "medium",
+  "style": "default",
+  "context_window": 200000
 }
 ```
 
----
+Nếu Chrome không tự dò được, thêm:
 
-## 5. Bắt Đầu Sáng Tác
+```json
+{
+  "web": {
+    "enabled": true,
+    "site": "gemini-web",
+    "browser_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "profile_name": "default"
+  }
+}
+```
 
-### Giao diện TUI trực quan
+`context_window` là ngân sách context **cục bộ** của ainovel-cli. Nó không phải một tham số API và không chứng minh context limit thực tế của tài khoản Gemini Web.
 
-Chạy bằng Docker Compose:
+Không thêm `providers`, `api_key`, `base_url` hoặc cấu hình Ollama.
+
+## 5. Trạng thái browser AI
+
+Runtime có thể hiển thị các trạng thái:
+
+- `STARTING` — đang khởi tạo browser/session;
+- `AUTH_REQUIRED` — cần người dùng đăng nhập thủ công;
+- `READY` — Gemini Web sẵn sàng;
+- `BUSY` — đang có lượt AI hoạt động;
+- `DEGRADED` — phiên còn tồn tại nhưng readiness không bảo đảm;
+- `FAILED` — browser/session không thể tiếp tục;
+- `STOPPED` — session đã dừng.
+
+Không có nhánh tự động chuyển sang provider API khi browser lỗi.
+
+## 6. `/model`
+
+Trong runtime hiện tại, `/model` là **read-only status panel**.
+
+Nó dùng để xem:
+
+- transport WEB-only;
+- site/model label `Gemini Web`;
+- readiness state;
+- browser PID/profile khi có;
+- hướng dẫn đăng nhập khi cần.
+
+`/model` không dùng để chọn Claude/OpenAI/DeepSeek/Ollama hay đổi API model.
+
+## 7. `/config`
+
+`/config` chỉ dành cho browser settings:
+
+- Chrome executable path;
+- persistent profile name;
+- site hiện cố định `gemini-web`.
+
+Thay đổi được lưu và áp dụng an toàn ở lần khởi động tiếp theo.
+
+`/config` không chấp nhận API key, Base URL, cookie, Google credential hoặc provider registry.
+
+## 8. Bắt đầu sáng tác
+
+Khi Gemini Web ở `READY`, làm việc trong TUI như bình thường:
+
+- nhập ý tưởng/chỉ dẫn vào ô chat;
+- dùng chế độ bắt đầu nhanh hoặc đồng sáng tác;
+- nhấn `/` để xem slash commands;
+- `Ctrl+C` hai lần để lưu và thoát an toàn.
+
+Các tác nhân sáng tác vẫn được điều phối cục bộ; các lượt cần AI đều đi qua cùng `WebChatModel -> Gemini Web`.
+
+## 9. Các slash command chính
+
+| Lệnh | Công dụng hiện tại |
+|---|---|
+| `/help` | Xem trợ giúp |
+| `/model` | Xem trạng thái Gemini Web/browser — chỉ đọc |
+| `/config` | Chỉnh Chrome path/profile |
+| `/diag` | Chẩn đoán sức khỏe project/runtime |
+| `/review` | Bật/tắt nghiệm thu từng chương |
+| `/next` | Cho phép tiến chương khi gate yêu cầu |
+| `/start <tệp>` | Bắt đầu từ file ý tưởng/dàn ý cục bộ |
+| `/import <tệp>` | Import truyện từ file cục bộ |
+| `/reopen <hướng>` | Mở tiếp tuyến truyện sau khi đã kết thúc |
+| `/cocreate` | Vào chế độ đồng sáng tác |
+| `/simulate` | Phân tích văn mẫu cục bộ theo workflow hiện có |
+| `/importsim <file>` | Nhập hồ sơ mô phỏng văn phong |
+| `/sync` | Đồng bộ chỉnh sửa thủ công trong project |
+| `/export` | Xuất tác phẩm |
+
+Các file được đọc/ghi bởi local Host/Tools. Gemini Web không tự duyệt filesystem.
+
+## 10. Headless
+
+Headless là chế độ không dùng TUI, **không phải API mode**.
+
+Lần chạy đầu tiên vẫn phải dùng TUI để setup browser và đăng nhập profile.
+
+Sau đó có thể chạy:
+
 ```bash
-docker compose run --rm ainovel
+ainovel-cli --headless --prompt "Tiểu thuyết tu tiên..."
 ```
 
-- **Phím Tab**: Chuyển đổi giữa 2 chế độ khởi động:
-  - **Bắt đầu nhanh**: Nhập 1 câu tóm tắt ý tưởng, AI tự động lên dàn ý và viết ngay.
-  - **Đồng sáng tác**: AI sẽ trao đổi cùng bạn từng bước để làm rõ thiết lập thế giới, nhân vật, cốt truyện trước khi viết.
-- **Phím Enter**: Bắt đầu quá trình sáng tác.
-- **Phím `/`**: Mở thanh tìm kiếm lệnh nhanh.
-- **`Ctrl+C` 2 lần**: Lưu an toàn và thoát ra.
+Hoặc:
 
-### Chế độ Headless (Chạy ngầm server)
-
-Dành cho người muốn chạy tự động trên VPS/Server:
 ```bash
-# Bắt đầu truyện mới
-docker compose run --rm ainovel --headless --prompt "Tiểu thuyết tu tiên phàm nhân, nhân vật chính cẩn trọng cơ trí"
-
-# Viết tiếp truyện đang dở (không truyền --prompt)
-docker compose run --rm ainovel --headless
+ainovel-cli --headless --prompt-file premise.txt
 ```
 
----
+Có thể đọc prompt từ stdin bằng `--prompt-file -` nếu workflow của bạn cần.
 
-## 6. Quản Lý Sáng Tác Nhiều Truyện Độc Lập
+Dù headless, AI execution path vẫn là Gemini Web/browser-backed runtime.
 
-Mặc định output sẽ lưu vào thư mục `workspace/`. Để viết nhiều bộ truyện khác nhau mà không bị xung đột, hãy đặt biến môi trường `NOVEL_DIR`:
+## 11. Import truyện ngoài
 
-```powershell
-# Trên Windows PowerShell:
-$env:NOVEL_DIR = ".\novels\tien-hiep-ky"
-docker compose run --rm ainovel
+`/import <tệp>` sử dụng semantic import pipeline theo nguyên tắc:
 
-# Viết bộ truyện khác:
-$env:NOVEL_DIR = ".\novels\do-thi-di-nang"
-docker compose run --rm ainovel
-```
+1. Host đọc và chuẩn hóa file cục bộ.
+2. Tạo snapshot/workspace import cục bộ.
+3. Các phần cần hiểu ngữ nghĩa được gửi thành lượt Gemini Web qua `WebChatModel`.
+4. Code cục bộ kiểm tra coverage, digest, schema và thứ tự.
+5. Chỉ publish vào Store chính khi các gate cần thiết đã đạt.
 
-Cấu trúc thư mục đầu ra của mỗi truyện:
+Website không được trao đường dẫn hoặc quyền truy cập file gốc trên máy.
+
+## 12. Quản lý dữ liệu dự án
+
+Dữ liệu truyện/checkpoint/summary/diagnostic/export nằm trong workspace của ainovel-cli.
+
+Các artifact thường gặp gồm:
+
 ```text
-novels/<tên-truyện>/output/novel/
-├── chapters/            # Các chương hoàn chỉnh đã duyệt (.md)
-├── drafts/              # Bản nháp và dàn ý chi tiết từng chương
-├── reviews/             # Báo cáo đánh giá của Editor
-├── summaries/           # Tóm tắt từng Cung và Tập
-├── premise.md           # Ý tưởng & tiền đề cốt truyện
-├── characters.md        # Hồ sơ thiết lập nhân vật
-├── world_rules.md       # Thiết lập quy tắc thế giới
-└── meta/                # Checkpoint, tiến độ, nhật ký token
+output/<novel>/
+├── novel/
+├── meta/
+│   ├── progress.json
+│   ├── checkpoints.jsonl
+│   ├── decisions.jsonl
+│   └── sessions/
+└── ...
 ```
 
----
+Chi tiết quan sát runtime xem `docs/observability.md`.
 
-## 7. Bảng Lệnh Điều Khiển Trong TUI (Slash Commands)
+## 13. Token, context và chi phí
 
-Khi đang ở trong giao diện TUI, bạn có thể gõ `/` để mở menu lệnh:
+WEB bridge không nhận authoritative provider usage/billing data từ Gemini Web.
 
-| Lệnh | Mô tả |
-| :--- | :--- |
-| `/help` | Mở bảng trợ giúp tra cứu danh sách lệnh và phím tắt |
-| `/model` | Chuyển đổi Model hoặc mức độ suy luận (reasoning/thinking) |
-| `/config` | Quản lý cấu hình Provider, Model ID, API Key, Base URL |
-| `/diag` | Xem báo cáo chẩn đoán toàn diện về sức khỏe, tiến độ và chất lượng truyện |
-| `/review` | Bật/tắt chế độ nghiệm thu từng chương (dừng lại sau mỗi chương để bạn duyệt) |
-| `/next` | Phê duyệt cho phép viết chương tiếp theo (khi ở chế độ nghiệm thu) |
-| `/start <tệp>` | Đọc tệp dàn ý / ý tưởng bên ngoài để bắt đầu truyện mới |
-| `/import <tệp>` | Nhập tiểu thuyết từ bên ngoài vào để AI phân tích và viết tiếp |
-| `/reopen <hướng>` | Viết tiếp tập mới sau khi tác phẩm đã hoàn thành |
-| `/cocreate` | Tạm dừng để vào chế độ đồng sáng tác định hướng giai đoạn tiếp theo |
-| `/simulate` | Phân tích các file văn mẫu trong `./simulate` để mô phỏng văn phong |
-| `/importsim <file>` | Nhập hồ sơ mô phỏng văn phong từ tệp json |
-| `/sync` | Đồng bộ các chỉnh sửa thủ công của bạn trên các file chương vào hệ thống |
-| `/export` | Xuất tác phẩm thành file văn bản hoàn chỉnh (.txt) |
+Vì vậy:
 
-> 💡 **Can thiệp thời gian thực**: Bạn có thể nhập thẳng ý kiến sửa đổi vào ô chat bất cứ lúc nào (ví dụ: *"Ở chương 15 cho nhân vật phụ A hy sinh để tạo bước ngoặt"*), Coordinator sẽ tự động tiếp nhận và điều phối vào mạch truyện.
+- không xem các local token estimate là token usage chính thức của Gemini;
+- không có prompt-cache billing/cache hit telemetry chính thức;
+- không có USD cost/savings chính xác từ provider;
+- không có API-dollar budget sentinel bảo vệ chi tiêu tài khoản Gemini.
 
----
+Nếu cần kiểm soát quyền lợi/giới hạn tài khoản Gemini, hãy xem thông tin trực tiếp trong tài khoản/website Gemini; ainovel-cli không giả lập số liệu đó.
 
-## 8. Xuất Truyện (TXT / EPUB)
+## 14. Cập nhật
 
-Trong TUI, gõ `/export` hoặc chạy lệnh:
-- `/export [đường_dẫn] [from=N] [to=M] [--overwrite]`
-- Ví dụ: `/export novels/xuat_ban.txt from=1 to=50`
+Cập nhật lên release mới nhất:
 
----
+```bash
+ainovel-cli update
+```
 
-## 9. Quy Tắc & Lưu Ý Quan Trọng
+Cập nhật tới version cụ thể:
 
-1. ⚠️ **Quy tắc 1 engine / 1 truyện**: Không mở cùng lúc 2 cửa sổ TUI trên cùng một thư mục truyện để tránh xung đột ghi đè dữ liệu.
-2. ⚠️ **Khớp ngữ cảnh (`num_ctx` == `context_window`)**: Nếu dùng Ollama, luôn đảm bảo `num_ctx` trong Modelfile bằng chính xác giá trị `context_window` trong file config.
-3. 🔒 **Bảo mật**: File `config/config.json`, thư mục `novels/`, và `workspace/` đã được cấu hình trong `.gitignore` để không bị lộ API Key hay bản thảo riêng tư khi push lên GitHub.
+```bash
+ainovel-cli update vX.Y.Z
+```
+
+Xem version:
+
+```bash
+ainovel-cli --version
+```
+
+Updater chỉ dùng release từ `tiktok1997af-dot/ainovel-cli`.
+
+## 15. Xử lý lỗi thường gặp
+
+### Chrome không được tìm thấy
+
+- xác minh Chrome đã được cài;
+- dùng `/config` hoặc `web.browser_path`;
+- khởi động lại ainovel-cli.
+
+### `AUTH_REQUIRED` không chuyển sang `READY`
+
+- kiểm tra đúng cửa sổ/profile do ainovel-cli mở;
+- hoàn tất login/consent trực tiếp trên Gemini Web;
+- kiểm tra network;
+- không tạo API key để “thay thế” — runtime không dùng API fallback.
+
+### `DEGRADED` hoặc `FAILED`
+
+- không xóa profile ngay nếu muốn giữ login;
+- kiểm tra Chrome có còn chạy và Gemini Web có truy cập được không;
+- khởi động lại ainovel-cli nếu cần;
+- nếu lỗi lặp lại, dùng `/diag` và `diag-export.md` để thu thập bằng chứng không chứa prose/prompt nhạy cảm.
+
+### Config cũ báo migration error
+
+Config provider/API-era không còn hợp lệ. Hãy chuyển về schema `web` theo `config.example.jsonc`.
+
+## 16. Các runtime không được hỗ trợ
+
+Không dùng các hướng dẫn cũ về:
+
+- OpenAI/Anthropic/Gemini/OpenRouter/DeepSeek API;
+- API key/Base URL;
+- Ollama hoặc local LLM;
+- provider/model hot-swap/fallback;
+- Docker Compose runtime;
+- hidden browser;
+- cookie/credential extraction.
+
+Nếu gặp các nội dung đó trong `docs/chatgpt-web-bridge-*` hoặc `docs/w5*`, hãy hiểu chúng là **historical migration/audit provenance**, không phải hướng dẫn sử dụng hiện tại.

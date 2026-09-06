@@ -206,26 +206,20 @@ func TestGradeDeltaTitleMixedUsesMinorityCount(t *testing.T) {
 	}
 }
 
-func TestGradeDeltaCostAndToolCallThresholds(t *testing.T) {
+func TestGradeDeltaToolCallThreshold(t *testing.T) {
 	base := cleanResult()
 	base.Metrics.ToolCalls = 10
-	base.Metrics.Usage = UsageMetrics{UsageRecorded: true, CostUSD: 1, Input: 100, Output: 100}
 	variant := cleanResult()
 	variant.Metrics.ToolCalls = 14
-	variant.Metrics.Usage = UsageMetrics{UsageRecorded: true, CostUSD: 1.4, Input: 150, Output: 140}
 
 	c := writerSmokeCase()
 	c.Gate.MaxToolCallDeltaRatio = float64Ptr(0.3)
-	c.Gate.MaxCostDeltaRatio = float64Ptr(0.3)
 	d := GradeDelta(c, base, variant)
 	if d.Outcome != Warn {
-		t.Fatalf("成本/tool_calls 超阈值应 WARN，得到 %s", d.Outcome)
+		t.Fatalf("tool_calls 超阈值应 WARN，得到 %s", d.Outcome)
 	}
 	if !hasIssue(d.Warnings, "delta:tool_calls", "超过阈值") {
 		t.Fatalf("应报告 tool_calls 回归，实际 %+v", d.Warnings)
-	}
-	if !hasIssue(d.Warnings, "delta:cost", "超过阈值") {
-		t.Fatalf("应报告 cost 回归，实际 %+v", d.Warnings)
 	}
 }
 
