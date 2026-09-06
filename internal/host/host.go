@@ -1359,75 +1359,10 @@ func deriveStatusLabel(s UISnapshot) string {
 	}
 }
 
-// ── 模型管理 ──
-
-func (h *Host) ConfiguredProviders() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	providers := make([]string, 0, len(h.cfg.Providers))
-	for name := range h.cfg.Providers {
-		providers = append(providers, name)
-	}
-	sort.Strings(providers)
-	return providers
-}
-
-func (h *Host) ConfiguredModels(provider string) []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.cfg.CandidateModels(provider)
-}
+// ── WEB-only model status / reasoning ──
 
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 	return h.models.CurrentSelection(role)
-}
-
-func (h *Host) SwitchModel(role, provider, model string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if provider == "" || model == "" {
-		return fmt.Errorf("provider and model are required")
-	}
-	if err := h.models.Swap(role, provider, model); err != nil {
-		return err
-	}
-	if role == "" || role == "default" {
-		h.cfg.Provider = provider
-		h.cfg.ModelName = model
-	} else {
-		if h.cfg.Roles == nil {
-			h.cfg.Roles = make(map[string]bootstrap.RoleConfig)
-		}
-		rc := h.cfg.Roles[role]
-		rc.Provider = provider
-		rc.Model = model
-		h.cfg.Roles[role] = rc
-	}
-	// 换模型不改动已存的推理强度意图：只在下发时按新模型能力钳制。
-	if h.configPath != "" {
-		if err := bootstrap.SaveConfig(h.configPath, h.cfg); err != nil {
-			slog.Warn("保存配置失败", "module", "host", "err", err)
-		}
-	}
-	h.applyThinkingLocked(role)
-	// 切到未登记模型时打一行 warn，提示用户走了 128k 兜底——长篇容易被提前压缩。
-	logRole := role
-	if logRole == "" {
-		logRole = "default"
-	}
-	window, source := h.cfg.ResolveContextWindow(provider, model)
-	bootstrap.LogContextWindowChoice(logRole, model, window, source)
-
-	// 无常驻上下文需要联动:writer/architect/editor 的 ContextManager 走
-	// ContextManagerFactory,下次 spawn 自动按新模型窗口重建。
-
-	h.emitEvent(Event{
-		Time:     time.Now(),
-		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("模型已切换：%s → %s/%s", role, provider, model),
-		Level:    "info",
-	})
-	return nil
 }
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。
@@ -1666,11 +1601,7 @@ func (h *Host) SyncChapterRevisions(ctx context.Context) (*revision.Result, erro
 			return nil, err
 		}
 	}
-	model := h.models.ForRoleWithFailover("editor", func(ev bootstrap.FailoverEvent) {
-		slog.Warn("章节修订 provider 切换", "module", "revision", "role", ev.Role,
-			"reason", ev.Reason, "from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
-			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel), "err", ev.Err)
-	})
+	model := h.models.ForRole("editor")
 	model = newUsageTrackedModel(model, "editor", h.usage.Record)
 	service := revision.NewService(h.store, model, h.bundle.Prompts.RevisionAnalyze, h.styleStats)
 	return service.Sync(ctx)
