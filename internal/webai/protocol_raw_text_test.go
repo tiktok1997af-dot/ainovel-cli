@@ -54,29 +54,27 @@ func TestModelProtocolRepairCanReturnRawText(t *testing.T) {
 	if len(prompts) != 2 {
 		t.Fatalf("round trips = %d, want 2", len(prompts))
 	}
-	if !strings.Contains(prompts[1], "Do not JSON-escape") || !strings.Contains(prompts[1], "TEXT") {
+	if !strings.Contains(prompts[1], "literal word TEXT") || !strings.Contains(prompts[1], "complete intended text verbatim") {
 		t.Fatal("repair prompt did not prefer the raw TEXT form")
 	}
-	if got := strings.Count(prompts[1], responseStart); got != 1 {
-		t.Fatalf("repair response start marker occurrences = %d, want exactly 1", got)
+	if got := strings.Count(prompts[1], responseStart); got != 0 {
+		t.Fatalf("repair response start marker occurrences = %d, want 0 literal marker echoes", got)
 	}
-	if got := strings.Count(prompts[1], responseEnd); got != 1 {
-		t.Fatalf("repair response end marker occurrences = %d, want exactly 1", got)
+	if got := strings.Count(prompts[1], responseEnd); got != 0 {
+		t.Fatalf("repair response end marker occurrences = %d, want 0 literal marker echoes", got)
 	}
 }
 
 func TestRawTextExtensionDoesNotRelaxToolCallJSONValidation(t *testing.T) {
-	transport := &fakeTransport{responses: []string{
-		wrappedResponse(`{"kind":"tool_calls","tool_calls":[{"name":"save_chapter","arguments":[1,2]}]}`),
-		wrappedResponse(`{"kind":"tool_calls","tool_calls":[{"name":"save_chapter","arguments":[1,2]}]}`),
-	}}
+	invalid := wrappedResponse(`{"kind":"tool_calls","tool_calls":[{"name":"save_chapter","arguments":[1,2]}]}`)
+	transport := &fakeTransport{responses: []string{invalid, invalid, invalid}}
 	model := mustModel(t, transport)
 
 	_, err := model.Generate(context.Background(), []agentcore.Message{agentcore.UserMsg("save")}, []agentcore.ToolSpec{testToolSpec()})
 	if err == nil {
 		t.Fatal("expected invalid tool arguments to remain rejected")
 	}
-	if got := len(transport.promptSnapshot()); got != 2 {
-		t.Fatalf("round trips = %d, want bounded first attempt + one repair", got)
+	if got := len(transport.promptSnapshot()); got != 1+maxProtocolFormatRepairs {
+		t.Fatalf("round trips = %d, want first attempt + %d bounded repairs", got, maxProtocolFormatRepairs)
 	}
 }
