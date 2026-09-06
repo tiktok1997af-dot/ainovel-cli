@@ -65,11 +65,30 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 	if host != "gemini.google.com" {
 		return Result{State: ReadinessDegraded, Reason: "Gemini page target is not active"}, nil
 	}
+
+	// A visible sign-in control is authoritative even if Gemini exposes a
+	// public composer or preloads Google account infrastructure.
+	if payload.HasSignIn {
+		return Result{State: ReadinessAuthRequired, Reason: "Gemini sign-in is required"}, nil
+	}
+
+	if payload.HasComposer && payload.HasAccountControl {
+		return Result{State: ReadinessReady, Reason: "authenticated Gemini composer is ready"}, nil
+	}
+
+	// Current Gemini can render the signed-in Google account shell in
+	// cross-origin accounts.google.com + ogs.google.com iframes. The parent page
+	// cannot inspect those iframe DOMs, so the conservative authenticated signal
+	// is: composer present, no visible sign-in control, and both Google account
+	// infrastructure frames present. A clean profile is kept AUTH_REQUIRED by
+	// the HasSignIn check above.
+	if payload.HasComposer && payload.CandidateAccountsIframe && payload.CandidateOGSIframe {
+		return Result{State: ReadinessReady, Reason: "authenticated Gemini composer is ready via Google account iframe shell"}, nil
+	}
+
 	if !payload.HasAccountControl {
 		reason := "authenticated Google account control not detected"
-		if payload.HasSignIn {
-			reason = "Gemini sign-in is required"
-		} else if payload.HasComposer {
+		if payload.HasComposer {
 			frames := strings.Join(payload.FrameLocations, ",")
 			if frames == "" {
 				frames = "none"
@@ -88,9 +107,6 @@ func (Gemini) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 			)
 		}
 		return Result{State: ReadinessAuthRequired, Reason: reason}, nil
-	}
-	if payload.HasComposer {
-		return Result{State: ReadinessReady, Reason: "authenticated Gemini composer is ready"}, nil
 	}
 	return Result{State: ReadinessDegraded, Reason: "authenticated Gemini page detected but composer is not ready"}, nil
 }
