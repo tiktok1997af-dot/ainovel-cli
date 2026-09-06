@@ -29,6 +29,7 @@ type fakeInteractionAdapter struct {
 	mu        sync.Mutex
 	snapshots []sites.ConversationSnapshot
 	snapErrs  []error
+	submitErr error
 	submitN   int
 	cancelN   int
 }
@@ -61,7 +62,7 @@ func (f *fakeInteractionAdapter) Submit(context.Context, sites.Evaluator, string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.submitN++
-	return nil
+	return f.submitErr
 }
 func (f *fakeInteractionAdapter) Cancel(context.Context, sites.Evaluator) (bool, error) {
 	f.mu.Lock()
@@ -84,15 +85,17 @@ func readyTestSession() *SessionManager {
 func testTransport(t *testing.T, session *SessionManager, adapter *fakeInteractionAdapter) *GeminiWebTransport {
 	t.Helper()
 	transport, err := NewGeminiWebTransport(GeminiWebTransportConfig{
-		Session:               session,
-		ResponseTimeout:       100 * time.Millisecond,
-		PollInterval:          time.Millisecond,
-		StableWindow:          2 * time.Millisecond,
-		PreflightRetries:      1,
-		CaptureReconnects:     1,
-		AuthRequiredGrace:     8 * time.Millisecond,
-		ReadinessPollInterval: time.Millisecond,
-		adapter:               adapter,
+		Session:                   session,
+		ResponseTimeout:           100 * time.Millisecond,
+		PollInterval:              time.Millisecond,
+		StableWindow:              2 * time.Millisecond,
+		PreflightRetries:          1,
+		CaptureReconnects:         1,
+		AuthRequiredGrace:         8 * time.Millisecond,
+		ReadinessPollInterval:     time.Millisecond,
+		SubmitConfirmTimeout:      8 * time.Millisecond,
+		SubmitConfirmPollInterval: time.Millisecond,
+		adapter:                   adapter,
 		evaluatorFactory: func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
 			return noopInteractionEvaluator{}, nil
 		},
@@ -125,6 +128,57 @@ func TestGeminiWebTransportCapturesStableFinalResponse(t *testing.T) {
 	}
 	if adapter.submitN != 1 {
 		t.Fatalf("submit count = %d, want 1", adapter.submitN)
+	}
+}
+
+func TestGeminiWebTransportConfirmsAmbiguousSubmitWithoutResubmit(t *testing.T) {
+	adapter := &fakeInteractionAdapter{
+		submitErr: fmt.Errorf("CDP error -32000: Promise was collected"),
+		snapshots: []sites.ConversationSnapshot{
+			{ResponseCount: 1, LastResponse: "old"},
+			{Busy: true, ResponseCount: 1, LastResponse: "old"},
+			{Busy: false, ResponseCount: 2, LastResponse: "final"},
+			{Busy: false, ResponseCount: 2, LastResponse: "final"},
+			{Busy: false, ResponseCount: 2, LastResponse: "final"},
+		},
+	}
+	session := readyTestSession()
+	transport := testTransport(t, session, adapter)
+	got, err := transport.RoundTrip(context.Background(), "one prompt")
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if got != "final" {
+		t.Fatalf("final = %q, want final", got)
+	}
+	if adapter.submitN != 1 {
+		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
+	}
+	if state := session.Snapshot().State; state != SessionReady {
+		t.Fatalf("session state = %s, want READY", state)
+	}
+}
+
+func TestGeminiWebTransportUnconfirmedSubmitErrorNeverResubmits(t *testing.T) {
+	adapter := &fakeInteractionAdapter{
+		submitErr: fmt.Errorf("ambiguous renderer failure"),
+		snapshots: []sites.ConversationSnapshot{
+			{ResponseCount: 1, LastResponse: "old"},
+			{ResponseCount: 1, LastResponse: "old"},
+		},
+	}
+	session := readyTestSession()
+	transport := testTransport(t, session, adapter)
+	_, err := transport.RoundTrip(context.Background(), "one prompt")
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr.Kind != ErrorTransport {
+		t.Fatalf("err = %v, want ErrorTransport", err)
+	}
+	if webErr.Retryable() {
+		t.Fatal("unconfirmed ambiguous submit must not be retryable")
+	}
+	if adapter.submitN != 1 {
+		t.Fatalf("submit count = %d, want exactly 1", adapter.submitN)
 	}
 }
 
