@@ -23,13 +23,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify exact W5E base
+      - name: Verify exact W5E base and preserve patch script
         shell: bash
         env:
           EXPECTED_BASE: d48f6e1eb54125d6945c0aa718d0cc04a8961b6f
           TARGET_BRANCH: w5e-real-production-app-smoke
         run: |
           set -euo pipefail
+          cp scripts/w5e_submit_stabilizer.py "${RUNNER_TEMP}/w5e_submit_stabilizer.py"
           remote_sha="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | cut -f1)"
           test "$remote_sha" = "$EXPECTED_BASE" || { echo "::error::W5E target drift: expected $EXPECTED_BASE, got $remote_sha"; exit 1; }
           git fetch origin "${TARGET_BRANCH}"
@@ -39,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 "${GITHUB_WORKSPACE}/scripts/w5e_submit_stabilizer.py"
+          python3 "${RUNNER_TEMP}/w5e_submit_stabilizer.py"
           gofmt -w internal/webai/sites/gemini_interaction.go
           git diff --check
           go test -buildvcs=false -count=1 ./internal/webai/sites ./internal/webai
