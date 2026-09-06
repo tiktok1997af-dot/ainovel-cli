@@ -48,6 +48,33 @@ function Read-TextFiles([string[]]$Paths) {
     return ($parts -join "`n")
 }
 
+function Get-SanitizedDiagnosticTail([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return "<stderr-missing>" }
+
+    $diagnosticPattern = "(?i)(error|fail|fatal|panic|auth|required|config|browser|chrome|web|headless|host|engine|invalid|missing|not found|timeout|exit|cannot|unable|ready|denied|refused|unexpected)"
+    $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8 -Tail 80 -ErrorAction SilentlyContinue)
+    $safe = New-Object System.Collections.Generic.List[string]
+    $userHome = [Environment]::GetFolderPath("UserProfile")
+
+    foreach ($raw in $lines) {
+        $line = [string]$raw
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -notmatch $diagnosticPattern) { continue }
+
+        if (-not [string]::IsNullOrWhiteSpace($userHome)) {
+            $line = $line.Replace($userHome, "<USERPROFILE>")
+        }
+        $line = [regex]::Replace($line, "(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<redacted-email>")
+        $line = [regex]::Replace($line, "(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+", '$1=<redacted>')
+        $line = [regex]::Replace($line, "(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?", '$1')
+        if ($line.Length -gt 600) { $line = $line.Substring(0, 600) + "<truncated>" }
+        $safe.Add($line)
+    }
+
+    if ($safe.Count -eq 0) { return "<no-sanitized-diagnostic-lines>" }
+    return (($safe | Select-Object -Last 12) -join " | ")
+}
+
 if (-not $IsWindows) { Fail "this gate requires a real Windows desktop with visible Google Chrome" }
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) { Fail "go is required" }
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail "git is required" }
@@ -130,7 +157,11 @@ try {
             }
         }
         if ($first.HasExited) {
-            Fail ("first production process exited before a resumable chapter-1 boundary; exit=" + $first.ExitCode)
+            try { $first.WaitForExit() } catch { }
+            try { $first.Refresh() } catch { }
+            $exitCode = $first.ExitCode
+            $stderrDiagnostic = Get-SanitizedDiagnosticTail $firstErr
+            Fail ("first production process exited before a resumable chapter-1 boundary; exit=" + $exitCode + "; stderr=" + $stderrDiagnostic)
         }
     }
     if ($null -eq $checkpoint) { Fail "timed out waiting for a durable, resumable chapter-1 boundary" }
@@ -152,7 +183,7 @@ if (-not $resume.WaitForExit($ResumeTimeoutSeconds * 1000)) {
     Fail "resume process timed out"
 }
 Stop-SmokeChrome $profileDir
-if ($resume.ExitCode -ne 0) { Fail ("resume production process failed; exit=" + $resume.ExitCode) }
+if ($resume.ExitCode -ne 0) { Fail ("resume production process failed; exit=" + $resume.ExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $resumeErr)) }
 
 $finalProgress = Get-Progress $progressPath
 if ($null -eq $finalProgress) { Fail "progress.json missing after restart" }
