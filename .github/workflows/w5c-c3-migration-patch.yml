@@ -1,0 +1,34 @@
+name: W5C C3 migration contract patch
+
+on:
+  push:
+    branches:
+      - w5c-remove-legacy-api-runtime
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: w5c-remove-legacy-api-runtime
+          fetch-depth: 0
+      - name: Apply C3 patch
+        env:
+          PATCH_B64: ""+b64+""
+        run: |
+          printf '%s' "$PATCH_B64" | base64 -d > /tmp/w5c_c3_patch.py
+          python /tmp/w5c_c3_patch.py
+          gofmt -w internal/bootstrap/config.go internal/bootstrap/configfile.go internal/bootstrap/config_test.go internal/bootstrap/configfile_test.go
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add internal/bootstrap/config.go internal/bootstrap/configfile.go internal/bootstrap/config_test.go internal/bootstrap/configfile_test.go
+          git diff --cached --quiet && exit 0
+          git commit -m "feat(w5c): enforce WEB-only config migration contract"
+          git push origin HEAD:w5c-remove-legacy-api-runtime
