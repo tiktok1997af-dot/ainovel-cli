@@ -79,15 +79,17 @@ const geminiConversationExpression = `(() => {
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
     'button[aria-label*="Dừng" i]',
+    'gem-icon-button[aria-label*="Stop" i]',
+    'gem-icon-button[aria-label*="Dừng" i]',
     '[data-test-id="stop-button"]',
     'button.stop-button'
   ];
   let busy = stopSelectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(visible));
   if (!busy) {
-    for (const button of document.querySelectorAll('button')) {
-      if (!visible(button)) continue;
-      const icon = button.querySelector('mat-icon');
-      const iconText = String(icon && icon.textContent || '').trim().toLowerCase();
+    for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
+      if (!visible(control)) continue;
+      const icon = control.querySelector('mat-icon');
+      const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
       if (iconText === 'stop' || iconText === 'stop_circle') {
         busy = true;
         break;
@@ -139,6 +141,7 @@ const geminiSubmitExpressionTemplate = `(async () => {
     'rich-textarea [contenteditable="true"]',
     'div.ql-editor[contenteditable="true"]',
     '[contenteditable="true"][role="textbox"]',
+    '[aria-label="Enter a prompt here"]',
     'textarea[aria-label*="prompt" i]'
   ]);
   if (!composer) return {ok: false, reason: 'prompt composer not found'};
@@ -162,28 +165,55 @@ const geminiSubmitExpressionTemplate = `(async () => {
       composer.textContent = prompt;
       composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
     }
+    composer.dispatchEvent(new Event('change', {bubbles: true}));
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  const send = firstVisible([
+  const sendSelectors = [
+    'gem-icon-button.send-button[aria-disabled="false"]',
+    'gem-icon-button.submit[aria-disabled="false"]',
+    '[data-test-id="send-button-container"] gem-icon-button',
+    '[data-test-id="send-button-container"] button',
+    '[data-test-id="send-button"]',
     'button[aria-label*="Send message" i]',
     'button[aria-label="Send"]',
+    'button[aria-label*="Submit" i]',
     'button[aria-label*="Gửi" i]',
-    '[data-test-id="send-button"]',
+    'gem-icon-button[aria-label*="Send" i]',
+    'gem-icon-button[aria-label*="Submit" i]',
+    'gem-icon-button[aria-label*="Gửi" i]',
+    '[role="button"][aria-label*="Send" i]',
+    '[role="button"][aria-label*="Submit" i]',
+    '[role="button"][aria-label*="Gửi" i]',
     'button.send-button'
-  ]);
-  let sendButton = send;
-  if (!sendButton) {
-    for (const button of document.querySelectorAll('button')) {
-      if (!visible(button)) continue;
-      const icon = button.querySelector('mat-icon');
-      const iconText = String(icon && icon.textContent || '').trim().toLowerCase();
-      if (iconText === 'send') { sendButton = button; break; }
+  ];
+
+  const findSend = () => {
+    const direct = firstVisible(sendSelectors);
+    if (direct) return direct;
+    for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
+      if (!visible(control)) continue;
+      const aria = String(control.getAttribute('aria-label') || '').trim().toLowerCase();
+      if (aria.includes('send') || aria.includes('submit') || aria.includes('gửi')) return control;
+      const icon = control.querySelector('mat-icon');
+      const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
+      if (iconText === 'send' || iconText === 'send_spark' || iconText === 'arrow_upward') return control;
     }
+    return null;
+  };
+
+  let sendButton = null;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    sendButton = findSend();
+    if (sendButton) {
+      const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
+      if (!disabled) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (!sendButton) return {ok: false, reason: 'send button not found'};
-  if (sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true') {
-    return {ok: false, reason: 'send button is disabled'};
+  if (!sendButton) return {ok: false, reason: 'send control not found after bounded wait'};
+  if (Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') {
+    return {ok: false, reason: 'send control remained disabled after bounded wait'};
   }
   sendButton.click();
   return {ok: true, reason: ''};
@@ -201,6 +231,8 @@ const geminiCancelExpression = `(() => {
     'button[aria-label*="Stop response" i]',
     'button[aria-label*="Stop generating" i]',
     'button[aria-label*="Dừng" i]',
+    'gem-icon-button[aria-label*="Stop" i]',
+    'gem-icon-button[aria-label*="Dừng" i]',
     '[data-test-id="stop-button"]',
     'button.stop-button'
   ];
@@ -211,12 +243,12 @@ const geminiCancelExpression = `(() => {
       return {clicked: true};
     }
   }
-  for (const button of document.querySelectorAll('button')) {
-    if (!visible(button)) continue;
-    const icon = button.querySelector('mat-icon');
-    const iconText = String(icon && icon.textContent || '').trim().toLowerCase();
+  for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
+    if (!visible(control)) continue;
+    const icon = control.querySelector('mat-icon');
+    const iconText = String(icon && (icon.getAttribute('data-mat-icon-name') || icon.getAttribute('fonticon') || icon.textContent) || '').trim().toLowerCase();
     if (iconText === 'stop' || iconText === 'stop_circle') {
-      button.click();
+      control.click();
       return {clicked: true};
     }
   }
