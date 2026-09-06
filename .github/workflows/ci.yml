@@ -119,7 +119,19 @@ jobs:
 
       - name: Format check
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt drift detected in the following files:"
+            printf '%s\n' "$unformatted"
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              echo "--- gofmt diff: $file"
+              gofmt -d "$file"
+            done <<< "$unformatted"
+            exit 1
+          fi
 
       - name: Installer syntax check
         if: runner.os == 'Linux'
