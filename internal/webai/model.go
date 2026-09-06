@@ -38,6 +38,8 @@ var (
 	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
+const maxProtocolFormatRepairs = 2
+
 // rawTextProtocolInstruction replaces the legacy response-format instruction
 // before a request crosses the browser boundary. It deliberately contains only
 // one response marker pair so a browser model is not encouraged to nest an
@@ -74,22 +76,20 @@ Rules:
 - Do not emit commentary outside the response markers.
 - Emit the response markers exactly once each.`
 
-const protocolRepairPrompt = `Your immediately previous answer could not be parsed as an ainovel-web/1 response. No local tool from that answer has been executed.
-Do not redo the user's task and do not add commentary. Re-emit the same intended answer once, correcting only the transport format.
-Return exactly one response envelope:
-<<<AINOVEL_WEB_RESPONSE>>>
-<body>
-<<<END_AINOVEL_WEB_RESPONSE>>>
-Replace <body> as follows:
-- Normal assistant text: first line TEXT, then a newline, then the complete previous answer verbatim. Do not JSON-escape or wrap it in a {"kind":"text"} object.
-- Tool request with small/simple arguments: one strict valid JSON object {"kind":"tool_calls","tool_calls":[{"name":"an exact tool name from the immediately preceding request","arguments":{}}]}.
-- Tool request whose intended arguments contain one long top-level string such as content: use exactly:
-TOOL_CALL_RAW
-{"name":"an exact tool name from the immediately preceding request","arguments":{"all_other_arguments":"go here"},"raw_string_field":"content"}
-<<<AINOVEL_RAW_VALUE>>>
-<the complete intended long string value verbatim>
-<<<END_AINOVEL_RAW_VALUE>>>
-For TOOL_CALL_RAW, omit the raw_string_field from metadata arguments. Use only a field actually present in the tool schema. Do not put Markdown fences around the raw value. Emit no text outside the response envelope, and emit each response marker exactly once.`
+// protocolRepairPrompt intentionally does NOT repeat the literal outer response
+// markers. Gemini already has the full ainovel request immediately earlier in
+// the same browser conversation; repeating the marker example in a repair turn
+// can itself encourage an extra echoed/nested wrapper. This prompt asks only for
+// a format correction of the already-intended answer. No local tool is executed
+// until a later parse succeeds.
+const protocolRepairPrompt = `Your previous answer could not be parsed as an ainovel-web/1 response. No local tool from that answer has been executed.
+Do not redo the user's task, do not change the intended answer, and do not add commentary.
+Re-emit only the same intended answer using the exact AINOVEL response framing and body forms already defined earlier in this same conversation.
+Emit exactly one outer response envelope. Never quote, explain, duplicate, or place an AINOVEL response start/end marker inside the envelope body.
+For normal assistant text, the body starts with the literal word TEXT, then one newline, then the complete intended text verbatim.
+For a small local tool request, the body is one strict valid JSON object with kind tool_calls and only exact tool names/argument fields from the original request.
+For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined in the original request and preserve the intended raw string verbatim.
+Do not claim a tool ran. Do not use Markdown fences. This is a transport-format repair only.`
 
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
@@ -126,31 +126,39 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		}
 		return nil, err
 	}
-	msg, err := parseResponseWithRawText(prompt, raw, tools)
-	if err == nil {
+	msg, parseErr := parseResponseWithRawText(prompt, raw, tools)
+	if parseErr == nil {
 		return &agentcore.LLMResponse{Message: msg}, nil
 	}
-	if !errors.Is(err, ErrProtocol) {
-		return nil, err
+	if !errors.Is(parseErr, ErrProtocol) {
+		return nil, parseErr
 	}
 
-	// Browser models can occasionally return a syntactically malformed envelope
-	// even after following the response markers. No local tool has executed at
-	// this point, so one bounded reformat request in the same web conversation is
-	// safe. This is deliberately not a general retry loop: transport/auth/timeout
-	// errors are never retried here, and a second protocol violation fails hard.
-	repairedRaw, repairErr := m.transport.RoundTrip(ctx, protocolRepairPrompt)
-	if repairErr != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	// Browser models can occasionally return a syntactically malformed response
+	// envelope even after following the contract. No local tool has executed at
+	// this point, so a very small bounded number of format-only repair turns in
+	// the same web conversation is safe. This is deliberately not a general retry
+	// loop: transport/auth/timeout errors return immediately, and after the second
+	// format repair another protocol violation fails hard.
+	lastProtocolErr := parseErr
+	for attempt := 0; attempt < maxProtocolFormatRepairs; attempt++ {
+		repairedRaw, repairErr := m.transport.RoundTrip(ctx, protocolRepairPrompt)
+		if repairErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, repairErr
 		}
-		return nil, repairErr
+		repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
+		if repairErr == nil {
+			return &agentcore.LLMResponse{Message: repaired}, nil
+		}
+		if !errors.Is(repairErr, ErrProtocol) {
+			return nil, repairErr
+		}
+		lastProtocolErr = repairErr
 	}
-	repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
-	if repairErr != nil {
-		return nil, repairErr
-	}
-	return &agentcore.LLMResponse{Message: repaired}, nil
+	return nil, lastProtocolErr
 }
 
 // GenerateStream deliberately emits one terminal event in W1. True DOM delta
