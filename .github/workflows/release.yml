@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   goreleaser:
+    if: ${{ github.repository == 'tiktok1997af-dot/ainovel-cli' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,12 +23,8 @@ jobs:
         with:
           go-version: stable
 
-      - name: Generate release notes
+      - name: Generate deterministic release notes
         run: .github/scripts/gen-changelog.sh > release-notes.md
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
