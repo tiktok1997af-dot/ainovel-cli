@@ -31,15 +31,9 @@ func NeedsSetup() bool {
 	return true
 }
 
-type setupProvider struct {
-	name           string
-	label          string
-	baseURL        string // base_url điền sẵn
-	needType       bool   // Proxy tùy chỉnh cần hỏi thêm type và base_url
-	apiKeyOptional bool   // true nếu cho phép để trống API Key
-}
-
-// ProviderPreset là mục cấu hình Provider dùng chung cho Setup và lệnh /config.
+// ProviderPreset is retained only for the legacy W5C removal path. W5B's
+// first-run WEB-only setup never calls ProviderPresets or presents a provider
+// picker. The old /config compatibility branch is removed in W5C.
 type ProviderPreset struct {
 	Name           string
 	Label          string
@@ -48,30 +42,22 @@ type ProviderPreset struct {
 	APIKeyOptional bool
 }
 
-var setupProviders = []setupProvider{
-	{name: "ollama", label: "Ollama (Cục bộ / Offline - Miễn phí)", baseURL: "http://localhost:11434/v1", apiKeyOptional: true},
-	{name: "openrouter", label: "OpenRouter (Claude, Gemini, DeepSeek, Qwen...)", baseURL: "https://openrouter.ai/api/v1"},
-	{name: "gemini", label: "Google Gemini", baseURL: ""},
-	{name: "anthropic", label: "Anthropic Claude", baseURL: ""},
-	{name: "deepseek", label: "DeepSeek", baseURL: "https://api.deepseek.com/v1"},
-	{name: "openai", label: "OpenAI", baseURL: ""},
-	{name: "qwen", label: "Alibaba Qwen (DashScope)", baseURL: ""},
-	{name: "glm", label: "Zhipu GLM", baseURL: ""},
-	{name: "grok", label: "xAI Grok", baseURL: ""},
-	{name: "bedrock", label: "AWS Bedrock", apiKeyOptional: true},
-	{name: "custom", label: "Custom Proxy (Proxy / API tùy chỉnh)", needType: true, apiKeyOptional: true},
+// ProviderPresets remains temporarily compiled for legacy-config compatibility.
+// New WEB-only users cannot reach this list.
+func ProviderPresets() []ProviderPreset {
+	return []ProviderPreset{
+		{Name: "ollama", Label: "Ollama (Legacy — W5C removal)", APIKeyOptional: true},
+		{Name: "openrouter", Label: "OpenRouter (Legacy — W5C removal)"},
+		{Name: "gemini", Label: "Gemini API (Legacy — W5C removal)"},
+		{Name: "anthropic", Label: "Anthropic API (Legacy — W5C removal)"},
+		{Name: "openai", Label: "OpenAI API (Legacy — W5C removal)"},
+		{Name: "custom", Label: "Custom API proxy (Legacy — W5C removal)", NeedType: true, APIKeyOptional: true},
+	}
 }
 
-// ProviderPresets trả về danh sách các thiết lập Provider mẫu.
-func ProviderPresets() []ProviderPreset {
-	out := make([]ProviderPreset, 0, len(setupProviders))
-	for _, preset := range setupProviders {
-		out = append(out, ProviderPreset{
-			Name: preset.name, Label: preset.label, BaseURL: preset.baseURL,
-			NeedType: preset.needType, APIKeyOptional: preset.apiKeyOptional,
-		})
-	}
-	return out
+type setupProvider struct {
+	name  string
+	label string
 }
 
 type setupLanguageOption struct {
@@ -84,123 +70,86 @@ var languageOptions = []setupLanguageOption{
 	{code: "zh", label: "Tiếng Trung (Nguyên bản - Sáng tác bằng Tiếng Trung)"},
 }
 
-// RunSetup chạy trình hướng dẫn thiết lập lần đầu và trả về cấu hình tạo được.
+// NewWebSetupConfig creates the only first-run AI configuration produced in
+// W5B. It stores browser metadata only; Google login credentials stay in Chrome.
+func NewWebSetupConfig(language, browserPath, profileName string) Config {
+	cfg := Config{
+		Web: WebAIConfig{
+			Enabled:     true,
+			Site:        "gemini-web",
+			BrowserPath: strings.TrimSpace(browserPath),
+			ProfileName: strings.TrimSpace(profileName),
+		},
+		Roles:    map[string]RoleConfig{},
+		Style:    "default",
+		Language: strings.TrimSpace(language),
+	}
+	cfg.FillDefaults()
+	return cfg
+}
+
+// RunSetup runs the W5B WEB-only first-run wizard.
+// There is deliberately no provider/API-key/Base-URL/model-ID step.
 func RunSetup() (Config, error) {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).
-		Render("Chưa tìm thấy tệp cấu hình, bắt đầu khởi tạo thiết lập..."))
-	fmt.Fprintf(os.Stderr, "  Đường dẫn tệp cấu hình: %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(DefaultConfigPath()))
-	fmt.Fprintf(os.Stderr, "  Sau khi hoàn tất, bạn có thể chỉnh sửa tệp này để tùy biến nâng cao.\n")
+		Render("Chưa tìm thấy cấu hình — thiết lập Gemini Web (không dùng AI API)"))
+	fmt.Fprintf(os.Stderr, "  Tệp cấu hình: %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(DefaultConfigPath()))
+	fmt.Fprintln(os.Stderr, "  ainovel sẽ mở Chrome hiển thị; bạn đăng nhập Google/Gemini trực tiếp trong Chrome.")
+	fmt.Fprintln(os.Stderr, "  ainovel không hỏi, không lưu và không đọc mật khẩu Google của bạn.")
 	fmt.Fprintln(os.Stderr)
 
-	// Step 1: Chọn Ngôn ngữ Sáng tác Truyện
 	selectedLang, err := runLanguageSelect()
 	if err != nil {
 		return Config{}, err
 	}
 	printStepDone("Ngôn ngữ sáng tác", selectedLang.label)
+	printStepDone("AI", "Gemini Web · WEB-only · không API key")
 
-	// Step 2: Chọn Nhà cung cấp AI (Provider)
-	sp, err := runProviderSelect()
+	browserPath, err := runOptionalTextInput(
+		"[2/3] Đường dẫn Chrome (tùy chọn)",
+		"Để trống để ainovel tự tìm Google Chrome",
+	)
 	if err != nil {
 		return Config{}, err
 	}
-
-	providerName := sp.name
-	var pc ProviderConfig
-	printStepDone("Nhà cung cấp AI", sp.label)
-
-	// Tùy biến proxy: hỏi thêm tên và giao thức API
-	if sp.needType {
-		providerName, err = runTextInput("Tên Provider", "my-proxy")
-		if err != nil {
-			return Config{}, err
-		}
-		providerType, err := runTypeSelect()
-		if err != nil {
-			return Config{}, err
-		}
-		pc.Type = providerType
-	}
-
-	// Step 3: Nhập API Key
-	var apiKey string
-	if sp.apiKeyOptional {
-		apiKey, err = runOptionalTextInput("[3/5] API Key (Nhấn Enter để bỏ qua nếu dùng Ollama/Local)", "Để trống nếu không cần API Key")
+	if browserPath == "" {
+		printStepDone("Chrome", "Tự động phát hiện")
 	} else {
-		apiKey, err = runTextInput("[3/5] API Key", "sk-xxx...")
+		printStepDone("Chrome", browserPath)
 	}
+
+	profileName, err := runTextInputWithDefault(
+		"[3/3] Tên hồ sơ đăng nhập Chrome dành cho ainovel",
+		"default",
+		"default",
+	)
 	if err != nil {
 		return Config{}, err
 	}
-	pc.APIKey = apiKey
-	if apiKey == "" {
-		printStepDone("API Key", "Không sử dụng (Mặc định cho Ollama/Local)")
-	} else {
-		printStepDone("API Key", maskKey(apiKey))
-	}
+	printStepDone("Hồ sơ Chrome", profileName)
 
-	// Step 4: Base URL (Nhấn Enter để dùng mặc định)
-	baseDefault := sp.baseURL
-	baseHint := "Để trống dùng địa chỉ mặc định"
-	if baseDefault != "" {
-		baseHint = baseDefault
+	cfg := NewWebSetupConfig(selectedLang.code, browserPath, profileName)
+	if err := cfg.ValidateBase(); err != nil {
+		return cfg, fmt.Errorf("cấu hình WEB-only không hợp lệ: %w", err)
 	}
-	baseURL, err := runTextInputWithDefault("[4/5] Base URL (Nhấn Enter để dùng địa chỉ mặc định, hoặc nhập địa chỉ proxy/Ollama)", baseHint, baseDefault)
-	if err != nil {
-		return Config{}, err
-	}
-	pc.BaseURL = baseURL
-	if baseURL != "" {
-		printStepDone("Base URL", baseURL)
-	} else {
-		printStepDone("Base URL", "Mặc định")
-	}
-
-	// Step 5: Tên Model (bắt buộc)
-	modelPlaceholder := "Ví dụ: qwen2.5:14b / ainovel-qwen / google/gemini-2.5-flash / claude-3-5-sonnet"
-	if providerName == "ollama" {
-		modelPlaceholder = "Ví dụ: qwen2.5:14b / ainovel-qwen / qwen3:14b"
-	}
-	modelName, err := runTextInput("[5/5] Tên Model chính", modelPlaceholder)
-	if err != nil {
-		return Config{}, err
-	}
-	printStepDone("Model", modelName)
-	pc.Models = []ModelConfig{{Name: modelName}}
-
-	cfg := Config{
-		Provider:  providerName,
-		ModelName: modelName,
-		Providers: map[string]ProviderConfig{providerName: pc},
-		Roles:     map[string]RoleConfig{},
-		Style:     "default",
-		Language:  selectedLang.code,
-	}
-
-	// Lưu cấu hình
 	path := DefaultConfigPath()
 	if err := SaveConfig(path, cfg); err != nil {
 		return cfg, fmt.Errorf("lỗi lưu cấu hình: %w", err)
 	}
-
-	// Tạo file ví dụ mẫu
 	saveExampleConfig()
 
-	rulesDir := rules.DefaultHomeRulesDir()
-
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "%s Cấu hình đã được lưu tại: %s\n",
+	fmt.Fprintf(os.Stderr, "%s Cấu hình WEB-only đã lưu: %s\n",
 		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓"), path)
-	fmt.Fprintf(os.Stderr, "  Ngôn ngữ truyện: %s\n", selectedLang.label)
-	fmt.Fprintf(os.Stderr, "  Provider mặc định: %s\n", providerName)
-	fmt.Fprintf(os.Stderr, "  Model mặc định: %s\n", modelName)
-	fmt.Fprintln(os.Stderr, "  Bạn có thể dùng lệnh /config hoặc /model trong TUI để thay đổi bất cứ lúc nào.")
-	if rulesDir != "" {
-		fmt.Fprintf(os.Stderr, "  Các quy tắc và phong cách viết cá nhân có thể đặt tại thư mục: %s\n", rulesDir)
+	fmt.Fprintln(os.Stderr, "  Site: Gemini Web")
+	fmt.Fprintf(os.Stderr, "  Hồ sơ Chrome: %s\n", cfg.Web.ProfileName)
+	fmt.Fprintln(os.Stderr, "  Bước tiếp theo tự động: Chrome mở → đăng nhập Gemini nếu cần → trạng thái READY.")
+	fmt.Fprintln(os.Stderr, "  Trong TUI: /model xem trạng thái Gemini Web; /config chỉnh Chrome/profile cho lần khởi động kế tiếp.")
+	if rulesDir := rules.DefaultHomeRulesDir(); rulesDir != "" {
+		fmt.Fprintf(os.Stderr, "  Quy tắc/phong cách cá nhân: %s\n", rulesDir)
 	}
 	fmt.Fprintln(os.Stderr)
-
 	return cfg, nil
 }
 
@@ -212,19 +161,11 @@ func saveExampleConfig() {
 	_ = os.WriteFile(filepath.Join(dir, "config.example.jsonc"), []byte(exampleConfig), 0o644)
 }
 
-// printStepDone in dòng xác nhận hoàn thành một bước.
 func printStepDone(label, value string) {
 	fmt.Fprintf(os.Stderr, "  %s %s: %s\n",
 		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓"),
 		label,
 		lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(value))
-}
-
-func maskKey(key string) string {
-	if len(key) <= 8 {
-		return "****"
-	}
-	return key[:4] + "****" + key[len(key)-4:]
 }
 
 // ---------- TUI Components ----------
@@ -235,7 +176,7 @@ func runLanguageSelect() (setupLanguageOption, error) {
 		items[i] = setupProvider{name: opt.code, label: opt.label}
 	}
 	m := setupSelectModel{
-		title: "[1/5] Chọn Ngôn Ngữ Sáng Tác Nội Dung Truyện (Giao diện luôn là Tiếng Việt)",
+		title: "[1/3] Chọn Ngôn Ngữ Sáng Tác Nội Dung Truyện (giao diện luôn là Tiếng Việt)",
 		items: items,
 	}
 	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
@@ -248,46 +189,6 @@ func runLanguageSelect() (setupLanguageOption, error) {
 		return setupLanguageOption{}, fmt.Errorf("đã hủy khởi tạo")
 	}
 	return languageOptions[result.cursor], nil
-}
-
-func runProviderSelect() (setupProvider, error) {
-	m := setupSelectModel{
-		title: "[2/5] Chọn Nhà Cung Cấp AI (Provider)",
-		items: setupProviders,
-	}
-	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
-	final, err := p.Run()
-	if err != nil {
-		return setupProvider{}, err
-	}
-	result := final.(setupSelectModel)
-	if result.cancelled {
-		return setupProvider{}, fmt.Errorf("đã hủy khởi tạo")
-	}
-	return result.items[result.cursor], nil
-}
-
-var apiTypeOptions = []setupProvider{
-	{name: "openai", label: "Chuẩn OpenAI (Tương thích phần lớn các bên)"},
-	{name: "anthropic", label: "Chuẩn Anthropic"},
-	{name: "gemini", label: "Chuẩn Google Gemini"},
-}
-
-func runTypeSelect() (string, error) {
-	m := setupSelectModel{
-		title: "Loại giao thức API (API Protocol Type)",
-		items: apiTypeOptions,
-	}
-	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
-	final, err := p.Run()
-	if err != nil {
-		return "", err
-	}
-	result := final.(setupSelectModel)
-	if result.cancelled {
-		return "", fmt.Errorf("đã hủy khởi tạo")
-	}
-	return result.items[result.cursor].name, nil
 }
 
 func runTextInput(label, placeholder string) (string, error) {
@@ -324,8 +225,6 @@ func runTextInputWithDefault(label, placeholder, defaultValue string) (string, e
 	}
 	return utils.CleanInputLine(result.value), nil
 }
-
-// ---------- Select Component ----------
 
 var (
 	setupCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
@@ -380,8 +279,6 @@ func (m setupSelectModel) View() string {
 	b.WriteString(setupDimStyle.Render("\n  ↑↓ Chọn  Enter Xác nhận  Esc Hủy"))
 	return b.String()
 }
-
-// ---------- Input Component ----------
 
 type setupInputModel struct {
 	label        string
