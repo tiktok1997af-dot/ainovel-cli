@@ -1,0 +1,88 @@
+name: W5B example contract fix
+
+on:
+  push:
+    branches:
+      - w5b-browser-only-setup-tui
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: w5b-browser-only-setup-tui
+          fetch-depth: 0
+
+      - name: Replace legacy example contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('internal/bootstrap/configfile_test.go')
+          text = path.read_text()
+          start = text.index('func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {')
+          end = text.index('\nfunc TestWriteStartupError', start)
+          replacement = r'''func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
+	if exampleConfig == "" {
+		t.Fatal("go:embed 未生效，exampleConfig 为空")
+	}
+	rootExample, err := os.ReadFile(filepath.Join("..", "..", "config.example.jsonc"))
+	if err != nil {
+		t.Fatalf("读取根目录 config.example.jsonc: %v", err)
+	}
+	if string(rootExample) != exampleConfig {
+		t.Fatal("根目录 config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+	}
+	packagedExample, err := os.ReadFile(filepath.Join("..", "..", "config", "config.example.jsonc"))
+	if err != nil {
+		t.Fatalf("读取 config/config.example.jsonc: %v", err)
+	}
+	if string(packagedExample) != exampleConfig {
+		t.Fatal("config/config.example.jsonc 与 internal/bootstrap/config.example.jsonc 不一致")
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
+		t.Fatalf("内置示例去注释后不是合法 JSON（用户照抄即坑）: %v", err)
+	}
+	if !cfg.Web.Enabled {
+		t.Fatal("WEB-only 示例必须启用 web.enabled")
+	}
+	if cfg.Web.Site != "gemini-web" {
+		t.Fatalf("WEB-only 示例 site=%q, want gemini-web", cfg.Web.Site)
+	}
+	if len(cfg.Providers) != 0 {
+		t.Fatalf("WEB-only 示例不得包含 legacy providers: %#v", cfg.Providers)
+	}
+	cfg.FillDefaults()
+	if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+		t.Fatalf("WEB-only 默认 runtime identity=%s/%s, want web/gemini-web", cfg.Provider, cfg.ModelName)
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		t.Fatalf("WEB-only 示例 ValidateBase: %v", err)
+	}
+}
+'''
+          path.write_text(text[:start] + replacement + text[end:])
+          PY
+
+      - name: Format
+        run: gofmt -w internal/bootstrap/configfile_test.go
+
+      - name: Commit contract update
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No contract change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/bootstrap/configfile_test.go
+          git commit -m "test(w5b): replace legacy example provider contract"
+          git push origin HEAD:w5b-browser-only-setup-tui
