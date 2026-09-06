@@ -5,6 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+)
+
+const (
+	geminiSendWait = 6 * time.Second
+	geminiSendPoll = 100 * time.Millisecond
 )
 
 func (Gemini) Conversation(ctx context.Context, evaluator Evaluator) (ConversationSnapshot, error) {
@@ -31,26 +37,73 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 	if err != nil {
 		return fmt.Errorf("gemini submit: encode prompt: %w", err)
 	}
-	expression := fmt.Sprintf(geminiSubmitExpressionTemplate, string(encoded))
-	raw, err := evaluator.Eval(ctx, expression)
+
+	// Keep the side-effecting submit path synchronous from CDP's perspective.
+	// The previous implementation awaited a browser-side Promise while polling
+	// for Gemini's send control. If the renderer context changed around the click,
+	// Chromium could collect that remote Promise and return CDP -32000 even after
+	// the click had already happened. Poll readiness from Go instead, then execute
+	// one short synchronous click expression so there is no pending remote Promise
+	// to collect and no reason to blindly re-submit the prompt.
+	prepareExpression := fmt.Sprintf(geminiPreparePromptExpressionTemplate, string(encoded))
+	raw, err := evaluator.Eval(ctx, prepareExpression)
 	if err != nil {
 		return err
 	}
-	var result struct {
+	var prepared struct {
 		OK     bool   `json:"ok"`
 		Reason string `json:"reason"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("gemini submit result: %w", err)
+	if err := json.Unmarshal(raw, &prepared); err != nil {
+		return fmt.Errorf("gemini prepare prompt result: %w", err)
 	}
-	if !result.OK {
-		reason := strings.TrimSpace(result.Reason)
+	if !prepared.OK {
+		reason := strings.TrimSpace(prepared.Reason)
 		if reason == "" {
-			reason = "Gemini composer/send control is not ready"
+			reason = "prompt composer is not ready"
 		}
 		return fmt.Errorf("gemini submit: %s", reason)
 	}
-	return nil
+
+	deadline := time.Now().Add(geminiSendWait)
+	lastReason := "send control is not ready"
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		raw, err := evaluator.Eval(ctx, geminiClickSendExpression)
+		if err != nil {
+			return err
+		}
+		var result struct {
+			OK     bool   `json:"ok"`
+			Retry  bool   `json:"retry"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return fmt.Errorf("gemini click send result: %w", err)
+		}
+		if result.OK {
+			return nil
+		}
+		if reason := strings.TrimSpace(result.Reason); reason != "" {
+			lastReason = reason
+		}
+		if !result.Retry {
+			return fmt.Errorf("gemini submit: %s", lastReason)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("gemini submit: %s after bounded wait", lastReason)
+		}
+
+		timer := time.NewTimer(geminiSendPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (Gemini) Cancel(ctx context.Context, evaluator Evaluator) (bool, error) {
@@ -118,7 +171,7 @@ const geminiConversationExpression = `(() => {
   };
 })()`
 
-const geminiSubmitExpressionTemplate = `(async () => {
+const geminiPreparePromptExpressionTemplate = `(() => {
   const prompt = %s;
   const visible = (el) => {
     if (!el) return false;
@@ -167,7 +220,25 @@ const geminiSubmitExpressionTemplate = `(async () => {
     }
     composer.dispatchEvent(new Event('change', {bubbles: true}));
   }
+  return {ok: true, reason: ''};
+})()`
 
+const geminiClickSendExpression = `(() => {
+  const visible = (el) => {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const firstVisible = (selectors) => {
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (visible(el)) return el;
+      }
+    }
+    return null;
+  };
   const sendSelectors = [
     'gem-icon-button.send-button[aria-disabled="false"]',
     'gem-icon-button.submit[aria-disabled="false"]',
@@ -186,7 +257,6 @@ const geminiSubmitExpressionTemplate = `(async () => {
     '[role="button"][aria-label*="Gửi" i]',
     'button.send-button'
   ];
-
   const findSend = () => {
     const direct = firstVisible(sendSelectors);
     if (direct) return direct;
@@ -201,22 +271,12 @@ const geminiSubmitExpressionTemplate = `(async () => {
     return null;
   };
 
-  let sendButton = null;
-  const deadline = Date.now() + 6000;
-  while (Date.now() < deadline) {
-    sendButton = findSend();
-    if (sendButton) {
-      const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
-      if (!disabled) break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (!sendButton) return {ok: false, reason: 'send control not found after bounded wait'};
-  if (Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') {
-    return {ok: false, reason: 'send control remained disabled after bounded wait'};
-  }
+  const sendButton = findSend();
+  if (!sendButton) return {ok: false, retry: true, reason: 'send control not found'};
+  const disabled = Boolean(sendButton.disabled) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true';
+  if (disabled) return {ok: false, retry: true, reason: 'send control is disabled'};
   sendButton.click();
-  return {ok: true, reason: ''};
+  return {ok: true, retry: false, reason: ''};
 })()`
 
 const geminiCancelExpression = `(() => {
