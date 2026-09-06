@@ -80,7 +80,7 @@ jobs:
             docs/observability.md
           )
           failed=0
-          for pattern in '"api_key"[[:space:]]*:' 'docker[[:space:]]+compose[[:space:]]+(build|run|up|pull|start)' 'ollama[[:space:]]+create' 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY'; do
+          for pattern in '"api_key"[[:space:]]*:' 'docker[[:space:]]+compose[[:space:]]+(build|run|up|pull|start)([[:space:]]|$)' 'ollama[[:space:]]+create' 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY'; do
             if grep -nEi -- "$pattern" "${current_docs[@]}"; then
               echo "::error::stale current-product instruction matched: $pattern"
               failed=1
