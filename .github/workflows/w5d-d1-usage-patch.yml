@@ -57,6 +57,18 @@ jobs:
           PY
       - name: Apply guarded WEB-only usage/pricing refactor
         run: python3 .github/scripts/w5d_patch_d1_usage.py
+      - name: Remove final eval usage assignment
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('internal/eval/grade.go')
+          s = p.read_text(encoding='utf-8')
+          old = '\t\tUsage:             col.Usage,\n'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one eval Usage assignment, got {s.count(old)}')
+          p.write_text(s.replace(old, '', 1), encoding='utf-8')
+          PY
       - name: Format
         shell: bash
         run: |
