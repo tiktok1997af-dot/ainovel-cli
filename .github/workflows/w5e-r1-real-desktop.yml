@@ -25,6 +25,29 @@ jobs:
           ref: 526c80facd146990e79f05e01dce5a4890fa9f38
           fetch-depth: 0
 
+      - name: Setup Go from exact candidate
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Expose Git Bash to subsequent steps
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+            $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+            $bash = Join-Path $gitBin 'bash.exe'
+            if (-not (Test-Path -LiteralPath $bash)) {
+              throw 'Git Bash is required but bash.exe was not found under Program Files\Git\bin.'
+            }
+            [System.IO.File]::AppendAllText(
+              $env:GITHUB_PATH,
+              "$gitBin`r`n",
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+          }
+
       - name: Verify exact candidate and interactive desktop session
         shell: powershell
         run: |
@@ -74,9 +97,6 @@ jobs:
             (New-Object System.Text.UTF8Encoding($false))
           )
 
-          # Exact candidate was authored for PowerShell 7, where $IsWindows is an
-          # automatic variable. Windows PowerShell 5.1 lacks it; define the same
-          # read-only semantic fact here without modifying the candidate source.
           if ($null -eq (Get-Variable IsWindows -Scope Global -ErrorAction SilentlyContinue)) {
             $global:IsWindows = $true
           }
