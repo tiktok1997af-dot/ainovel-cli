@@ -61,9 +61,8 @@ type Host struct {
 	lifecycle  lifecycle
 	cocreating bool   // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
 	exclusive  string // 后台独占作业占用（导入/仿写/修订）：非空表示某作业在跑，堵住并发独占入口
-	// exclusiveCancel 是当前独占作业的取消函数：预算硬停/手动暂停须能停掉正在烧钱的
-	// 导入，而不仅是 Engine——abortWithEvent 在 Engine 未运行时取消它（预算哨兵的
-	// abort 回调与手动 Abort 共用同一停机机制）。releaseExclusive 一并清空。
+	// exclusiveCancel 是当前独占作业的取消函数：手动暂停/退出须能停止导入等后台作业，
+	// 而不仅是 Engine。releaseExclusive 会一并清空。
 	exclusiveCancel context.CancelFunc
 	closeOnce       sync.Once
 	asyncWG         sync.WaitGroup
@@ -158,7 +157,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	// onGuardBlock 前置声明:h 构造后才能挂事件浮出闭包。
 	var onGuardBlock func(agent, reason string, consecutive int32)
 	styleStats := tools.NewStyleStatsIndex(store)
-	workers, restore, applyThinking := agents.BuildWorkers(cfg, store, styleStats, models, bundle, nil,
+	workers, restore, applyThinking := agents.BuildWorkers(cfg, store, styleStats, models, bundle,
 		func(agent, reason string, consecutive int32) {
 			if onGuardBlock != nil {
 				onGuardBlock(agent, reason, consecutive)

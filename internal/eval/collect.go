@@ -37,7 +37,6 @@ type StyleCollection struct {
 	Stats  *stylestat.Stats `json:"stats,omitempty"`
 }
 
-// UsageMetrics 是 meta/usage.json 中已有的可靠成本/token 事实。
 // Collect 对一个已完成的输出目录做离线采集。runtimeErr 是 runner 驱动期间的错误（如有）。
 // 工件读取错误不静默吞：文件不存在视为"无数据"，其余（损坏/无权限）记入 LoadErrors，
 // 避免"读不到 pending 文件"被误判成"没有 pending"而 false pass（fail-loud）。

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -21,14 +20,12 @@ const (
 // remains stable, but W5B turns the active surface into browser-only settings.
 // No provider, API key, Base URL, protocol, token or Google credential is held.
 type modelConfigState struct {
-	web        host.WebConfigurationSnapshot
-	cursor     int
-	message    string
-	input      textinput.Model
-	editing    int
-	saving     bool
-	testing    bool
-	testCancel context.CancelFunc // compatibility with the generic TUI event loop; unused in WEB-only /config
+	web     host.WebConfigurationSnapshot
+	cursor  int
+	message string
+	input   textinput.Model
+	editing int
+	saving  bool
 
 	browserPath string
 	profileName string
@@ -46,7 +43,7 @@ func newModelConfigState(rt *host.Host) *modelConfigState {
 		state.profileName = "default"
 	}
 	if !web.Enabled {
-		state.message = "Cấu hình hiện tại chưa ở WEB-only. Provider/API cũ sẽ được xử lý ở W5C; /config không còn cho phép tạo hoặc sửa API credential."
+		state.message = "Cấu hình runtime không ở trạng thái WEB-only hợp lệ; hãy khởi động lại sau khi sửa cấu hình browser."
 	}
 	return state
 }
@@ -132,14 +129,6 @@ func (s *modelConfigState) cancelEdit() {
 
 type modelConfigSavedMsg struct{ err error }
 
-// modelConfigConnectionMsg is retained until W5C because model_update.go has a
-// generic compatibility branch for the deleted API connection tester. WEB-only
-// /config never emits this message.
-type modelConfigConnectionMsg struct {
-	model string
-	err   error
-}
-
 func saveModelConfiguration(rt *host.Host, browserPath, profileName string) tea.Cmd {
 	return func() tea.Msg {
 		return modelConfigSavedMsg{err: rt.SaveWebConfiguration(browserPath, profileName)}
@@ -160,7 +149,7 @@ func (m Model) handleModelConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modelConfig = nil
 		return m, m.textarea.Focus()
 	}
-	if state.saving || state.testing {
+	if state.saving {
 		return m, nil
 	}
 	if state.editing >= 0 {
@@ -184,7 +173,7 @@ func (m Model) handleModelConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, state.beginEdit(state.cursor)
 		case webConfigFieldSave:
 			if !state.web.Enabled {
-				state.message = "Không thể lưu browser settings lên cấu hình legacy. Hãy hoàn tất migration WEB-only ở W5C."
+				state.message = "Không thể lưu browser settings khi WEB-only runtime chưa được bật."
 				return m, nil
 			}
 			state.saving = true
