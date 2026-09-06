@@ -313,13 +313,14 @@ func validateJSONObject(raw json.RawMessage) error {
 	return nil
 }
 
-// extractEnvelope accepts the canonical single envelope and one very narrow
-// browser-formatting quirk: the outer body may consist solely of one complete
-// duplicate response envelope. That redundant wrapper is removed exactly once.
-// Mixed content, deeper nesting, duplicate markers, and commentary outside the
-// envelope remain protocol errors.
+// extractEnvelope accepts the canonical single envelope and exactly one narrow
+// browser-formatting quirk: an otherwise empty outer envelope may contain one
+// complete duplicate response envelope. Framing is resolved from the outermost
+// prefix/suffix first, so the inner end marker cannot be mistaken for the outer
+// end marker. Mixed content, deeper nesting, and commentary outside remain hard
+// protocol errors.
 func extractEnvelope(raw string) (string, error) {
-	body, err := extractSingleEnvelope(raw)
+	body, err := stripOutermostEnvelope(raw)
 	if err != nil {
 		return "", err
 	}
@@ -327,9 +328,8 @@ func extractEnvelope(raw string) (string, error) {
 		return body, nil
 	}
 
-	trimmed := strings.TrimSpace(body)
-	inner, innerErr := extractSingleEnvelope(trimmed)
-	if innerErr != nil {
+	inner, err := stripOutermostEnvelope(body)
+	if err != nil {
 		return "", protocolError("extract response", fmt.Errorf("nested response marker"))
 	}
 	if strings.Contains(inner, responseStart) || strings.Contains(inner, responseEnd) {
@@ -338,24 +338,21 @@ func extractEnvelope(raw string) (string, error) {
 	return inner, nil
 }
 
-func extractSingleEnvelope(raw string) (string, error) {
-	start := strings.Index(raw, responseStart)
-	if start < 0 {
+func stripOutermostEnvelope(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, responseStart) {
+		if strings.Contains(trimmed, responseStart) {
+			return "", protocolError("extract response", fmt.Errorf("unexpected content before start marker"))
+		}
 		return "", protocolError("extract response", fmt.Errorf("missing start marker"))
 	}
-	if strings.TrimSpace(raw[:start]) != "" {
-		return "", protocolError("extract response", fmt.Errorf("unexpected content before start marker"))
-	}
-	bodyStart := start + len(responseStart)
-	endRel := strings.Index(raw[bodyStart:], responseEnd)
-	if endRel < 0 {
+	if !strings.HasSuffix(trimmed, responseEnd) {
+		if strings.Contains(trimmed, responseEnd) {
+			return "", protocolError("extract response", fmt.Errorf("unexpected content after end marker"))
+		}
 		return "", protocolError("extract response", fmt.Errorf("missing end marker"))
 	}
-	end := bodyStart + endRel
-	if strings.TrimSpace(raw[end+len(responseEnd):]) != "" {
-		return "", protocolError("extract response", fmt.Errorf("unexpected content after end marker"))
-	}
-	body := strings.TrimSpace(raw[bodyStart:end])
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, responseStart), responseEnd))
 	if body == "" {
 		return "", protocolError("extract response", fmt.Errorf("empty response envelope"))
 	}
