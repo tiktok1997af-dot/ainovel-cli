@@ -52,7 +52,7 @@ jobs:
           check_absent() {
             local pattern="$1"
             shift
-            if grep -RInE --exclude='*_test.go' -- "$pattern" "$@"; then
+            if grep -RInE --exclude='*_test.go' --exclude='w55-no-api-audit.sh' -- "$pattern" "$@"; then
               echo "::error::forbidden WEB-only residue matched: $pattern"
               failed=1
             fi
