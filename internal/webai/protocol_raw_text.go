@@ -34,7 +34,8 @@ type rawToolCallMetadata struct {
 // the native agentcore tool-call block. Agentcore still applies the tool schema
 // immediately before local execution.
 func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
-	msg, legacyErr := ParseResponse(requestPrompt, raw, tools)
+	normalizedRaw := normalizeSingleRedundantResponseWrapper(raw)
+	msg, legacyErr := ParseResponse(requestPrompt, normalizedRaw, tools)
 	if legacyErr == nil {
 		return msg, nil
 	}
@@ -42,13 +43,13 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return agentcore.Message{}, legacyErr
 	}
 
-	body, extractErr := extractEnvelope(raw)
+	body, extractErr := extractEnvelope(normalizedRaw)
 	if extractErr != nil {
 		return agentcore.Message{}, legacyErr
 	}
 
 	if body == rawToolCallPrefix || strings.HasPrefix(body, rawToolCallPrefix+"\n") || strings.HasPrefix(body, rawToolCallPrefix+"\r\n") {
-		return parseRawToolCallResponse(requestPrompt, raw, body, tools)
+		return parseRawToolCallResponse(requestPrompt, normalizedRaw, body, tools)
 	}
 
 	var text string
@@ -72,6 +73,49 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		StopReason: agentcore.StopReasonStop,
 		Timestamp:  time.Now(),
 	}, nil
+}
+
+// normalizeSingleRedundantResponseWrapper tolerates exactly one redundant
+// leading response wrapper sometimes echoed by a browser model. It is purposely
+// narrower than extractEnvelope: only an immediately nested envelope with no
+// other content is normalized. Ambiguous, embedded, repeated or commentary-
+// bearing marker layouts remain untouched and therefore fail the strict parser.
+func normalizeSingleRedundantResponseWrapper(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, responseStart) {
+		return raw
+	}
+
+	afterOuterStart := strings.TrimSpace(strings.TrimPrefix(trimmed, responseStart))
+	if !strings.HasPrefix(afterOuterStart, responseStart) {
+		return raw
+	}
+
+	startCount := strings.Count(trimmed, responseStart)
+	endCount := strings.Count(trimmed, responseEnd)
+	if startCount != 2 {
+		return raw
+	}
+
+	// Some web responses echo a second start marker but only one final end
+	// marker. Because the duplicate start is immediate and the complete trimmed
+	// response contains no outside content, dropping only the first start marker
+	// yields the single authoritative envelope.
+	if endCount == 1 {
+		return afterOuterStart
+	}
+
+	// Fully balanced redundant wrapper:
+	// START START <body> END END. Strip only the outer pair and require the
+	// remaining body to be one exact envelope.
+	if endCount == 2 && strings.HasSuffix(afterOuterStart, responseEnd) {
+		inner := strings.TrimSpace(strings.TrimSuffix(afterOuterStart, responseEnd))
+		if strings.HasPrefix(inner, responseStart) && strings.HasSuffix(inner, responseEnd) &&
+			strings.Count(inner, responseStart) == 1 && strings.Count(inner, responseEnd) == 1 {
+			return inner
+		}
+	}
+	return raw
 }
 
 func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
