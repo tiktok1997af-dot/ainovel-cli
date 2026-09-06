@@ -34,39 +34,66 @@ func TestGeminiConversationDecodesSnapshot(t *testing.T) {
 }
 
 func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"ok":true,"reason":""}`)}}
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":""}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+	}}
 	prompt := "line 1\n`quoted` </script> \"x\""
 	if err := (Gemini{}).Submit(context.Background(), e, prompt); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 1 {
-		t.Fatalf("expressions = %d", len(e.exprs))
+	if len(e.exprs) != 2 {
+		t.Fatalf("expressions = %d, want prepare + click", len(e.exprs))
 	}
 	encoded, _ := json.Marshal(prompt)
 	if !strings.Contains(e.exprs[0], string(encoded)) {
-		t.Fatalf("prompt was not JSON encoded in expression")
+		t.Fatalf("prompt was not JSON encoded in prepare expression")
 	}
 }
 
 func TestGeminiSubmitSupportsCurrentCustomSendControls(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"ok":true,"reason":""}`)}}
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":""}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+	}}
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 1 {
-		t.Fatalf("expressions = %d", len(e.exprs))
+	if len(e.exprs) != 2 {
+		t.Fatalf("expressions = %d, want prepare + click", len(e.exprs))
 	}
-	expr := e.exprs[0]
+	clickExpr := e.exprs[1]
 	for _, want := range []string{
 		"gem-icon-button.send-button",
 		"gem-icon-button.submit",
 		"send-button-container",
 		"arrow_upward",
-		"Date.now() + 6000",
 	} {
-		if !strings.Contains(expr, want) {
-			t.Fatalf("submit expression missing current Gemini compatibility marker %q", want)
+		if !strings.Contains(clickExpr, want) {
+			t.Fatalf("click expression missing current Gemini compatibility marker %q", want)
 		}
+	}
+	for i, expr := range e.exprs {
+		if strings.Contains(expr, "async ()") || strings.Contains(expr, "new Promise") {
+			t.Fatalf("submit expression %d contains browser-side async Promise: %s", i, expr)
+		}
+	}
+}
+
+func TestGeminiSubmitPollsDisabledSendControlWithoutReplacingPrompt(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":""}`),
+		json.RawMessage(`{"ok":false,"retry":true,"reason":"send control is disabled"}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.exprs) != 3 {
+		t.Fatalf("expressions = %d, want one prepare + two click probes", len(e.exprs))
+	}
+	if strings.Contains(e.exprs[1], "const prompt =") || strings.Contains(e.exprs[2], "const prompt =") {
+		t.Fatal("send-control polling must not rewrite the composer")
 	}
 }
 
