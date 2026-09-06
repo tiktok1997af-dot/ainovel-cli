@@ -30,7 +30,7 @@
 
   // Optional local context-compaction budget. This is an ainovel local limit,
   // not an AI API context-window declaration.
-  "context_window": 200000,
+  "context_window": 200000
 
   // Optional system notifications.
   // "notify": {
