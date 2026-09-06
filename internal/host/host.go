@@ -1749,13 +1749,7 @@ func (h *Host) importCaller(fn string) imp.Caller {
 	if _, _, explicit := h.models.CurrentSelection(role); !explicit {
 		role = "architect"
 	}
-	model := h.models.ForRoleWithFailover(role, func(ev bootstrap.FailoverEvent) {
-		slog.Warn("导入 provider 切换", "module", "import", "role", ev.Role,
-			"reason", ev.Reason,
-			"from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
-			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
-			"err", ev.Err)
-	})
+	model := h.models.ForRole(role)
 	model = newUsageTrackedModel(model, role, h.usage.Record)
 	return imp.Caller{Model: model, Runtime: h.importModelRuntime(role, model)}
 }
@@ -1770,11 +1764,9 @@ func (h *Host) importModelRuntime(role string, model agentcore.ChatModel) imp.Mo
 		name = bootstrap.ModelName(model)
 		provider = bootstrap.ModelProvider(model)
 	}
-	// context / completion 上限：registry 是唯一可信来源（被包装模型的 Info() 不含窗口）。
+	// Context window remains local/provider-neutral. WEB-only mode has no truthful
+	// provider max-output registry, so MaxOutputTokens stays zero (unspecified).
 	rt.ContextTokens, _ = h.cfg.ResolveContextWindow(provider, name)
-	if entry, ok := modelreg.DefaultRegistry().Resolve(name); ok {
-		rt.MaxOutputTokens = entry.MaxTokens
-	}
 	// thinking：按角色 reasoning effort 与模型能力 resolve；不支持则不发（与 arbiter 同策略）。
 	if level, err := agents.ParseThinkingLevel(h.cfg.ResolveReasoningEffort(role)); err == nil {
 		if resolved, ok := agents.ResolveThinkingForModel(model, level); ok {
