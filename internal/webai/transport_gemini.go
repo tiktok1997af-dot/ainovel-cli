@@ -15,14 +15,16 @@ import (
 // GeminiWebTransportConfig controls one WEB-ONLY prompt round trip through the
 // visible, already authenticated Gemini browser session.
 type GeminiWebTransportConfig struct {
-	Session               *SessionManager
-	ResponseTimeout       time.Duration
-	PollInterval          time.Duration
-	StableWindow          time.Duration
-	PreflightRetries      int
-	CaptureReconnects     int
-	AuthRequiredGrace     time.Duration
-	ReadinessPollInterval time.Duration
+	Session                   *SessionManager
+	ResponseTimeout           time.Duration
+	PollInterval              time.Duration
+	StableWindow              time.Duration
+	PreflightRetries          int
+	CaptureReconnects         int
+	AuthRequiredGrace         time.Duration
+	ReadinessPollInterval     time.Duration
+	SubmitConfirmTimeout      time.Duration
+	SubmitConfirmPollInterval time.Duration
 
 	adapter          sites.InteractionAdapter
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
@@ -32,16 +34,18 @@ type GeminiWebTransportConfig struct {
 // not call a Gemini/Google AI HTTP API; all prompt/response work happens through
 // the logged-in visible web page over loopback Chrome DevTools.
 type GeminiWebTransport struct {
-	session               *SessionManager
-	adapter               sites.InteractionAdapter
-	responseTimeout       time.Duration
-	pollInterval          time.Duration
-	stableWindow          time.Duration
-	preflightRetries      int
-	captureReconnects     int
-	authRequiredGrace     time.Duration
-	readinessPollInterval time.Duration
-	evaluatorFactory      func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
+	session                   *SessionManager
+	adapter                   sites.InteractionAdapter
+	responseTimeout           time.Duration
+	pollInterval              time.Duration
+	stableWindow              time.Duration
+	preflightRetries          int
+	captureReconnects         int
+	authRequiredGrace         time.Duration
+	readinessPollInterval     time.Duration
+	submitConfirmTimeout      time.Duration
+	submitConfirmPollInterval time.Duration
+	evaluatorFactory          func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 }
 
 type interactionEvaluator interface {
@@ -93,21 +97,31 @@ func NewGeminiWebTransport(cfg GeminiWebTransportConfig) (*GeminiWebTransport, e
 	if readinessPollInterval <= 0 {
 		readinessPollInterval = 500 * time.Millisecond
 	}
+	submitConfirmTimeout := cfg.SubmitConfirmTimeout
+	if submitConfirmTimeout <= 0 {
+		submitConfirmTimeout = 3 * time.Second
+	}
+	submitConfirmPollInterval := cfg.SubmitConfirmPollInterval
+	if submitConfirmPollInterval <= 0 {
+		submitConfirmPollInterval = 150 * time.Millisecond
+	}
 	factory := cfg.evaluatorFactory
 	if factory == nil {
 		factory = openInteractionEvaluator
 	}
 	return &GeminiWebTransport{
-		session:               cfg.Session,
-		adapter:               adapter,
-		responseTimeout:       responseTimeout,
-		pollInterval:          pollInterval,
-		stableWindow:          stableWindow,
-		preflightRetries:      preflightRetries,
-		captureReconnects:     captureReconnects,
-		authRequiredGrace:     authRequiredGrace,
-		readinessPollInterval: readinessPollInterval,
-		evaluatorFactory:      factory,
+		session:                   cfg.Session,
+		adapter:                   adapter,
+		responseTimeout:           responseTimeout,
+		pollInterval:              pollInterval,
+		stableWindow:              stableWindow,
+		preflightRetries:          preflightRetries,
+		captureReconnects:         captureReconnects,
+		authRequiredGrace:         authRequiredGrace,
+		readinessPollInterval:     readinessPollInterval,
+		submitConfirmTimeout:      submitConfirmTimeout,
+		submitConfirmPollInterval: submitConfirmPollInterval,
+		evaluatorFactory:          factory,
 	}, nil
 }
 
@@ -136,8 +150,23 @@ func (t *GeminiWebTransport) RoundTrip(ctx context.Context, prompt string) (stri
 	if baseline.Truncated {
 		return "", protocolError("read Gemini baseline", fmt.Errorf("existing response exceeds capture limit"))
 	}
-	if err := t.adapter.Submit(ctx, evaluator, prompt); err != nil {
-		return "", &Error{Kind: ErrorTransport, Op: "submit Gemini web prompt", Cause: err, Retry: false}
+	if baseline.Busy {
+		return "", readinessTransportError("read Gemini baseline", fmt.Errorf("Gemini conversation is still busy"))
+	}
+
+	if submitErr := t.adapter.Submit(ctx, evaluator, prompt); submitErr != nil {
+		// A renderer/context transition can make CDP lose the acknowledgement after
+		// the send click. Never resubmit an ambiguous prompt: reconnect read-only,
+		// observe whether Gemini actually became BUSY or produced a new response,
+		// and only continue capture when that one original submit is confirmed.
+		confirmed, confirmErr := t.confirmAmbiguousSubmit(ctx, &evaluator, baseline)
+		if !confirmed {
+			cause := submitErr
+			if confirmErr != nil {
+				cause = errors.Join(submitErr, confirmErr)
+			}
+			return "", &Error{Kind: ErrorTransport, Op: "submit Gemini web prompt", Cause: cause, Retry: false}
+		}
 	}
 	if err := t.session.beginBusy("Gemini web prompt submitted"); err != nil {
 		return "", err
@@ -151,6 +180,84 @@ func (t *GeminiWebTransport) RoundTrip(ctx context.Context, prompt string) (stri
 	}
 	t.session.finishBusy(SessionReady, "Gemini web final response captured")
 	return final, nil
+}
+
+func (t *GeminiWebTransport) confirmAmbiguousSubmit(
+	ctx context.Context,
+	evaluator *interactionEvaluator,
+	baseline sites.ConversationSnapshot,
+) (bool, error) {
+	confirmCtx, cancel := context.WithTimeout(ctx, t.submitConfirmTimeout)
+	defer cancel()
+
+	baselineText := strings.TrimSpace(baseline.LastResponse)
+	var lastErr error
+	reconnects := 0
+
+	// The evaluator that reported the ambiguous submit may have an invalidated
+	// execution context. Reconnect before the first confirmation read, but keep
+	// the exact same browser/session/profile and do not send the prompt again.
+	if evaluator != nil && *evaluator != nil {
+		_ = (*evaluator).Close()
+	}
+	next, err := t.evaluatorFactory(confirmCtx, t.session.Snapshot(), t.adapter)
+	if err == nil {
+		*evaluator = next
+	} else {
+		lastErr = err
+		*evaluator = nil
+	}
+
+	for {
+		if err := confirmCtx.Err(); err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			return false, lastErr
+		}
+
+		if evaluator != nil && *evaluator != nil {
+			snapshot, readErr := t.adapter.Conversation(confirmCtx, *evaluator)
+			if readErr == nil {
+				if snapshot.Truncated {
+					return false, protocolError("confirm Gemini submit", fmt.Errorf("response exceeds capture limit"))
+				}
+				text := strings.TrimSpace(snapshot.LastResponse)
+				changed := snapshot.Busy || snapshot.ResponseCount > baseline.ResponseCount || (text != "" && text != baselineText)
+				if changed {
+					return true, nil
+				}
+			} else {
+				lastErr = readErr
+				if reconnects < t.captureReconnects {
+					_ = (*evaluator).Close()
+					*evaluator = nil
+					next, openErr := t.evaluatorFactory(confirmCtx, t.session.Snapshot(), t.adapter)
+					if openErr == nil {
+						*evaluator = next
+						reconnects++
+					} else {
+						lastErr = errors.Join(readErr, openErr)
+					}
+				}
+			}
+		} else if reconnects < t.captureReconnects {
+			next, openErr := t.evaluatorFactory(confirmCtx, t.session.Snapshot(), t.adapter)
+			if openErr == nil {
+				*evaluator = next
+				reconnects++
+			} else {
+				lastErr = openErr
+			}
+		}
+
+		if err := waitContext(confirmCtx, t.submitConfirmPollInterval); err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			return false, lastErr
+		}
+	}
 }
 
 func (t *GeminiWebTransport) ensureReady(ctx context.Context) (SessionSnapshot, error) {
