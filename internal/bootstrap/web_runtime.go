@@ -15,20 +15,9 @@ import (
 const (
 	WebOnlyProvider   = "web"
 	DefaultWebSite    = "gemini-web"
-	DefaultWebModel   = "gemini-web-session"
+	DefaultWebModel   = "gemini-web"
 	DefaultWebProfile = "default"
 )
-
-// W5A temporarily reads browser-only settings from providers.web.extra so the
-// production runtime can migrate before W5B replaces the legacy provider-shaped
-// config schema and UI. No value here is an API credential or remote endpoint.
-type webOnlyRuntimeConfig struct {
-	Site        string
-	BrowserPath string
-	ProfileName string
-	ProfileDir  string
-	StartURL    string
-}
 
 var (
 	webSessionFactory = webai.NewSessionManager
@@ -37,138 +26,102 @@ var (
 )
 
 func isWebOnlyConfig(cfg Config) bool {
-	return strings.EqualFold(strings.TrimSpace(cfg.Provider), WebOnlyProvider)
+	return cfg.Web.Enabled
 }
 
-func parseWebOnlyRuntimeConfig(cfg Config) (webOnlyRuntimeConfig, error) {
-	if !isWebOnlyConfig(cfg) {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime requires provider %q", WebOnlyProvider)
+// NewWebModelSet wires the already-owned browser session into the same
+// agentcore.ChatModel contract used by Architect/Writer/Editor/Arbiter. It does
+// not start Chrome and cannot fall back to an API provider.
+func NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error) {
+	if !cfg.Web.Enabled {
+		return nil, fmt.Errorf("WEB-only model set requires web.enabled=true")
 	}
-	if strings.TrimSpace(cfg.ModelName) == "" {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime requires a model label")
+	if session == nil {
+		return nil, fmt.Errorf("WEB-only model set requires a browser session")
 	}
-	if len(cfg.Roles) != 0 {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime does not allow role provider/model overrides or fallbacks")
+	if len(cfg.Providers) != 0 {
+		return nil, fmt.Errorf("WEB-only model set rejects legacy API providers")
 	}
-	if len(cfg.Providers) != 1 {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime requires exactly one local transport entry: providers.web")
-	}
-	pc, ok := cfg.Providers[WebOnlyProvider]
-	if !ok {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime requires providers.web")
-	}
-	if pc.Type != "" && !strings.EqualFold(strings.TrimSpace(pc.Type), WebOnlyProvider) {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("providers.web.type must be %q during W5 migration", WebOnlyProvider)
-	}
-	if strings.TrimSpace(pc.APIKey) != "" || strings.TrimSpace(pc.BaseURL) != "" || strings.TrimSpace(pc.API) != "" || len(pc.ExtraBody) != 0 {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("web-only runtime rejects API key, base URL, API mode and request-body provider settings")
-	}
-
-	out := webOnlyRuntimeConfig{
-		Site:        DefaultWebSite,
-		ProfileName: DefaultWebProfile,
-	}
-	for key, raw := range pc.Extra {
-		value, ok := raw.(string)
-		if !ok {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "site":
-			if value != "" {
-				out.Site = strings.ToLower(value)
-			}
-		case "browser_path":
-			out.BrowserPath = value
-		case "profile_name":
-			if value != "" {
-				out.ProfileName = value
-			}
-		case "profile_dir":
-			out.ProfileDir = value
-		case "start_url":
-			out.StartURL = value
+	for role, rc := range cfg.Roles {
+		if rc.Provider != "" || rc.Model != "" || len(rc.Fallbacks) != 0 {
+			return nil, fmt.Errorf("WEB-only model set rejects provider/model routing for role %q", role)
 		}
 	}
-	if out.Site != DefaultWebSite && out.Site != "gemini" {
-		return webOnlyRuntimeConfig{}, fmt.Errorf("unsupported web AI site %q; W5 currently supports Gemini Web only", out.Site)
-	}
-	out.Site = DefaultWebSite
-	return out, nil
-}
 
-func newWebOnlyModelSet(cfg Config) (*ModelSet, error) {
-	webCfg, err := parseWebOnlyRuntimeConfig(cfg)
+	transport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create Gemini web transport: %w", err)
 	}
+	model, err := webai.NewModel(webai.ModelConfig{
+		Site:      DefaultWebSite,
+		Model:     DefaultWebModel,
+		Transport: transport,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create web ChatModel: %w", err)
+	}
+	return &ModelSet{
+		Default:   NewSwappableModel(WebOnlyProvider, DefaultWebModel, model, nil),
+		models:    make(map[string]*SwappableModel),
+		fallbacks: make(map[string][]modelTarget),
+		config:    cfg,
+	}, nil
+}
 
+// newWebOnlyModelSet is the production bootstrap path. It owns one visible,
+// persistent Chrome session, but AUTH_REQUIRED and transient DEGRADED are valid
+// startup states so the TUI can stay alive while the user logs in or DevTools
+// becomes ready. Model calls themselves still require READY.
+func newWebOnlyModelSet(cfg Config) (*ModelSet, error) {
 	session := webSessionFactory(webai.SessionConfig{
-		Site:        webCfg.Site,
-		BrowserPath: webCfg.BrowserPath,
-		ProfileDir:  webCfg.ProfileDir,
-		ProfileName: webCfg.ProfileName,
-		StartURL:    webCfg.StartURL,
+		Site:        cfg.Web.Site,
+		BrowserPath: strings.TrimSpace(cfg.Web.BrowserPath),
+		ProfileDir:  strings.TrimSpace(cfg.Web.ProfileDir),
+		ProfileName: strings.TrimSpace(cfg.Web.ProfileName),
+		StartURL:    strings.TrimSpace(cfg.Web.StartURL),
 	})
 	startupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	snap, startErr := session.Start(startupCtx)
 	if startErr != nil && snap.State != webai.SessionDegraded && snap.State != webai.SessionAuthRequired {
 		_ = session.Stop()
-		return nil, fmt.Errorf("start web AI browser session: %w", startErr)
+		return nil, fmt.Errorf("start WEB-only browser session: %w", startErr)
 	}
 	if snap.State == webai.SessionFailed || snap.State == webai.SessionStopped {
 		_ = session.Stop()
 		if startErr == nil {
 			startErr = fmt.Errorf("browser session entered %s: %s", snap.State, snap.Reason)
 		}
-		return nil, fmt.Errorf("start web AI browser session: %w", startErr)
+		return nil, fmt.Errorf("start WEB-only browser session: %w", startErr)
 	}
 
-	transport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})
+	models, err := NewWebModelSet(cfg, session)
 	if err != nil {
 		_ = session.Stop()
-		return nil, fmt.Errorf("create Gemini web transport: %w", err)
-	}
-	model, err := webai.NewModel(webai.ModelConfig{
-		Site:      DefaultWebSite,
-		Model:     strings.TrimSpace(cfg.ModelName),
-		Transport: transport,
-	})
-	if err != nil {
-		_ = session.Stop()
-		return nil, fmt.Errorf("create web ChatModel: %w", err)
-	}
-
-	ms := &ModelSet{
-		Default:   NewSwappableModel(WebOnlyProvider, strings.TrimSpace(cfg.ModelName), model, nil),
-		models:    make(map[string]*SwappableModel),
-		fallbacks: make(map[string][]modelTarget),
-		config:    cfg,
+		return nil, err
 	}
 	if err := registerWebRuntime(cfg.OutputDir, session); err != nil {
 		_ = session.Stop()
 		return nil, err
 	}
-	return ms, nil
+	return models, nil
 }
 
 func webRuntimeKey(outputDir string) (string, error) {
 	value := strings.TrimSpace(outputDir)
 	if value == "" {
-		return "", fmt.Errorf("web-only runtime requires a non-empty output directory")
+		return "", fmt.Errorf("WEB-only runtime requires a non-empty output directory")
 	}
 	abs, err := filepath.Abs(value)
 	if err != nil {
-		return "", fmt.Errorf("resolve web runtime output directory: %w", err)
+		return "", fmt.Errorf("resolve WEB-only runtime output directory: %w", err)
 	}
 	return filepath.Clean(abs), nil
 }
 
 func registerWebRuntime(outputDir string, session *webai.SessionManager) error {
 	if session == nil {
-		return fmt.Errorf("cannot register nil web browser session")
+		return fmt.Errorf("cannot register nil WEB-only browser session")
 	}
 	key, err := webRuntimeKey(outputDir)
 	if err != nil {
@@ -177,15 +130,14 @@ func registerWebRuntime(outputDir string, session *webai.SessionManager) error {
 	webRuntimeMu.Lock()
 	defer webRuntimeMu.Unlock()
 	if existing := webRuntimeByDir[key]; existing != nil {
-		return fmt.Errorf("web AI browser session already registered for %s", key)
+		return fmt.Errorf("WEB-only browser session already registered for %s", key)
 	}
 	webRuntimeByDir[key] = session
 	return nil
 }
 
-// CloseWebRuntimeForOutputDir is called by the Host-owned book lease during
-// Host.Close. This gives the browser process exactly the same application
-// lifetime as the Host without exposing browser credentials or storage.
+// CloseWebRuntimeForOutputDir is invoked by the Host-owned book lease in
+// Host.Close, making the browser process part of Host lifetime deterministically.
 func CloseWebRuntimeForOutputDir(outputDir string) error {
 	key, err := webRuntimeKey(outputDir)
 	if err != nil {
@@ -199,12 +151,12 @@ func CloseWebRuntimeForOutputDir(outputDir string) error {
 		return nil
 	}
 	if err := session.Stop(); err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("stop web AI browser session: %w", err)
+		return fmt.Errorf("stop WEB-only browser session: %w", err)
 	}
 	return nil
 }
 
-// WebRuntimeSnapshot exposes only non-secret lifecycle metadata for W5B UI.
+// WebRuntimeSnapshot exposes non-secret browser lifecycle metadata for W5B UI.
 func WebRuntimeSnapshot(outputDir string) (webai.SessionSnapshot, bool) {
 	key, err := webRuntimeKey(outputDir)
 	if err != nil {
