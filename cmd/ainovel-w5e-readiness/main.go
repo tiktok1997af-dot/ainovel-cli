@@ -15,6 +15,8 @@ import (
 
 const evidenceSchema = "ainovel-w5e-readiness/1"
 
+const authRequiredGrace = 15 * time.Second
+
 type evidence struct {
 	Schema       string    `json:"schema"`
 	Site         string    `json:"site"`
@@ -113,12 +115,12 @@ func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.Sessi
 		if snap.State == webai.SessionAuthRequired {
 			if authSince.IsZero() {
 				authSince = time.Now()
-			} else if time.Since(authSince) >= 3*time.Second {
+			} else if time.Since(authSince) >= authRequiredGrace {
 				reason := strings.TrimSpace(snap.Reason)
 				if reason == "" {
 					reason = "no sanitized readiness reason"
 				}
-				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED (%s); complete normal visible Gemini login outside this verifier, then rerun", reason)
+				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED after %s (%s); complete normal visible Gemini login outside this verifier, then rerun", authRequiredGrace, reason)
 			}
 		} else {
 			authSince = time.Time{}
