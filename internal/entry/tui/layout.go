@@ -58,16 +58,6 @@ func formatContextWindow(n int) string {
 }
 
 // formatCostUSD 格式化美元成本。<$0.01 用 4 位小数，否则 2 位。0 返回空。
-func formatCostUSD(usd float64) string {
-	if usd <= 0 {
-		return ""
-	}
-	if usd < 0.01 {
-		return fmt.Sprintf("$%.4f", usd)
-	}
-	return fmt.Sprintf("$%.2f", usd)
-}
-
 func formatNumber(n int) string {
 	if n == 0 {
 		return "0"

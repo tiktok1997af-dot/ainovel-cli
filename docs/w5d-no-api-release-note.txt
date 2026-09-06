@@ -1,0 +1,1 @@
+Release automation must not use AI API keys or AI provider HTTP calls.

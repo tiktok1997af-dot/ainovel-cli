@@ -53,7 +53,6 @@ type Expect struct {
 type Gate struct {
 	MaxSeverity string `json:"max_severity,omitempty"` // diag Finding 允许的最高严重度（默认 warning）：超过即 hard fail
 
-	MaxCostDeltaRatio     *float64 `json:"max_cost_delta_ratio,omitempty"`
 	MaxToolCallDeltaRatio *float64 `json:"max_tool_call_delta_ratio,omitempty"`
 	StylestatRegression   string   `json:"stylestat_regression,omitempty"`
 }
@@ -74,9 +73,6 @@ func (c *Case) Validate() error {
 	}
 	if !validSeverity(c.Gate.MaxSeverity) {
 		return fmt.Errorf("case %q 的 gate.max_severity 非法: %s", c.ID, c.Gate.MaxSeverity)
-	}
-	if c.Gate.MaxCostDeltaRatio == nil {
-		c.Gate.MaxCostDeltaRatio = float64Ptr(defaultDeltaRatio)
 	}
 	if c.Gate.MaxToolCallDeltaRatio == nil {
 		c.Gate.MaxToolCallDeltaRatio = float64Ptr(defaultDeltaRatio)

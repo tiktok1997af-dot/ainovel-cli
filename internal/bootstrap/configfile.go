@@ -110,7 +110,7 @@ func LoadConfigFile(path string) (Config, error) {
 
 var forbiddenLegacyTopLevelKeys = []string{
 	"provider", "model", "providers", "api_key", "base_url", "api",
-	"extra", "extra_body", "stream_idle_timeout",
+	"extra", "extra_body", "stream_idle_timeout", "budget",
 }
 
 var forbiddenLegacyRoleKeys = []string{"provider", "model", "fallbacks"}
@@ -208,9 +208,6 @@ func mergeConfig(base, overlay Config) Config {
 		}
 	}
 
-	if overlay.Budget != (BudgetConfig{}) {
-		base.Budget = overlay.Budget
-	}
 	if overlay.Notify.Enabled != nil || overlay.Notify.Command != "" || len(overlay.Notify.Events) > 0 {
 		base.Notify = overlay.Notify
 	}

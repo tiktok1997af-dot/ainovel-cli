@@ -38,7 +38,6 @@ type Metrics struct {
 	CriticalFindings  int              `json:"critical_findings"`
 	WarningFindings   int              `json:"warning_findings"`
 	ToolCalls         int              `json:"tool_calls"`
-	Usage             UsageMetrics     `json:"usage"`
 	StylestatStatus   string           `json:"stylestat_status,omitempty"`
 	Stylestat         *stylestat.Stats `json:"stylestat,omitempty"`
 }
@@ -129,15 +128,12 @@ type Delta struct {
 }
 
 type DeltaMetrics struct {
-	CompletedChapters     int         `json:"completed_chapters"`
-	CriticalFindings      int         `json:"critical_findings"`
-	WarningFindings       int         `json:"warning_findings"`
-	TotalWordsRatio       float64     `json:"total_words_ratio,omitempty"`
-	ToolCallDeltaRatio    float64     `json:"tool_call_delta_ratio,omitempty"`
-	CostDeltaRatio        float64     `json:"cost_delta_ratio,omitempty"`
-	InputTokenDeltaRatio  float64     `json:"input_token_delta_ratio,omitempty"`
-	OutputTokenDeltaRatio float64     `json:"output_token_delta_ratio,omitempty"`
-	Stylestat             *StyleDelta `json:"stylestat,omitempty"`
+	CompletedChapters  int         `json:"completed_chapters"`
+	CriticalFindings   int         `json:"critical_findings"`
+	WarningFindings    int         `json:"warning_findings"`
+	TotalWordsRatio    float64     `json:"total_words_ratio,omitempty"`
+	ToolCallDeltaRatio float64     `json:"tool_call_delta_ratio,omitempty"`
+	Stylestat          *StyleDelta `json:"stylestat,omitempty"`
 }
 
 type StyleDelta struct {
@@ -188,18 +184,6 @@ func GradeDelta(c Case, baseline, variant Result) Delta {
 		warn("delta:tool_calls", fmt.Sprintf("tool calls 增幅 %.1f%% 超过阈值 %.1f%%",
 			d.Metrics.ToolCallDeltaRatio*100, *c.Gate.MaxToolCallDeltaRatio*100))
 	}
-	if deltaGateEnabled(c.Gate.MaxCostDeltaRatio) && d.Metrics.CostDeltaRatio > *c.Gate.MaxCostDeltaRatio {
-		warn("delta:cost", fmt.Sprintf("成本增幅 %.1f%% 超过阈值 %.1f%%",
-			d.Metrics.CostDeltaRatio*100, *c.Gate.MaxCostDeltaRatio*100))
-	}
-	if deltaGateEnabled(c.Gate.MaxCostDeltaRatio) && d.Metrics.InputTokenDeltaRatio > *c.Gate.MaxCostDeltaRatio {
-		warn("delta:input_tokens", fmt.Sprintf("输入 token 增幅 %.1f%% 超过阈值 %.1f%%",
-			d.Metrics.InputTokenDeltaRatio*100, *c.Gate.MaxCostDeltaRatio*100))
-	}
-	if deltaGateEnabled(c.Gate.MaxCostDeltaRatio) && d.Metrics.OutputTokenDeltaRatio > *c.Gate.MaxCostDeltaRatio {
-		warn("delta:output_tokens", fmt.Sprintf("输出 token 增幅 %.1f%% 超过阈值 %.1f%%",
-			d.Metrics.OutputTokenDeltaRatio*100, *c.Gate.MaxCostDeltaRatio*100))
-	}
 	if sd := d.Metrics.Stylestat; sd != nil {
 		if sd.Status == "insufficient_sample" {
 			note("stylestat", "样本不足，至少 5 章才计算文体回归")
@@ -240,15 +224,12 @@ func deltaGateEnabled(v *float64) bool {
 func deltaMetrics(baseline, variant Result) DeltaMetrics {
 	bm, vm := baseline.Metrics, variant.Metrics
 	return DeltaMetrics{
-		CompletedChapters:     vm.CompletedChapters - bm.CompletedChapters,
-		CriticalFindings:      vm.CriticalFindings - bm.CriticalFindings,
-		WarningFindings:       vm.WarningFindings - bm.WarningFindings,
-		TotalWordsRatio:       ratio(vm.TotalWords, bm.TotalWords),
-		ToolCallDeltaRatio:    deltaRatio(vm.ToolCalls, bm.ToolCalls),
-		CostDeltaRatio:        deltaRatioFloat(vm.Usage.CostUSD, bm.Usage.CostUSD),
-		InputTokenDeltaRatio:  deltaRatio(vm.Usage.Input, bm.Usage.Input),
-		OutputTokenDeltaRatio: deltaRatio(vm.Usage.Output, bm.Usage.Output),
-		Stylestat:             compareStyleStats(bm.Stylestat, vm.Stylestat),
+		CompletedChapters:  vm.CompletedChapters - bm.CompletedChapters,
+		CriticalFindings:   vm.CriticalFindings - bm.CriticalFindings,
+		WarningFindings:    vm.WarningFindings - bm.WarningFindings,
+		TotalWordsRatio:    ratio(vm.TotalWords, bm.TotalWords),
+		ToolCallDeltaRatio: deltaRatio(vm.ToolCalls, bm.ToolCalls),
+		Stylestat:          compareStyleStats(bm.Stylestat, vm.Stylestat),
 	}
 }
 
@@ -305,13 +286,6 @@ func deltaRatio(newValue, base int) float64 {
 		return 0
 	}
 	return round2((float64(newValue) - float64(base)) / float64(base))
-}
-
-func deltaRatioFloat(newValue, base float64) float64 {
-	if base == 0 {
-		return 0
-	}
-	return round2((newValue - base) / base)
 }
 
 func round2(f float64) float64 {
@@ -383,7 +357,6 @@ func metricsFrom(col Collected) Metrics {
 		RewriteCount:      rep.Stats.RewriteCount,
 		AvgReviewScore:    rep.Stats.AvgReviewScore,
 		ToolCalls:         col.ToolCalls,
-		Usage:             col.Usage,
 		StylestatStatus:   col.Style.Status,
 		Stylestat:         col.Style.Stats,
 	}
