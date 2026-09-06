@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/gofrs/flock"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
 const bookLockFile = ".ainovel.lock"
@@ -16,8 +17,11 @@ var ErrBookInUse = errors.New("小说目录已被另一个 ainovel-cli 实例占
 
 // bookLease 在 Host 的完整生命周期内持有小说目录的跨进程独占权。
 // 锁文件会保留在目录中；真正的占用状态由操作系统管理，进程异常退出也会自动释放。
+// W5A 同时把 WEB-only browser runtime 绑定到相同生命周期：Host.Close 最终关闭
+// bookLease，因此 Chrome session 也会在此处被确定性停止。
 type bookLease struct {
 	lock *flock.Flock
+	dir  string
 }
 
 func acquireBookLease(dir string) (*bookLease, error) {
@@ -40,7 +44,7 @@ func acquireBookLease(dir string) (*bookLease, error) {
 			absDir,
 		))
 	}
-	return &bookLease{lock: fileLock}, nil
+	return &bookLease{lock: fileLock, dir: absDir}, nil
 }
 
 func closeBookLockAfterFailure(fileLock *flock.Flock, cause error) error {
@@ -51,10 +55,20 @@ func closeBookLockAfterFailure(fileLock *flock.Flock, cause error) error {
 }
 
 func (l *bookLease) Close() error {
-	if l == nil || l.lock == nil {
+	if l == nil {
 		return nil
 	}
-	err := l.lock.Close()
-	l.lock = nil
-	return err
+	var closeErr error
+	if l.dir != "" {
+		if err := bootstrap.CloseWebRuntimeForOutputDir(l.dir); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	if l.lock != nil {
+		if err := l.lock.Close(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+		l.lock = nil
+	}
+	return closeErr
 }
