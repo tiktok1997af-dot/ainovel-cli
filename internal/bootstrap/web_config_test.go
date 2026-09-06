@@ -7,7 +7,7 @@ import (
 
 func TestWebOnlyConfigNeedsNoAPICredential(t *testing.T) {
 	cfg := Config{
-		Web: WebAIConfig{Enabled: true},
+		Web:   WebAIConfig{Enabled: true},
 		Roles: map[string]RoleConfig{"writer": {ReasoningEffort: "high"}},
 	}
 	cfg.FillDefaults()
@@ -24,7 +24,7 @@ func TestWebOnlyConfigNeedsNoAPICredential(t *testing.T) {
 
 func TestWebOnlyConfigRejectsLegacyAPIProvider(t *testing.T) {
 	cfg := Config{
-		Web: WebAIConfig{Enabled: true},
+		Web:       WebAIConfig{Enabled: true},
 		Providers: map[string]ProviderConfig{"openai": {APIKey: "must-not-be-used"}},
 	}
 	cfg.FillDefaults()

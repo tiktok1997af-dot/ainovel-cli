@@ -47,6 +47,25 @@ func CompactReserveTokens(window int) int {
 	return reserve
 }
 
+// WebAIConfig defines the browser-owned AI runtime. No credential is stored here.
+// W5A initially supports Gemini Web only; additional websites require a verified adapter.
+type WebAIConfig struct {
+	Enabled     bool   `json:"enabled,omitempty"`
+	Site        string `json:"site,omitempty"`
+	BrowserPath string `json:"browser_path,omitempty"`
+	ProfileName string `json:"profile_name,omitempty"`
+	StartURL    string `json:"start_url,omitempty"`
+}
+
+func (w *WebAIConfig) fillDefaults() {
+	if strings.TrimSpace(w.Site) == "" {
+		w.Site = "gemini-web"
+	}
+	if strings.TrimSpace(w.ProfileName) == "" {
+		w.ProfileName = "default"
+	}
+}
+
 // ProviderConfig 定义单个 LLM 提供商的凭证。
 type ProviderConfig struct {
 	Type    string        `json:"type,omitempty"`     // API 协议类型（openai/anthropic/gemini），自定义代理时指定
@@ -201,9 +220,12 @@ type Config struct {
 	// 运行时字段（不序列化到 JSON）
 	OutputDir string `json:"-"` // 输出根目录
 
-	// 默认 LLM 配置
-	Provider  string `json:"provider"` // 默认 provider（Providers map 中的 key）
-	ModelName string `json:"model"`    // 默认模型名
+	// WEB-only browser runtime. When enabled, no provider/API credential path is constructed.
+	Web WebAIConfig `json:"web,omitzero"`
+
+	// Legacy API-era identity fields remain only while W5B/W5C migrate old configs/UI.
+	Provider  string `json:"provider,omitempty"`
+	ModelName string `json:"model,omitempty"`
 	// ReasoningEffort 顶层默认推理强度（off/low/medium/high/xhigh/max），空=不覆盖（沿用模型/provider 默认）。
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -251,6 +273,9 @@ func (n NotifyConfig) IsEnabled() bool { return n.Enabled == nil || *n.Enabled }
 
 // ValidateBase 校验基础配置。
 func (c *Config) ValidateBase() error {
+	if c.Web.Enabled {
+		return c.validateWebOnly()
+	}
 	if err := validateConfigText("provider", c.Provider); err != nil {
 		return err
 	}
@@ -351,6 +376,61 @@ func (c *Config) ValidateBase() error {
 	return nil
 }
 
+func (c *Config) validateWebOnly() error {
+	c.Web.fillDefaults()
+	site := strings.ToLower(strings.TrimSpace(c.Web.Site))
+	if site != "gemini-web" && site != "gemini" {
+		return fmt.Errorf("web.site %q is not supported; W5 currently supports gemini-web only: %w", c.Web.Site, errs.ErrConfig)
+	}
+	fields := []struct{ name, value string }{
+		{"web.site", c.Web.Site},
+		{"web.browser_path", c.Web.BrowserPath},
+		{"web.profile_name", c.Web.ProfileName},
+		{"web.start_url", c.Web.StartURL},
+	}
+	for _, field := range fields {
+		if err := validateConfigText(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	profile := strings.TrimSpace(c.Web.ProfileName)
+	if profile == "." || profile == ".." || strings.ContainsAny(profile, `/\\`) {
+		return fmt.Errorf("web.profile_name %q is invalid: %w", c.Web.ProfileName, errs.ErrConfig)
+	}
+	if c.Provider != "" && c.Provider != "web" {
+		return fmt.Errorf("legacy API provider %q cannot be used with web.enabled=true; remove provider/providers/api_key/base_url: %w", c.Provider, errs.ErrConfig)
+	}
+	if c.ModelName != "" && c.ModelName != "gemini-web" {
+		return fmt.Errorf("legacy API model %q cannot be used with web.enabled=true; remove provider/model API routing: %w", c.ModelName, errs.ErrConfig)
+	}
+	if len(c.Providers) != 0 {
+		return fmt.Errorf("legacy API providers are forbidden when web.enabled=true; remove providers/api_key/base_url: %w", errs.ErrConfig)
+	}
+	for role, rc := range c.Roles {
+		if !knownRoles[role] {
+			return fmt.Errorf("unknown role %q in roles config: %w", role, errs.ErrConfig)
+		}
+		if strings.TrimSpace(rc.Provider) != "" || strings.TrimSpace(rc.Model) != "" || len(rc.Fallbacks) != 0 {
+			return fmt.Errorf("role %q contains legacy provider/model/fallback routing; WEB-only mode uses one browser session for all roles: %w", role, errs.ErrConfig)
+		}
+	}
+	if c.Budget.BookUSD < 0 {
+		return fmt.Errorf("budget.book_usd must be >= 0: %w", errs.ErrConfig)
+	}
+	if c.Budget.Enabled() && (c.Budget.WarnRatio <= 0 || c.Budget.WarnRatio >= 1) {
+		return fmt.Errorf("budget.warn_ratio must be in (0, 1): %w", errs.ErrConfig)
+	}
+	if err := validateConfigText("notify.command", c.Notify.Command); err != nil {
+		return err
+	}
+	for _, ev := range c.Notify.Events {
+		if !notify.IsKnownKind(ev) {
+			return fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)
+		}
+	}
+	return nil
+}
+
 func validateProviderConfigText(name string, pc ProviderConfig) error {
 	fields := []struct {
 		label string
@@ -414,6 +494,15 @@ func (c *Config) FillDefaults() {
 	if c.OutputDir == "" {
 		c.OutputDir = filepath.Join("output", "novel")
 	}
+	if c.Web.Enabled {
+		c.Web.fillDefaults()
+		if strings.TrimSpace(c.Provider) == "" {
+			c.Provider = "web"
+		}
+		if strings.TrimSpace(c.ModelName) == "" {
+			c.ModelName = "gemini-web"
+		}
+	}
 	if c.Providers == nil {
 		c.Providers = make(map[string]ProviderConfig)
 	}
@@ -460,6 +549,12 @@ const (
 //
 // 注意：返回值仅用于压缩阈值计算，不会缩小 LLM API 真实可发请求长度。
 func (c Config) ResolveContextWindow(provider, modelName string) (int, ContextWindowSource) {
+	if c.Web.Enabled {
+		if c.ContextWindow > 0 {
+			return c.ContextWindow, CtxWindowConfig
+		}
+		return DefaultContextWindow, CtxWindowDefault
+	}
 	if pc, ok := c.Providers[strings.TrimSpace(provider)]; ok {
 		if model, found := pc.ModelConfig(modelName); found && model.ContextWindow > 0 {
 			return model.ContextWindow, CtxWindowModelConfig
@@ -506,6 +601,12 @@ func LogContextWindowChoice(role, model string, window int, source ContextWindow
 // CandidateModels 返回某个 provider 下可供切换的模型列表。
 // 优先使用 provider 显式声明的 models；同时补充当前配置中已出现过的该 provider 模型。
 func (c Config) CandidateModels(provider string) []string {
+	if c.Web.Enabled {
+		if provider == "" || provider == "web" {
+			return []string{"gemini-web"}
+		}
+		return nil
+	}
 	if provider == "" {
 		return nil
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/llmcontract"
+	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
 // FailoverEvent 表示一次显式 provider 切换。
@@ -132,6 +133,7 @@ type ModelSet struct {
 	models    map[string]*SwappableModel
 	fallbacks map[string][]modelTarget
 	config    Config
+	webOnly   bool
 }
 
 // ForRole 返回指定角色的模型，未配置时返回默认模型。
@@ -201,6 +203,9 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 func (ms *ModelSet) Swap(role, provider, model string) error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	if ms.webOnly {
+		return fmt.Errorf("WEB-only runtime uses the logged-in browser session and does not support provider/API model switching: %w", errs.ErrConfig)
+	}
 	pc, ok := ms.config.Providers[provider]
 	if !ok {
 		return fmt.Errorf("provider %q is not configured: %w", provider, errs.ErrConfig)
@@ -270,6 +275,7 @@ func (ms *ModelSet) ApplyPrepared(candidate *ModelSet) {
 	ms.models = nextModels
 	ms.fallbacks = candidate.fallbacks
 	ms.config = CloneConfig(candidate.config)
+	ms.webOnly = candidate.webOnly
 }
 
 func (ms *ModelSet) fallbackTargets(role string) []modelTarget {
@@ -301,6 +307,9 @@ func ModelProvider(m agentcore.ChatModel) string {
 // NewModelSet 根据配置创建多模型集合。
 // 相同 provider+model 组合复用同一个实例。
 func NewModelSet(cfg Config) (*ModelSet, error) {
+	if cfg.Web.Enabled {
+		return nil, fmt.Errorf("WEB-only config must use NewWebModelSet; refusing legacy API constructor: %w", errs.ErrConfig)
+	}
 	cache := make(map[string]agentcore.ChatModel)
 
 	// 创建默认模型
@@ -354,6 +363,32 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 	}
 
 	return ms, nil
+}
+
+// NewWebModelSet builds the production WEB-only model graph over one owned browser session.
+// Architect/Writer/Editor/Arbiter share this browser transport; there is no provider fallback.
+func NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error) {
+	if !cfg.Web.Enabled {
+		return nil, fmt.Errorf("web runtime is not enabled: %w", errs.ErrConfig)
+	}
+	if session == nil {
+		return nil, fmt.Errorf("WEB-only model set requires a browser session: %w", errs.ErrConfig)
+	}
+	transport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})
+	if err != nil {
+		return nil, fmt.Errorf("create Gemini Web transport: %w", err)
+	}
+	model, err := webai.NewModel(webai.ModelConfig{Site: "gemini-web", Model: "gemini-web", Transport: transport})
+	if err != nil {
+		return nil, fmt.Errorf("create WEB ChatModel: %w", err)
+	}
+	return &ModelSet{
+		Default:   NewSwappableModel("web", "gemini-web", model, nil),
+		models:    make(map[string]*SwappableModel),
+		fallbacks: make(map[string][]modelTarget),
+		config:    cfg,
+		webOnly:   true,
+	}, nil
 }
 
 // createModelFromConfig 创建或复用 ChatModel 实例。

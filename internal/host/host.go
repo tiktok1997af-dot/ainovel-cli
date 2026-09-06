@@ -31,6 +31,7 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 	"github.com/voocel/ainovel-cli/internal/userrules"
+	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
 // Host 是运行时外壳:生命周期/干预入口/事件投影/模型管理。
@@ -42,6 +43,7 @@ type Host struct {
 	bookLease       *bookLease
 	styleStats      *tools.StyleStatsIndex
 	models          *bootstrap.ModelSet
+	webSession      *webai.SessionManager
 	engine          *engine
 	thinkingApplier agents.ApplyThinking // /model 调推理强度时联动各 Worker
 	writerRestore   *ctxpack.WriterRestorePack
@@ -111,12 +113,16 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	}
 	keepBookLease := false
 	var logCleanup func()
+	var webSession *webai.SessionManager
 	defer func() {
 		if keepBookLease {
 			return
 		}
 		if err := bookLease.Close(); err != nil {
 			slog.Error("释放小说目录占用失败", "module", "host", "dir", cfg.OutputDir, "err", err)
+		}
+		if webSession != nil {
+			_ = webSession.Stop()
 		}
 		if logCleanup != nil {
 			logCleanup()
@@ -134,8 +140,10 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 
 	slog.Info("启动", "module", "boot", "provider", cfg.Provider, "model", cfg.ModelName, "output", cfg.OutputDir)
 
-	// 起后台 goroutine 从 OpenRouter 刷新模型元数据（窗口/价格），磁盘缓存 24h。
-	modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
+	// API-era pricing metadata is never refreshed in WEB-only mode.
+	if !cfg.Web.Enabled {
+		modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
+	}
 
 	store := storepkg.NewStore(cfg.OutputDir)
 	if err := store.Init(); err != nil {
@@ -147,7 +155,12 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 		return nil, fmt.Errorf("init run meta: %w", err)
 	}
 
-	models, err := bootstrap.NewModelSet(cfg)
+	var models *bootstrap.ModelSet
+	if cfg.Web.Enabled {
+		webSession, models, err = startWebRuntime(context.Background(), cfg, nil)
+	} else {
+		models, err = bootstrap.NewModelSet(cfg)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create models: %w", err)
 	}
@@ -194,6 +207,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 		bookLease:       bookLease,
 		styleStats:      styleStats,
 		models:          models,
+		webSession:      webSession,
 		thinkingApplier: applyThinking,
 		writerRestore:   restore,
 		userRules:       userrules.NewService(store, models.Default, rules.DefaultOptions()),
@@ -931,6 +945,12 @@ func (h *Host) Close() {
 		h.engine.abort()
 		h.engine.wait()
 		h.asyncWG.Wait()
+		if h.webSession != nil {
+			if err := h.webSession.Stop(); err != nil {
+				slog.Warn("WEB browser session stop failed", "module", "webai", "err", err)
+			}
+			h.webSession = nil
+		}
 
 		if h.usageCancel != nil {
 			h.usageCancel()
