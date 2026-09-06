@@ -49,7 +49,7 @@ def find_block_end(text, start):
 
 
 def remove_func(text, name, required=True):
-    m = re.search(r"(?m)^func " + re.escape(name) + r"\s*\(", text)
+    m = re.search(r"(?m)^func(?:\s+\([^\n)]*\))?\s+" + re.escape(name) + r"\s*\(", text)
     if not m:
         if required:
             raise SystemExit(f"function {name} not found")
@@ -62,7 +62,7 @@ def remove_func(text, name, required=True):
 
 
 def replace_func(text, name, replacement):
-    m = re.search(r"(?m)^func " + re.escape(name) + r"\s*\(", text)
+    m = re.search(r"(?m)^func(?:\s+\([^\n)]*\))?\s+" + re.escape(name) + r"\s*\(", text)
     if not m:
         raise SystemExit(f"function {name} not found")
     start = m.start()
@@ -132,6 +132,8 @@ for field in [
         raise SystemExit(f"snapshot field {field}: expected 1, got {cnt}")
 anchor = "\t\tIsRunning:              state == lifecycleRunning,\n"
 host = must_replace(host, anchor, anchor + "\t\tAITelemetryStatus:      WebAITelemetryUnavailable,\n", "snapshot telemetry status")
+host = must_replace(host, '\tmodel = newUsageTrackedModel(model, "editor", h.usage.Record)\n', '', "revision usage wrapper")
+host = must_replace(host, '\tmodel = newUsageTrackedModel(model, role, h.usage.Record)\n', '', "import usage wrapper")
 if "h.usage" in host or "UsageTracker" in host or "newUsageTrackedModel" in host:
     raise SystemExit("host still references API-era usage tracker")
 write(host_path, host)
@@ -145,6 +147,7 @@ if start < 0 or end < 0:
     raise SystemExit("UISnapshot usage block markers not found")
 events = events[:start] + "\n\t// Gemini Web does not expose authoritative billing/token/cache telemetry to the browser bridge.\n\tAITelemetryStatus string\n" + events[end:]
 events = remove_struct_type(events, "AgentCacheStat")
+events = re.sub(r'(?ms)^// AgentCacheStat .*?(?=// AgentContextSnapshot)', '', events)
 const_anchor = "// UISnapshot 是 TUI 渲染所需的聚合状态快照。\n"
 telemetry_const = '''// WebAITelemetryUnavailable states the WEB-only telemetry boundary explicitly.
 // The browser bridge observes visible page interaction, not provider billing APIs.
@@ -233,7 +236,7 @@ new = '''\tif body := renderWebTelemetrySidebar(snap, contentW); body != "" {
 \t}
 '''
 side = must_replace(side, old, new, "sidebar usage/cache sections")
-for fn in ["renderUsageSidebar", "usageStatsByCost", "renderUsageGroupHeader", "renderUsageLine", "renderCacheSidebar", "renderCacheCategory", "renderCacheAgent", "formatTokensCompact", "cacheHitRate", "formatPercent", "cacheHitColor"]:
+for fn in ["renderUsageSidebar", "usageStatsByCost", "renderUsageGroupHeader", "renderUsageLine", "renderCacheSidebar", "renderCacheCategory", "renderCacheAgent", "renderCacheAgentLine", "colorPercent", "formatTokensCompact", "cacheHitRate", "formatPercent", "cacheHitColor"]:
     side = remove_func(side, fn, required=False)
 side += '''\nfunc renderWebTelemetrySidebar(snap host.UISnapshot, width int) string {
 \tstatus := strings.TrimSpace(snap.AITelemetryStatus)

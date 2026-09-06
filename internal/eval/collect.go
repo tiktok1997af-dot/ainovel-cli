@@ -28,7 +28,6 @@ type Collected struct {
 	LoadErrors  []string        // 契约依赖工件的真实读取失败（非"不存在"）；Grade 据此 hard fail
 	RuntimeErr  string          // runner 捕获的运行时错误（hard fail），空=无
 	Style       StyleCollection
-	Usage       UsageMetrics
 	ToolCalls   int
 }
 
@@ -39,16 +38,6 @@ type StyleCollection struct {
 }
 
 // UsageMetrics 是 meta/usage.json 中已有的可靠成本/token 事实。
-type UsageMetrics struct {
-	Input         int     `json:"input,omitempty"`
-	Output        int     `json:"output,omitempty"`
-	CacheRead     int     `json:"cache_read,omitempty"`
-	CacheWrite    int     `json:"cache_write,omitempty"`
-	CostUSD       float64 `json:"cost_usd,omitempty"`
-	MissingUsage  int     `json:"missing_usage,omitempty"`
-	UsageRecorded bool    `json:"usage_recorded"`
-}
-
 // Collect 对一个已完成的输出目录做离线采集。runtimeErr 是 runner 驱动期间的错误（如有）。
 // 工件读取错误不静默吞：文件不存在视为"无数据"，其余（损坏/无权限）记入 LoadErrors，
 // 避免"读不到 pending 文件"被误判成"没有 pending"而 false pass（fail-loud）。
@@ -89,7 +78,6 @@ func Collect(dir string, runtimeErr error) Collected {
 		pending["pending_steer"] = true
 	}
 	style := collectStyle(s, prog, check)
-	usage := collectUsage(s, check)
 	toolCalls := countToolCalls(dir, check)
 
 	errStr := ""
@@ -105,7 +93,6 @@ func Collect(dir string, runtimeErr error) Collected {
 		LoadErrors:  loadErrors,
 		RuntimeErr:  errStr,
 		Style:       style,
-		Usage:       usage,
 		ToolCalls:   toolCalls,
 	}
 }
@@ -178,23 +165,6 @@ func firstMarkdownTitle(text string) string {
 		return strings.TrimSpace(strings.TrimLeft(line, "#"))
 	}
 	return ""
-}
-
-func collectUsage(s *store.Store, check func(string, error)) UsageMetrics {
-	state, err := s.Usage.Load()
-	check("usage", err)
-	if state == nil {
-		return UsageMetrics{}
-	}
-	return UsageMetrics{
-		Input:         state.Overall.Input,
-		Output:        state.Overall.Output,
-		CacheRead:     state.Overall.CacheRead,
-		CacheWrite:    state.Overall.CacheWrite,
-		CostUSD:       state.Overall.Cost,
-		MissingUsage:  state.MissingUsage,
-		UsageRecorded: true,
-	}
 }
 
 type sessionLine struct {

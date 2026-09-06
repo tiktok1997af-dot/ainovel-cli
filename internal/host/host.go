@@ -47,8 +47,6 @@ type Host struct {
 	writerRestore   *ctxpack.WriterRestorePack
 	userRules       *userrules.Service
 	observer        *observer
-	usage           *UsageTracker
-	usageCancel     context.CancelFunc  // 停掉 autoSaveLoop 并触发最后一次 flush
 	gate            *ChapterAdvanceGate // 章节许可与一次性暂停的统一政策组件
 	notifier        *notify.Notifier    // 无人值守告警；未启用为 nil（Send nil 安全）
 	configPath      string              // 配置写盘目标：/config、/model 就近写当前生效的那份（项目级存在则写它，否则全局）
@@ -157,33 +155,10 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	}
 	slog.Info("模型就绪", "module", "boot", "summary", models.Summary())
 
-	usage := NewUsageTracker(models, store)
-	// 优先读 meta/usage.json；以下情况都走 sessions/*.jsonl 一次性回填：
-	//   - 文件不存在（首次持久化前）
-	//   - schema 版本不匹配（未来升级后丢弃旧格式）
-	//   - 文件存在但损坏 / IO 错误（不能让坏数据让累计永久归零）
-	// 回填完立即 SaveNow，把结果固化下来，下次启动直接 Load 命中。
-	loaded, loadErr := usage.LoadFromStore()
-	if loadErr != nil {
-		slog.Warn("usage 加载失败，将尝试从 sessions 回填", "module", "usage", "err", loadErr)
-	}
-	if !loaded {
-		if n, err := usage.ReplaySessions(cfg.OutputDir); err != nil {
-			slog.Warn("usage replay 失败", "module", "usage", "err", err)
-		} else if n > 0 {
-			slog.Info("usage 从 session 回填完成", "module", "usage", "messages", n)
-			if err := usage.SaveNow(); err != nil {
-				slog.Warn("usage 回填后保存失败", "module", "usage", "err", err)
-			}
-		}
-	}
-	usageCtx, usageCancel := context.WithCancel(context.Background())
-	usage.StartAutoSave(usageCtx)
-
 	// onGuardBlock 前置声明:h 构造后才能挂事件浮出闭包。
 	var onGuardBlock func(agent, reason string, consecutive int32)
 	styleStats := tools.NewStyleStatsIndex(store)
-	workers, restore, applyThinking := agents.BuildWorkers(cfg, store, styleStats, models, bundle, usage.Record,
+	workers, restore, applyThinking := agents.BuildWorkers(cfg, store, styleStats, models, bundle, nil,
 		func(agent, reason string, consecutive int32) {
 			if onGuardBlock != nil {
 				onGuardBlock(agent, reason, consecutive)
@@ -202,8 +177,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 		thinkingApplier: applyThinking,
 		writerRestore:   restore,
 		userRules:       userrules.NewService(store, models.Default, rules.DefaultOptions()),
-		usage:           usage,
-		usageCancel:     usageCancel,
 		configPath:      bootstrap.EffectiveConfigPath(),
 		logCleanup:      logCleanup,
 		fileLogErr:      fileLogErr,
@@ -252,7 +225,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 	h.engine = &engine{
 		store:           store,
 		workers:         workers,
-		arbiterModel:    newUsageTrackedModel(models.Default, "arbiter", usage.Record),
+		arbiterModel:    models.Default,
 		failurePrompt:   bundle.Prompts.ArbiterFailure,
 		planStartPrompt: bundle.Prompts.ArbiterPlanStart,
 		style:           cfg.Style,
@@ -714,7 +687,7 @@ func newInterventionFailureEvent(err error) Event {
 
 // arbiterModel 返回带用量追踪的裁定模型(token/成本进预算与 usage 系统)。
 func (h *Host) arbiterModel() agentcore.ChatModel {
-	return newUsageTrackedModel(h.models.Default, "arbiter", h.usage.Record)
+	return h.models.Default
 }
 
 // Continue 停机后用户在输入框输入时调用:干预裁定 + 确保引擎重新运行。
@@ -908,14 +881,6 @@ func (h *Host) Close() {
 			h.webSession = nil
 		}
 
-		if h.usageCancel != nil {
-			h.usageCancel()
-			h.usageCancel = nil
-		}
-		h.usage.WaitAutoSave()
-		if err := h.usage.SaveNow(); err != nil {
-			slog.Warn("usage 退出前落盘失败", "module", "usage", "err", err)
-		}
 		h.closeOutputChannels()
 		if err := h.bookLease.Close(); err != nil {
 			slog.Error("释放小说目录占用失败", "module", "host", "dir", h.cfg.OutputDir, "err", err)
@@ -1016,14 +981,10 @@ func (h *Host) runEnded() {
 	}
 }
 
-// runEndBody 组装 run_end 通知正文：书名 + 进度摘要 + 累计花费。
+// runEndBody 组装 run_end 通知正文；WEB-only 不伪造 token/美元账单。
 func (h *Host) runEndBody(title, summary string) string {
 	if name := strings.TrimSpace(title); name != "" {
 		summary = "《" + name + "》" + summary
-	}
-	cost, _, _, _, _ := h.usage.Totals()
-	if cost > 0 {
-		summary += fmt.Sprintf(" · 花费 $%.2f", cost)
 	}
 	return summary
 }
@@ -1111,66 +1072,15 @@ func (h *Host) Snapshot() UISnapshot {
 	style := h.cfg.Style
 	h.mu.Unlock()
 
-	// 动态解析当前模型的上下文窗口，/model 或 /config 切换后下一次 Snapshot 自动反映。
-	cost, tokIn, tokOut, cacheRead, cacheWrite := h.usage.Totals()
-	saved := h.usage.SavedUSD()
-	overallCapable := h.usage.OverallCacheCapable()
-	recentRead, recentInput, recentSamples := h.usage.OverallRecent()
-	perAgent := h.usage.PerAgent()
-	cacheStats := make([]AgentCacheStat, 0, len(perAgent))
-	for _, a := range perAgent {
-		cacheStats = append(cacheStats, AgentCacheStat{
-			Role:            a.Role,
-			Input:           a.Input,
-			Output:          a.Output,
-			CacheRead:       a.CacheRead,
-			CacheWrite:      a.CacheWrite,
-			Cost:            a.Cost,
-			Saved:           a.Saved,
-			CacheCapable:    a.CacheCapable,
-			RecentCacheRead: a.RecentCacheRead,
-			RecentInput:     a.RecentInput,
-			RecentSamples:   a.RecentSamples,
-		})
-	}
-	perModel := h.usage.PerModel()
-	modelStats := make([]AgentCacheStat, 0, len(perModel))
-	for _, a := range perModel {
-		modelStats = append(modelStats, AgentCacheStat{
-			Model:        a.Model,
-			Input:        a.Input,
-			Output:       a.Output,
-			CacheRead:    a.CacheRead,
-			CacheWrite:   a.CacheWrite,
-			Cost:         a.Cost,
-			Saved:        a.Saved,
-			CacheCapable: a.CacheCapable,
-		})
-	}
-
 	snap := UISnapshot{
-		Provider:               provider,
-		ModelName:              model,
-		ModelContextWindow:     modelWindow,
-		ThinkingLevel:          thinkingLevel,
-		Style:                  style,
-		RuntimeState:           string(state),
-		IsRunning:              state == lifecycleRunning,
-		TotalInputTokens:       tokIn,
-		TotalOutputTokens:      tokOut,
-		TotalCacheReadTokens:   cacheRead,
-		TotalCacheWriteTokens:  cacheWrite,
-		TotalCostUSD:           cost,
-		TotalSavedUSD:          saved,
-		BudgetLimitUSD:         0,
-		OverallCacheCapable:    overallCapable,
-		OverallRecentCacheRead: recentRead,
-		OverallRecentInput:     recentInput,
-		OverallRecentSamples:   recentSamples,
-		TotalCacheBreaks:       h.usage.OverallCacheBreaks(),
-		CachePerAgent:          cacheStats,
-		CachePerModel:          modelStats,
-		MissingAssistantUsage:  h.usage.MissingAssistantUsage(),
+		Provider:           provider,
+		ModelName:          model,
+		ModelContextWindow: modelWindow,
+		ThinkingLevel:      thinkingLevel,
+		Style:              style,
+		RuntimeState:       string(state),
+		IsRunning:          state == lifecycleRunning,
+		AITelemetryStatus:  WebAITelemetryUnavailable,
 	}
 
 	if book, _ := h.store.Book.Load(); book != nil {
@@ -1562,7 +1472,6 @@ func (h *Host) SyncChapterRevisions(ctx context.Context) (*revision.Result, erro
 		}
 	}
 	model := h.models.ForRole("editor")
-	model = newUsageTrackedModel(model, "editor", h.usage.Record)
 	service := revision.NewService(h.store, model, h.bundle.Prompts.RevisionAnalyze, h.styleStats)
 	return service.Sync(ctx)
 }
@@ -1638,7 +1547,6 @@ func (h *Host) importCaller(fn string) imp.Caller {
 		role = "architect"
 	}
 	model := h.models.ForRole(role)
-	model = newUsageTrackedModel(model, role, h.usage.Record)
 	return imp.Caller{Model: model, Runtime: h.importModelRuntime(role, model)}
 }
 
