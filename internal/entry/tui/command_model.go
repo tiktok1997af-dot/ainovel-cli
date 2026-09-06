@@ -20,6 +20,13 @@ type modelRuntime interface {
 	SetRoleThinking(role, level string) error
 }
 
+// webStatusRuntime is intentionally optional so legacy model-switch tests and
+// the temporary W5C compatibility path do not need browser methods. The real
+// Host implements this interface in W5B.
+type webStatusRuntime interface {
+	WebConfiguration() host.WebConfigurationSnapshot
+}
+
 type modelSwitchFocus int
 
 const (
@@ -85,6 +92,8 @@ func thinkingIndexOf(options []thinkingOption, level string) int {
 }
 
 type modelSwitchState struct {
+	webOnly            bool
+	web                host.WebConfigurationSnapshot
 	focus              modelSwitchFocus
 	roleIdx            int
 	providerIdx        int
@@ -98,9 +107,13 @@ type modelSwitchState struct {
 }
 
 func newModelSwitchState(rt modelRuntime, roleHint string) *modelSwitchState {
-	state := &modelSwitchState{
-		providers: rt.ConfiguredProviders(),
+	if webRT, ok := rt.(webStatusRuntime); ok {
+		if web := webRT.WebConfiguration(); web.Enabled {
+			return &modelSwitchState{webOnly: true, web: web}
+		}
 	}
+
+	state := &modelSwitchState{providers: rt.ConfiguredProviders()}
 	if len(state.providers) == 0 {
 		state.message = "Hiện không có Provider nào khả dụng"
 	}
@@ -127,13 +140,8 @@ func normalizeRoleKey(role string) string {
 	}
 }
 
-func (s *modelSwitchState) role() string {
-	return modelRoleOptions[s.roleIdx].Key
-}
-
-func (s *modelSwitchState) roleLabel() string {
-	return modelRoleOptions[s.roleIdx].Label
-}
+func (s *modelSwitchState) role() string      { return modelRoleOptions[s.roleIdx].Key }
+func (s *modelSwitchState) roleLabel() string { return modelRoleOptions[s.roleIdx].Label }
 
 func (s *modelSwitchState) provider() string {
 	if len(s.providers) == 0 || s.providerIdx < 0 || s.providerIdx >= len(s.providers) {
@@ -175,11 +183,17 @@ func (s *modelSwitchState) thinkingLabel() string {
 }
 
 func (s *modelSwitchState) moveFocus(delta int) {
+	if s.webOnly {
+		return
+	}
 	total := 4
 	s.focus = modelSwitchFocus((int(s.focus) + delta + total) % total)
 }
 
 func (s *modelSwitchState) cycle(delta int, rt modelRuntime) {
+	if s.webOnly {
+		return
+	}
 	switch s.focus {
 	case modelFocusRole:
 		total := len(modelRoleOptions)
@@ -208,6 +222,9 @@ func (s *modelSwitchState) cycle(delta int, rt modelRuntime) {
 }
 
 func (s *modelSwitchState) syncSelection(rt modelRuntime) {
+	if s.webOnly {
+		return
+	}
 	provider, model, _ := rt.CurrentModelSelection(s.role())
 	if len(s.providers) > 0 {
 		s.providerIdx = 0
@@ -245,6 +262,9 @@ func (s *modelSwitchState) syncThinking(rt modelRuntime) {
 }
 
 func (s *modelSwitchState) apply(rt modelRuntime) error {
+	if s.webOnly {
+		return fmt.Errorf("WEB-only dùng phiên Gemini Web cố định; /model chỉ hiển thị trạng thái và không cho chuyển Provider/Model")
+	}
 	if len(s.providers) == 0 {
 		return fmt.Errorf("hiện không có provider nào khả dụng")
 	}
@@ -269,6 +289,15 @@ func (m Model) handleModelSwitchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	state := m.modelSwitch
+	if state.webOnly {
+		switch msg.Type {
+		case tea.KeyEsc, tea.KeyEnter:
+			m.modelSwitch = nil
+			return m, m.textarea.Focus()
+		default:
+			return m, nil
+		}
+	}
 
 	switch msg.Type {
 	case tea.KeyEsc:
@@ -302,36 +331,72 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	if state == nil || width <= 0 {
 		return ""
 	}
+	if state.webOnly {
+		return renderWebModelStatusBar(width, state.web)
+	}
 
-	title := lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Bold(true).
-		Render("/model Phân Vai & Model")
-
+	title := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("/model Phân Vai & Model")
 	row1 := renderModelField("Vai trò", state.roleLabel(), state.focus == modelFocusRole)
 	row2 := renderModelField("Provider", state.provider(), state.focus == modelFocusProvider)
 	row3 := renderModelField("Model", state.modelLabel(), state.focus == modelFocusModel)
 	row4 := renderModelField("Suy luận", state.thinkingLabel(), state.focus == modelFocusThinking)
-	hint := lipgloss.NewStyle().
-		Foreground(colorDim).
-		Italic(true).
-		Render("Tab Chuyển ô   ←→ Chọn giá trị   Enter Áp dụng   Esc Hủy")
-	lines := []string{
-		row1,
-		row2,
-		row3,
-		row4,
-		hint,
-	}
+	hint := lipgloss.NewStyle().Foreground(colorDim).Italic(true).Render("Tab Chuyển ô   ←→ Chọn giá trị   Enter Áp dụng   Esc Hủy")
+	lines := []string{row1, row2, row3, row4, hint}
 	if state.message != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorError).Italic(true).Render(truncate(state.message, width-8)))
 	}
+	return renderModelBox(width, title, lines)
+}
 
+func renderWebModelStatusBar(width int, web host.WebConfigurationSnapshot) string {
+	status := "STOPPED"
+	reason := ""
+	pid := 0
+	if web.HasSession {
+		status = string(web.Session.State)
+		reason = strings.TrimSpace(web.Session.Reason)
+		pid = web.Session.PID
+	}
+	profile := strings.TrimSpace(web.ProfileName)
+	if profile == "" {
+		profile = "default"
+	}
+	model := strings.TrimSpace(web.Model)
+	if model == "" {
+		model = "gemini-web"
+	}
+
+	title := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("/model Gemini Web · WEB-only")
+	lines := []string{
+		renderWebStatusField("Kết nối", "WEB-only · Chrome hiển thị"),
+		renderWebStatusField("AI", "Gemini Web · "+model),
+		renderWebStatusField("Trạng thái", status),
+		renderWebStatusField("Hồ sơ Chrome", profile),
+	}
+	if pid > 0 {
+		lines = append(lines, renderWebStatusField("Chrome PID", fmt.Sprintf("%d", pid)))
+	}
+	if reason != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorDim).Render(truncate("Chi tiết: "+reason, max(20, width-10))))
+	}
+	if status == "AUTH_REQUIRED" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("Hãy hoàn tất đăng nhập Gemini trong cửa sổ Chrome đang mở."))
+	}
+	lines = append(lines, lipgloss.NewStyle().Foreground(colorDim).Italic(true).Render("Enter/Esc Đóng · Không có chuyển Provider/Model trong WEB-only"))
+	return renderModelBox(width, title, lines)
+}
+
+func renderWebStatusField(label, value string) string {
+	labelText := lipgloss.NewStyle().Foreground(colorMuted).Width(16).Render(label + ":")
+	return labelText + lipgloss.NewStyle().Foreground(bodyTextColor).Render(value)
+}
+
+func renderModelBox(width int, title string, lines []string) string {
 	content := strings.Join(lines, "\n")
 	boxW := lipgloss.Width(content) + 8
 	maxW := width - 2
-	if maxW > 68 {
-		maxW = 68
+	if maxW > 76 {
+		maxW = 76
 	}
 	if boxW > maxW {
 		boxW = maxW
@@ -339,7 +404,6 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	if boxW < 56 {
 		boxW = 56
 	}
-
 	innerW := boxW - 2
 	if innerW < 16 {
 		innerW = 16
@@ -351,7 +415,6 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	lineStyle := lipgloss.NewStyle().Foreground(colorDim)
 	topBorder := lineStyle.Render("┌─ ") + title + lineStyle.Render(" "+strings.Repeat("─", sepW)+"┐")
 	bottomBorder := lineStyle.Render("└" + strings.Repeat("─", innerW) + "┘")
-
 	body := make([]string, 0, len(lines))
 	for _, line := range lines {
 		padding := innerW - lipgloss.Width(line)
@@ -360,7 +423,6 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 		}
 		body = append(body, lineStyle.Render("│")+line+strings.Repeat(" ", padding)+lineStyle.Render("│"))
 	}
-
 	return strings.Join(append(append([]string{topBorder}, body...), bottomBorder), "\n")
 }
 
@@ -368,10 +430,7 @@ func renderModelField(label, value string, focused bool) string {
 	if strings.TrimSpace(value) == "" {
 		value = "Chưa đặt"
 	}
-	labelText := lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Width(12).
-		Render(label + ":")
+	labelText := lipgloss.NewStyle().Foreground(colorMuted).Width(12).Render(label + ":")
 	style := lipgloss.NewStyle().Padding(0, 1).Foreground(bodyTextColor)
 	if focused {
 		style = style.Foreground(colorAccent).Bold(true).Underline(true)
