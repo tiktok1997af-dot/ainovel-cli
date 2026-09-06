@@ -61,9 +61,9 @@ jobs:
           check_absent 'llm\.NewModel[[:space:]]*\(' internal cmd
           check_absent 'With(APIKey|BaseURL)[[:space:]]*\(' internal cmd
           check_absent 'ForRoleWithFailover|failoverModel' internal cmd
-          check_absent 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY' .github scripts internal cmd
-          check_absent 'api\.openai\.com|api\.anthropic\.com|openrouter\.ai/api|generativelanguage\.googleapis\.com' .github scripts internal cmd
-          check_absent 'github\.com/voocel/ainovel-cli/releases|ghcr\.io/voocel/ainovel-cli' .github scripts internal cmd
+          check_absent 'OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|OPENROUTER_API_KEY' .github/workflows/release.yml .github/scripts scripts internal cmd
+          check_absent 'api\.openai\.com|api\.anthropic\.com|openrouter\.ai/api|generativelanguage\.googleapis\.com' .github/workflows/release.yml .github/scripts scripts internal cmd
+          check_absent 'github\.com/voocel/ainovel-cli/releases|ghcr\.io/voocel/ainovel-cli' .github/workflows/release.yml .github/scripts scripts internal cmd
 
           test "$failed" -eq 0
 
