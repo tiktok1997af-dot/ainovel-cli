@@ -55,12 +55,15 @@ jobs:
           grep -Fq 'tiktok1997af-dot/ainovel-cli' scripts/install.sh
           grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
           grep -Fq 'ProductRepository' cmd/ainovel-cli/main.go
-      - name: Commit verified D2 refactor
+      - name: Commit verified non-workflow D2 refactor
         shell: bash
         run: |
           set -euo pipefail
+          # The Actions token may not mutate workflow files. Those two verified
+          # changes are applied afterward through the GitHub connector.
+          git restore -- .github/workflows/release.yml .github/workflows/docker.yml
           if git diff --quiet && git diff --cached --quiet; then
-            echo 'No D2 source changes'
+            echo 'No D2 non-workflow source changes'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
