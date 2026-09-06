@@ -82,19 +82,8 @@ type Config struct {
 	Language      string `json:"language,omitempty"`
 	ContextWindow int    `json:"context_window,omitempty"`
 
-	// Budget is retained until W5D migrates API-dollar semantics. C4 does not
-	// invent web billing data; it only removes API execution/configuration.
-	Budget BudgetConfig `json:"budget,omitzero"`
 	Notify NotifyConfig `json:"notify,omitzero"`
 }
-
-type BudgetConfig struct {
-	BookUSD   float64 `json:"book_usd,omitempty"`
-	WarnRatio float64 `json:"warn_ratio,omitempty"`
-	HardStop  bool    `json:"hard_stop,omitempty"`
-}
-
-func (b BudgetConfig) Enabled() bool { return b.BookUSD > 0 }
 
 type NotifyConfig struct {
 	Enabled *bool    `json:"enabled,omitempty"`
@@ -107,7 +96,7 @@ func (n NotifyConfig) IsEnabled() bool { return n.Enabled == nil || *n.Enabled }
 // LegacyAPIMigrationHint is stable and user-facing. JSON loading detects old
 // API-era keys before decoding so deleting those fields can never silently
 // turn an old configuration into a different runtime.
-const LegacyAPIMigrationHint = "legacy AI provider/API configuration is no longer supported; set web.enabled=true and web.site=gemini-web, then remove provider/providers/api_key/base_url and role provider/model/fallback routing"
+const LegacyAPIMigrationHint = "legacy AI provider/API configuration is no longer supported; set web.enabled=true and web.site=gemini-web, then remove provider/providers/api_key/base_url, budget, and role provider/model/fallback routing"
 
 func (c *Config) ValidateBase() error {
 	if !c.Web.Enabled {
@@ -155,12 +144,6 @@ func (c *Config) validateWebOnly() error {
 	if c.ContextWindow < 0 {
 		return fmt.Errorf("context_window must be >= 0: %w", errs.ErrConfig)
 	}
-	if c.Budget.BookUSD < 0 {
-		return fmt.Errorf("budget.book_usd must be >= 0: %w", errs.ErrConfig)
-	}
-	if c.Budget.Enabled() && (c.Budget.WarnRatio <= 0 || c.Budget.WarnRatio >= 1) {
-		return fmt.Errorf("budget.warn_ratio must be in (0, 1): %w", errs.ErrConfig)
-	}
 	if err := validateConfigText("notify.command", c.Notify.Command); err != nil {
 		return err
 	}
@@ -198,9 +181,6 @@ func (c *Config) FillDefaults() {
 		c.Language = "vi"
 	} else {
 		c.Language = strings.ToLower(strings.TrimSpace(c.Language))
-	}
-	if c.Budget.Enabled() && c.Budget.WarnRatio == 0 {
-		c.Budget.WarnRatio = 0.8
 	}
 }
 
