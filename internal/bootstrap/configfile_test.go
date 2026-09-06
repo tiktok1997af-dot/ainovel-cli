@@ -61,8 +61,30 @@ func TestLoadConfig_CorruptGlobalDoesNotBlockProjectOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("corrupt global must not block project config: %v", err)
 	}
-	if !cfg.Web.Enabled || cfg.Web.Site != "gemini-web" {
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName {
 		t.Fatalf("project WEB config not loaded: %#v", cfg.Web)
+	}
+}
+
+func TestLoadConfig_LegacyGlobalDoesNotBlockValidProjectOverride(t *testing.T) {
+	writeGlobal(t, `{"provider":"openai","providers":{"openai":{"api_key":"secret"}}}`)
+	t.Chdir(t.TempDir())
+	writeProjectConfig(t, validGlobal)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("valid project WEB config must supersede legacy global config: %v", err)
+	}
+	if !cfg.Web.Enabled {
+		t.Fatal("project WEB config was not selected")
+	}
+}
+
+func TestLoadConfig_LegacyGlobalAloneReturnsMigrationError(t *testing.T) {
+	writeGlobal(t, `{"provider":"openai","providers":{"openai":{"api_key":"secret"}}}`)
+	t.Chdir(t.TempDir())
+	_, err := LoadConfig()
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), LegacyAPIMigrationHint) {
+		t.Fatalf("legacy global config must return migration error: %v", err)
 	}
 }
 
@@ -104,7 +126,7 @@ func TestLoadConfig_WebOverlayMergesBrowserAndCreativeFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.Web.Enabled || cfg.Web.Site != "gemini-web" || cfg.Web.ProfileName != "project-profile" || cfg.Web.BrowserPath != "/custom/chrome" {
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName || cfg.Web.ProfileName != "project-profile" || cfg.Web.BrowserPath != "/custom/chrome" {
 		t.Fatalf("web merge failed: %#v", cfg.Web)
 	}
 	if cfg.Language != "zh" || cfg.ReasoningEffort != "high" || cfg.Roles["writer"].ReasoningEffort != "low" {
@@ -112,29 +134,26 @@ func TestLoadConfig_WebOverlayMergesBrowserAndCreativeFields(t *testing.T) {
 	}
 }
 
-func TestLegacyAPIFileLoadsOnlyForMigrationAndFailsValidation(t *testing.T) {
+func TestLoadConfigFileRejectsLegacyAPIKeysBeforeDecode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.json")
 	legacy := `{"provider":"openai","model":"gpt-5","providers":{"openai":{"api_key":"secret","base_url":"https://api.example/v1"}}}`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfigFile(path)
-	if err != nil {
-		t.Fatalf("parse legacy file: %v", err)
-	}
-	if err := cfg.ValidateBase(); !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), LegacyAPIMigrationHint) {
-		t.Fatalf("legacy file must produce migration error: %v", err)
+	_, err := LoadConfigFile(path)
+	if !errors.Is(err, errs.ErrConfig) || !strings.Contains(err.Error(), LegacyAPIMigrationHint) {
+		t.Fatalf("legacy file must fail before decode with migration error: %v", err)
 	}
 }
 
-func TestSaveConfigRejectsAPICredentialsAndSanitizesWebAliases(t *testing.T) {
+func TestSaveConfigPersistsNoRuntimeOrCredentialAliases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".ainovel", "config.json")
-	legacy := Config{Provider: "openai", ModelName: "gpt-5", Providers: map[string]ProviderConfig{"openai": {APIKey: "secret"}}}
-	if err := SaveConfig(path, legacy); err == nil || !strings.Contains(err.Error(), "legacy AI provider/API") {
-		t.Fatalf("SaveConfig must reject API config: %v", err)
+	cfg := Config{
+		Web:       WebAIConfig{Enabled: true, Site: WebModelName, ProfileName: "default"},
+		Provider:  WebProviderName,
+		ModelName: WebModelName,
+		Language:  "vi",
 	}
-
-	cfg := Config{Web: WebAIConfig{Enabled: true, Site: "gemini-web", ProfileName: "default"}, Provider: "web", ModelName: "gemini-web", Language: "vi"}
 	if err := SaveConfig(path, cfg); err != nil {
 		t.Fatalf("save WEB config: %v", err)
 	}
@@ -152,7 +171,7 @@ func TestSaveConfigRejectsAPICredentialsAndSanitizesWebAliases(t *testing.T) {
 	if err := json.Unmarshal(data, &round); err != nil {
 		t.Fatalf("saved JSON: %v", err)
 	}
-	if !round.Web.Enabled || round.Web.Site != "gemini-web" {
+	if !round.Web.Enabled || round.Web.Site != WebModelName {
 		t.Fatalf("saved WEB config invalid: %#v", round.Web)
 	}
 }
@@ -173,7 +192,7 @@ func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
 	if err := json.Unmarshal(stripJSONComments([]byte(exampleConfig)), &cfg); err != nil {
 		t.Fatalf("example JSON: %v", err)
 	}
-	if !cfg.Web.Enabled || cfg.Web.Site != "gemini-web" || len(cfg.Providers) != 0 {
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName {
 		t.Fatalf("example is not WEB-only: %#v", cfg)
 	}
 	cfg.FillDefaults()
