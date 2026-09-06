@@ -15,12 +15,14 @@ import (
 // GeminiWebTransportConfig controls one WEB-ONLY prompt round trip through the
 // visible, already authenticated Gemini browser session.
 type GeminiWebTransportConfig struct {
-	Session           *SessionManager
-	ResponseTimeout   time.Duration
-	PollInterval      time.Duration
-	StableWindow      time.Duration
-	PreflightRetries  int
-	CaptureReconnects int
+	Session               *SessionManager
+	ResponseTimeout       time.Duration
+	PollInterval          time.Duration
+	StableWindow          time.Duration
+	PreflightRetries      int
+	CaptureReconnects     int
+	AuthRequiredGrace     time.Duration
+	ReadinessPollInterval time.Duration
 
 	adapter          sites.InteractionAdapter
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
@@ -30,14 +32,16 @@ type GeminiWebTransportConfig struct {
 // not call a Gemini/Google AI HTTP API; all prompt/response work happens through
 // the logged-in visible web page over loopback Chrome DevTools.
 type GeminiWebTransport struct {
-	session           *SessionManager
-	adapter           sites.InteractionAdapter
-	responseTimeout   time.Duration
-	pollInterval      time.Duration
-	stableWindow      time.Duration
-	preflightRetries  int
-	captureReconnects int
-	evaluatorFactory  func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
+	session               *SessionManager
+	adapter               sites.InteractionAdapter
+	responseTimeout       time.Duration
+	pollInterval          time.Duration
+	stableWindow          time.Duration
+	preflightRetries      int
+	captureReconnects     int
+	authRequiredGrace     time.Duration
+	readinessPollInterval time.Duration
+	evaluatorFactory      func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 }
 
 type interactionEvaluator interface {
@@ -81,19 +85,29 @@ func NewGeminiWebTransport(cfg GeminiWebTransportConfig) (*GeminiWebTransport, e
 	if captureReconnects == 0 {
 		captureReconnects = 2
 	}
+	authRequiredGrace := cfg.AuthRequiredGrace
+	if authRequiredGrace <= 0 {
+		authRequiredGrace = 15 * time.Second
+	}
+	readinessPollInterval := cfg.ReadinessPollInterval
+	if readinessPollInterval <= 0 {
+		readinessPollInterval = 500 * time.Millisecond
+	}
 	factory := cfg.evaluatorFactory
 	if factory == nil {
 		factory = openInteractionEvaluator
 	}
 	return &GeminiWebTransport{
-		session:           cfg.Session,
-		adapter:           adapter,
-		responseTimeout:   responseTimeout,
-		pollInterval:      pollInterval,
-		stableWindow:      stableWindow,
-		preflightRetries:  preflightRetries,
-		captureReconnects: captureReconnects,
-		evaluatorFactory:  factory,
+		session:               cfg.Session,
+		adapter:               adapter,
+		responseTimeout:       responseTimeout,
+		pollInterval:          pollInterval,
+		stableWindow:          stableWindow,
+		preflightRetries:      preflightRetries,
+		captureReconnects:     captureReconnects,
+		authRequiredGrace:     authRequiredGrace,
+		readinessPollInterval: readinessPollInterval,
+		evaluatorFactory:      factory,
 	}, nil
 }
 
@@ -147,14 +161,14 @@ func (t *GeminiWebTransport) ensureReady(ctx context.Context) (SessionSnapshot, 
 			return snap, nil
 		}
 		if snap.State == SessionAuthRequired {
-			return snap, &Error{Kind: ErrorAuthRequired, Op: "prepare Gemini web session", Cause: fmt.Errorf("manual web login is required")}
+			return t.waitAuthRequiredGrace(ctx, snap)
 		}
 		refreshed, err := t.session.Refresh(ctx)
 		if err == nil && refreshed.State == SessionReady {
 			return refreshed, nil
 		}
 		if refreshed.State == SessionAuthRequired {
-			return refreshed, &Error{Kind: ErrorAuthRequired, Op: "prepare Gemini web session", Cause: fmt.Errorf("manual web login is required")}
+			return t.waitAuthRequiredGrace(ctx, refreshed)
 		}
 		lastErr = err
 		if attempt < t.preflightRetries {
@@ -167,6 +181,48 @@ func (t *GeminiWebTransport) ensureReady(ctx context.Context) (SessionSnapshot, 
 		lastErr = fmt.Errorf("Gemini web session is not READY (%s)", t.session.Snapshot().State)
 	}
 	return t.session.Snapshot(), &Error{Kind: ErrorTransport, Op: "prepare Gemini web session", Cause: lastErr, Retry: true, RetryDelay: 500 * time.Millisecond}
+}
+
+func (t *GeminiWebTransport) waitAuthRequiredGrace(ctx context.Context, initial SessionSnapshot) (SessionSnapshot, error) {
+	deadline := time.Now().Add(t.authRequiredGrace)
+	last := initial
+	var lastErr error
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return last, err
+		}
+		if last.State == SessionReady {
+			return last, nil
+		}
+		if time.Now().After(deadline) {
+			if last.State == SessionAuthRequired {
+				return last, &Error{Kind: ErrorAuthRequired, Op: "prepare Gemini web session", Cause: fmt.Errorf("manual web login is required")}
+			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("Gemini web session did not become READY during auth grace (%s)", last.State)
+			}
+			return last, &Error{Kind: ErrorTransport, Op: "prepare Gemini web session", Cause: lastErr, Retry: true, RetryDelay: 500 * time.Millisecond}
+		}
+
+		if err := waitContext(ctx, t.readinessPollInterval); err != nil {
+			return last, err
+		}
+		refreshed, err := t.session.Refresh(ctx)
+		last = refreshed
+		if err != nil {
+			lastErr = err
+		}
+		if refreshed.State == SessionReady {
+			return refreshed, nil
+		}
+		if refreshed.State == SessionFailed || refreshed.State == SessionStopped {
+			if err == nil {
+				err = fmt.Errorf("Gemini web session entered %s while waiting for readiness", refreshed.State)
+			}
+			return refreshed, &Error{Kind: ErrorTransport, Op: "prepare Gemini web session", Cause: err, Retry: true, RetryDelay: 500 * time.Millisecond}
+		}
+	}
 }
 
 func (t *GeminiWebTransport) openWithRetry(ctx context.Context, snap SessionSnapshot) (interactionEvaluator, error) {
