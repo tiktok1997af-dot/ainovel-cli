@@ -14,8 +14,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/llmcontract"
 )
 
-// FailoverEvent 表示一次显式 provider 切换。
-// Reason 为短标签（rate_limit / timeout / stream_idle / network），用于结构化日志。
 type FailoverEvent struct {
 	Role         string
 	Reason       string
@@ -26,7 +24,6 @@ type FailoverEvent struct {
 	Err          error
 }
 
-// FailoverReporter 在发生显式切换时被调用。
 type FailoverReporter func(FailoverEvent)
 
 type modelTarget struct {
@@ -36,25 +33,16 @@ type modelTarget struct {
 	jsonSchema *bool
 }
 
-// SwappableModel 是可热切换的 ChatModel 包装器。
-// 已开始的请求继续使用旧实例；后续请求自动切到新实例。
 type SwappableModel struct {
 	*agentcore.SwappableModel
-	mu       sync.RWMutex
-	provider string
-	name     string
-	// jsonSchema 是当前选中模型的 config json_schema 三态声明，与 provider/name
-	// 同锁原子切换；llmcontract.Resolve 经结构匹配接口每次现读。
+	mu         sync.RWMutex
+	provider   string
+	name       string
 	jsonSchema *bool
 }
 
 func NewSwappableModel(provider, name string, model agentcore.ChatModel, jsonSchema *bool) *SwappableModel {
-	return &SwappableModel{
-		SwappableModel: agentcore.NewSwappableModel(model),
-		provider:       provider,
-		name:           name,
-		jsonSchema:     jsonSchema,
-	}
+	return &SwappableModel{SwappableModel: agentcore.NewSwappableModel(model), provider: provider, name: name, jsonSchema: jsonSchema}
 }
 
 func (m *SwappableModel) ProviderName() string {
@@ -63,12 +51,8 @@ func (m *SwappableModel) ProviderName() string {
 	return m.provider
 }
 
-func (m *SwappableModel) Info() llm.ModelInfo {
-	return m.StructuredOutputFacts().Info
-}
+func (m *SwappableModel) Info() llm.ModelInfo { return m.StructuredOutputFacts().Info }
 
-// StructuredOutputFacts 在同一把锁下读取模型实例、身份和配置覆盖，保证一次
-// 结构化协议选择只观察到一个完整版本。
 func (m *SwappableModel) StructuredOutputFacts() llmcontract.ModelFacts {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -93,9 +77,7 @@ func (m *SwappableModel) StructuredOutputFacts() llmcontract.ModelFacts {
 	return facts
 }
 
-func (m *SwappableModel) Capabilities() llm.Capabilities {
-	return m.StructuredOutputFacts().Capabilities
-}
+func (m *SwappableModel) Capabilities() llm.Capabilities { return m.StructuredOutputFacts().Capabilities }
 
 func (m *SwappableModel) Swap(provider, name string, model agentcore.ChatModel, jsonSchema *bool) {
 	m.mu.Lock()
@@ -106,10 +88,7 @@ func (m *SwappableModel) Swap(provider, name string, model agentcore.ChatModel, 
 	m.jsonSchema = jsonSchema
 }
 
-// JSONSchemaOverride 返回当前选中模型的 config json_schema 三态声明。
-func (m *SwappableModel) JSONSchemaOverride() *bool {
-	return m.StructuredOutputFacts().JSONSchemaOverride
-}
+func (m *SwappableModel) JSONSchemaOverride() *bool { return m.StructuredOutputFacts().JSONSchemaOverride }
 
 func cloneBoolPtr(value *bool) *bool {
 	if value == nil {
@@ -125,7 +104,6 @@ func (m *SwappableModel) Current() (provider, name string) {
 	return m.provider, m.name
 }
 
-// ModelSet 持有按角色分配的模型实例，未配置的角色回退到默认模型。
 type ModelSet struct {
 	mu        sync.RWMutex
 	Default   *SwappableModel
@@ -134,7 +112,6 @@ type ModelSet struct {
 	config    Config
 }
 
-// ForRole 返回指定角色的模型，未配置时返回默认模型。
 func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -144,8 +121,6 @@ func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 	return ms.Default
 }
 
-// ForRoleWithFailover 返回带有单次请求级 fallback 的角色模型。
-// 仅当该角色显式配置了 fallbacks 时生效；未配置时退化为普通模型。
 func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) agentcore.ChatModel {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -157,12 +132,9 @@ func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) ag
 	if len(targets) == 0 {
 		return primary
 	}
-	return &failoverModel{
-		role: role, primary: primary, set: ms, report: report,
-	}
+	return &failoverModel{role: role, primary: primary, set: ms, report: report}
 }
 
-// Summary 返回模型分配摘要（供日志使用）。
 func (ms *ModelSet) Summary() string {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -179,8 +151,6 @@ func (ms *ModelSet) Summary() string {
 	return fmt.Sprintf("default=%s/%s %s", provider, name, strings.Join(parts, " "))
 }
 
-// CurrentSelection 返回角色当前生效的 provider/model。
-// role 为空或 "default" 时返回默认模型。
 func (ms *ModelSet) CurrentSelection(role string) (provider, model string, explicit bool) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -196,11 +166,12 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 	return provider, model, false
 }
 
-// Swap 切换默认模型或指定角色模型。
-// role 为空或 "default" 时切换默认模型；其他角色切换为显式覆盖。
 func (ms *ModelSet) Swap(role, provider, model string) error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	if ms.config.Web.Enabled {
+		return fmt.Errorf("WEB-only runtime does not allow provider/model switching: %w", errs.ErrConfig)
+	}
 	pc, ok := ms.config.Providers[provider]
 	if !ok {
 		return fmt.Errorf("provider %q is not configured: %w", provider, errs.ErrConfig)
@@ -209,7 +180,6 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	if err != nil {
 		return fmt.Errorf("切换模型失败: %w", err)
 	}
-
 	jsonSchema := ms.config.ModelJSONSchema(provider, model)
 	if role == "" || role == "default" {
 		ms.Default.Swap(provider, model, next, jsonSchema)
@@ -217,11 +187,9 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		ms.config.ModelName = model
 		return nil
 	}
-
 	if !knownRoles[role] {
 		return fmt.Errorf("unknown role %q: %w", role, errs.ErrConfig)
 	}
-
 	if existing, ok := ms.models[role]; ok {
 		existing.Swap(provider, model, next, jsonSchema)
 	} else {
@@ -237,26 +205,25 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	return nil
 }
 
-// ResolveContextWindow 使用 ModelSet 的最新配置解析窗口，供运行时热切换后的
-// ContextManagerFactory 使用，避免捕获启动时的 Config 副本。
 func (ms *ModelSet) ResolveContextWindow(provider, model string) (int, ContextWindowSource) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	return ms.config.ResolveContextWindow(provider, model)
 }
 
-// ApplyPrepared 提交一个已成功构建的候选 ModelSet。已有 SwappableModel 的地址
-// 保持不变，因此已装配的 Worker/Arbiter 会在下一次请求自动使用新客户端。
 func (ms *ModelSet) ApplyPrepared(candidate *ModelSet) {
 	if candidate == nil {
 		return
 	}
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
-
+	if ms.config.Web.Enabled {
+		// WEB-only runtime is pinned to its browser session; W5B exposes readiness,
+		// not provider/model hot swapping.
+		return
+	}
 	defaultProvider, defaultName := candidate.Default.Current()
 	ms.Default.Swap(defaultProvider, defaultName, candidate.Default.SwappableModel.Current(), candidate.Default.JSONSchemaOverride())
-
 	nextModels := make(map[string]*SwappableModel, len(candidate.models))
 	for role, next := range candidate.models {
 		provider, name := next.Current()
@@ -278,8 +245,6 @@ func (ms *ModelSet) fallbackTargets(role string) []modelTarget {
 	return append([]modelTarget(nil), ms.fallbacks[role]...)
 }
 
-// ModelName 从 ChatModel 中提取当前模型名，失败返回空字符串。
-// 支持 SwappableModel 的热切换：调用时总是返回最新值。
 func ModelName(m agentcore.ChatModel) string {
 	if info, ok := m.(interface{ Info() llm.ModelInfo }); ok {
 		return info.Info().Name
@@ -287,7 +252,6 @@ func ModelName(m agentcore.ChatModel) string {
 	return ""
 }
 
-// ModelProvider 从 ChatModel 中提取当前 provider 名称，失败返回空字符串。
 func ModelProvider(m agentcore.ChatModel) string {
 	if info, ok := m.(interface{ Info() llm.ModelInfo }); ok {
 		return info.Info().Provider
@@ -298,31 +262,24 @@ func ModelProvider(m agentcore.ChatModel) string {
 	return ""
 }
 
-// NewModelSet 根据配置创建多模型集合。
-// WEB-only 配置在这里被截流到可见浏览器路径；只有尚未迁移的 legacy 配置
-// 才会进入下面的 provider/API 构造逻辑。W5C 会删除 legacy 分支本身。
+// NewModelSet routes W5 WEB-only configuration to the browser ChatModel before
+// any legacy API constructor can be reached. W5C removes the legacy branch.
 func NewModelSet(cfg Config) (*ModelSet, error) {
 	if isWebOnlyConfig(cfg) {
 		return newWebOnlyModelSet(cfg)
 	}
-
 	cache := make(map[string]agentcore.ChatModel)
-
-	// 创建默认模型
 	defaultPC := cfg.DefaultProviderConfig()
 	defaultModel, err := createModelFromConfig(cfg.Provider, cfg.ModelName, defaultPC, cache)
 	if err != nil {
 		return nil, fmt.Errorf("default model: %w", err)
 	}
-
 	ms := &ModelSet{
 		Default:   NewSwappableModel(cfg.Provider, cfg.ModelName, defaultModel, cfg.ModelJSONSchema(cfg.Provider, cfg.ModelName)),
 		models:    make(map[string]*SwappableModel),
 		fallbacks: make(map[string][]modelTarget),
 		config:    cfg,
 	}
-
-	// 创建角色覆盖模型
 	for role, rc := range cfg.Roles {
 		pc, ok := cfg.Providers[rc.Provider]
 		if !ok {
@@ -337,7 +294,6 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		if len(rc.Fallbacks) == 0 {
 			continue
 		}
-
 		targets := make([]modelTarget, 0, len(rc.Fallbacks))
 		for _, fallback := range rc.Fallbacks {
 			fpc, ok := cfg.Providers[fallback.Provider]
@@ -348,26 +304,18 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 			if err != nil {
 				return nil, fmt.Errorf("role %s fallback %s/%s: %w", role, fallback.Provider, fallback.Model, err)
 			}
-			targets = append(targets, modelTarget{
-				provider:   fallback.Provider,
-				name:       fallback.Model,
-				model:      fm,
-				jsonSchema: cfg.ModelJSONSchema(fallback.Provider, fallback.Model),
-			})
+			targets = append(targets, modelTarget{provider: fallback.Provider, name: fallback.Model, model: fm, jsonSchema: cfg.ModelJSONSchema(fallback.Provider, fallback.Model)})
 		}
 		ms.fallbacks[role] = targets
 	}
-
 	return ms, nil
 }
 
-// createModelFromConfig 创建或复用 ChatModel 实例。
 func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache map[string]agentcore.ChatModel) (agentcore.ChatModel, error) {
 	cacheKey := providerKey + "|" + model
 	if m, ok := cache[cacheKey]; ok {
 		return m, nil
 	}
-
 	providerType, err := pc.ProviderType(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("解析 provider 类型失败: %w", err)
@@ -379,12 +327,10 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 		}
 		providerExtra["api"] = pc.API
 	}
-
 	streamIdle, err := pc.StreamIdleTimeoutValue()
 	if err != nil {
 		return nil, fmt.Errorf("provider %s stream_idle_timeout: %w: %w", providerKey, errs.ErrConfig, err)
 	}
-
 	m, err := llm.NewModel(providerType, model,
 		llm.WithAPIKey(pc.APIKey),
 		llm.WithBaseURL(pc.BaseURL),
@@ -412,7 +358,6 @@ func (m *failoverModel) Generate(ctx context.Context, messages []agentcore.Messa
 	if err == nil {
 		return resp, nil
 	}
-
 	next, reason, ok := m.pickFallback(current, err, requestsJSONSchema(opts))
 	if !ok {
 		return nil, err
@@ -423,13 +368,10 @@ func (m *failoverModel) Generate(ctx context.Context, messages []agentcore.Messa
 
 func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
 	out := make(chan agentcore.StreamEvent, 100)
-
 	go func() {
 		defer close(out)
-
 		current := m.currentTarget()
 		fallbackUsed := false
-
 	retry:
 		source, resp, err := m.startAttempt(ctx, current, messages, tools, opts...)
 		if err != nil {
@@ -445,14 +387,9 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 			return
 		}
 		if resp != nil {
-			out <- agentcore.StreamEvent{
-				Type:       agentcore.StreamEventDone,
-				Message:    resp.Message,
-				StopReason: resp.Message.StopReason,
-			}
+			out <- agentcore.StreamEvent{Type: agentcore.StreamEventDone, Message: resp.Message, StopReason: resp.Message.StopReason}
 			return
 		}
-
 		forwarded := false
 		for ev := range source {
 			switch ev.Type {
@@ -476,36 +413,24 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 			}
 		}
 	}()
-
 	return out, nil
 }
 
-func (m *failoverModel) SupportsTools() bool {
-	return m.primary != nil && m.primary.SupportsTools()
-}
-
+func (m *failoverModel) SupportsTools() bool { return m.primary != nil && m.primary.SupportsTools() }
 func (m *failoverModel) ProviderName() string {
 	if m.primary == nil {
 		return ""
 	}
 	return m.primary.ProviderName()
 }
-
 func (m *failoverModel) Info() llm.ModelInfo {
 	if m.primary == nil {
 		return llm.ModelInfo{}
 	}
 	return m.primary.Info()
 }
-
-func (m *failoverModel) Capabilities() llm.Capabilities {
-	return m.StructuredOutputFacts().Capabilities
-}
-
-func (m *failoverModel) JSONSchemaOverride() *bool {
-	return m.StructuredOutputFacts().JSONSchemaOverride
-}
-
+func (m *failoverModel) Capabilities() llm.Capabilities { return m.StructuredOutputFacts().Capabilities }
+func (m *failoverModel) JSONSchemaOverride() *bool      { return m.StructuredOutputFacts().JSONSchemaOverride }
 func (m *failoverModel) StructuredOutputFacts() llmcontract.ModelFacts {
 	if m.primary == nil {
 		return llmcontract.ModelFacts{}
@@ -518,22 +443,13 @@ func (m *failoverModel) currentTarget() modelTarget {
 		return modelTarget{}
 	}
 	provider, name := m.primary.Current()
-	return modelTarget{
-		provider:   provider,
-		name:       name,
-		model:      m.primary,
-		jsonSchema: m.primary.JSONSchemaOverride(),
-	}
+	return modelTarget{provider: provider, name: name, model: m.primary, jsonSchema: m.primary.JSONSchemaOverride()}
 }
 
 func (m *failoverModel) pickFallback(current modelTarget, err error, requireJSONSchema bool) (modelTarget, string, bool) {
-	if err == nil || current.model == nil {
+	if err == nil || current.model == nil || errors.Is(err, context.Canceled) {
 		return modelTarget{}, "", false
 	}
-	if errors.Is(err, context.Canceled) {
-		return modelTarget{}, "", false
-	}
-
 	if !agentcore.IsFailoverEligible(err) {
 		return modelTarget{}, agentcore.FailoverReason(err), false
 	}
@@ -572,15 +488,7 @@ func supportsJSONSchema(target modelTarget) bool {
 
 func (m *failoverModel) reportFailover(from, to modelTarget, reason string, err error) {
 	if m.report != nil {
-		m.report(FailoverEvent{
-			Role:         m.role,
-			Reason:       reason,
-			FromProvider: from.provider,
-			FromModel:    from.name,
-			ToProvider:   to.provider,
-			ToModel:      to.name,
-			Err:          err,
-		})
+		m.report(FailoverEvent{Role: m.role, Reason: reason, FromProvider: from.provider, FromModel: from.name, ToProvider: to.provider, ToModel: to.name, Err: err})
 	}
 }
 
@@ -588,12 +496,10 @@ func (m *failoverModel) startAttempt(ctx context.Context, target modelTarget, me
 	if target.model == nil {
 		return nil, nil, fmt.Errorf("no model configured")
 	}
-
 	streamCh, err := target.model.GenerateStream(ctx, messages, tools, opts...)
 	if err == nil {
 		return streamCh, nil, nil
 	}
-
 	resp, genErr := target.model.Generate(ctx, messages, tools, opts...)
 	if genErr != nil {
 		return nil, nil, genErr
