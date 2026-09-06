@@ -23,18 +23,18 @@ func (s *scriptedEvaluator) Eval(_ context.Context, expression string) (json.Raw
 }
 
 func TestGeminiConversationDecodesSanitizedAckSnapshot(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":2,"user_message_count":3,"composer_present":true,"composer_empty":true,"last_response":" final ","truncated":false}`)}}
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":2,"user_message_count":3,"composer_present":true,"composer_empty":false,"composer_length":17,"submit_action":" native-button ","last_response":" final ","truncated":false}`)}}
 	got, err := (Gemini{}).Conversation(context.Background(), e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Busy || got.ResponseCount != 2 || got.UserMessageCount != 3 || !got.ComposerPresent || !got.ComposerEmpty || got.LastResponse != "final" || got.Truncated {
+	if got.Busy || got.ResponseCount != 2 || got.UserMessageCount != 3 || !got.ComposerPresent || got.ComposerEmpty || got.ComposerLength != 17 || got.SubmitAction != "native-button" || got.LastResponse != "final" || got.Truncated {
 		t.Fatalf("unexpected snapshot: %+v", got)
 	}
 }
 
 func TestGeminiConversationExpressionExposesAckSignalsWithoutPromptText(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":0,"user_message_count":0,"composer_present":true,"composer_empty":false,"last_response":"","truncated":false}`)}}
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":0,"user_message_count":0,"composer_present":true,"composer_empty":false,"composer_length":8,"submit_action":"native-button","last_response":"","truncated":false}`)}}
 	if _, err := (Gemini{}).Conversation(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestGeminiConversationExpressionExposesAckSignalsWithoutPromptText(t *testi
 		t.Fatalf("expressions = %d, want 1", len(e.exprs))
 	}
 	expr := e.exprs[0]
-	for _, want := range []string{"user-query", "user_message_count", "composer_present", "composer_empty"} {
+	for _, want := range []string{"user-query", "user_message_count", "composer_present", "composer_empty", "composer_length", "submit_action"} {
 		if !strings.Contains(expr, want) {
 			t.Fatalf("conversation expression missing SEND ACK marker %q", want)
 		}
@@ -52,10 +52,17 @@ func TestGeminiConversationExpressionExposesAckSignalsWithoutPromptText(t *testi
 	}
 }
 
+func TestGeminiConversationRejectsNegativeComposerLength(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"composer_present":true,"composer_length":-1}`)}}
+	if _, err := (Gemini{}).Conversation(context.Background(), e); err == nil || !strings.Contains(err.Error(), "negative composer length") {
+		t.Fatalf("err = %v, want negative composer length rejection", err)
+	}
+}
+
 func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":""}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":32}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button"}`),
 	}}
 	prompt := "line 1\n`quoted` </script> \"x\""
 	if err := (Gemini{}).Submit(context.Background(), e, prompt); err != nil {
@@ -70,10 +77,22 @@ func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
 	}
 }
 
+func TestGeminiSubmitRequiresPreparedComposerText(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":0}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err == nil || !strings.Contains(err.Error(), "prepared composer is empty") {
+		t.Fatalf("err = %v, want prepared-composer rejection", err)
+	}
+	if len(e.exprs) != 1 {
+		t.Fatalf("expressions = %d, want prepare only", len(e.exprs))
+	}
+}
+
 func TestGeminiSubmitSupportsCurrentCustomSendControls(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":""}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"nested-native-button"}`),
 	}}
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
@@ -99,11 +118,70 @@ func TestGeminiSubmitSupportsCurrentCustomSendControls(t *testing.T) {
 	}
 }
 
+func TestGeminiSubmitCanonicalizesCustomHostsToNativeButtonsFirst(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"shadow-native-button"}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	clickExpr := e.exprs[1]
+	for _, want := range []string{
+		"candidate instanceof HTMLButtonElement",
+		"candidate.shadowRoot",
+		"root.querySelectorAll('button')",
+		"nested-native-button",
+		"shadow-native-button",
+		"custom-send-host",
+	} {
+		if !strings.Contains(clickExpr, want) {
+			t.Fatalf("native-action resolver missing %q", want)
+		}
+	}
+	if !strings.Contains(clickExpr, "if (disabled(action.element))") {
+		t.Fatal("resolved native action must be checked for disabled state")
+	}
+}
+
+func TestGeminiSubmitNeverUsesContainerAsBlindClickTarget(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button"}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	clickExpr := e.exprs[1]
+	if strings.Contains(clickExpr, "const sendButton = findSend();") || strings.Contains(clickExpr, "sendButton.click()") {
+		t.Fatal("legacy blind wrapper click path must not survive")
+	}
+	if !strings.Contains(clickExpr, "const action = findSendAction();") || !strings.Contains(clickExpr, "action.element.click();") {
+		t.Fatal("submit must click only a canonical resolved action")
+	}
+}
+
+func TestGeminiSubmitPreparationUsesFrameworkInputSignalsAndReadback(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button"}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	prepareExpr := e.exprs[0]
+	for _, want := range []string{"beforeinput", "document.execCommand('insertText'", "samePrompt", "composer_length"} {
+		if !strings.Contains(prepareExpr, want) {
+			t.Fatalf("composer preparation missing %q", want)
+		}
+	}
+}
+
 func TestGeminiSubmitPollsDisabledSendControlWithoutReplacingPrompt(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":""}`),
-		json.RawMessage(`{"ok":false,"retry":true,"reason":"send control is disabled"}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":""}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":false,"retry":true,"reason":"actionable send control is disabled"}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button"}`),
 	}}
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
@@ -116,7 +194,7 @@ func TestGeminiSubmitPollsDisabledSendControlWithoutReplacingPrompt(t *testing.T
 	}
 }
 
-func TestGeminiCancelReportsClicked(t *testing.T) {
+func TestGeminiCancelCanonicalizesStopControls(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"clicked":true}`)}}
 	clicked, err := (Gemini{}).Cancel(context.Background(), e)
 	if err != nil {
@@ -124,5 +202,13 @@ func TestGeminiCancelReportsClicked(t *testing.T) {
 	}
 	if !clicked {
 		t.Fatal("expected cancel click")
+	}
+	if len(e.exprs) != 1 {
+		t.Fatalf("expressions = %d, want 1", len(e.exprs))
+	}
+	for _, want := range []string{"candidate.shadowRoot", "root.querySelectorAll('button')", "action.click()"} {
+		if !strings.Contains(e.exprs[0], want) {
+			t.Fatalf("cancel native-action resolver missing %q", want)
+		}
 	}
 }
