@@ -1,0 +1,294 @@
+name: W5A guarded migration
+
+on:
+  push:
+    branches:
+      - w5-web-only-integration-api-removal
+    paths:
+      - .github/workflows/w5a-migrate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: w5-web-only-integration-api-removal
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Apply guarded W5A patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, got {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          # ---- bootstrap/config.go ----
+          p = Path('internal/bootstrap/config.go')
+          s = p.read_text()
+          marker = '// ProviderConfig 定义单个 LLM 提供商的凭证。\n'
+          web_struct = '''// WebAIConfig defines the browser-owned AI runtime. No credential is stored here.\n// W5A initially supports Gemini Web only; additional websites require their own verified adapter.\ntype WebAIConfig struct {\n\tEnabled     bool   `json:"enabled,omitempty"`\n\tSite        string `json:"site,omitempty"`\n\tBrowserPath string `json:"browser_path,omitempty"`\n\tProfileName string `json:"profile_name,omitempty"`\n\tStartURL    string `json:"start_url,omitempty"`\n}\n\nfunc (w *WebAIConfig) fillDefaults() {\n\tif strings.TrimSpace(w.Site) == "" {\n\t\tw.Site = "gemini-web"\n\t}\n\tif strings.TrimSpace(w.ProfileName) == "" {\n\t\tw.ProfileName = "default"\n\t}\n}\n\n'''
+          s = replace_once(s, marker, web_struct + marker, 'insert WebAIConfig')
+
+          old = '''\t// 默认 LLM 配置\n\tProvider  string `json:"provider"` // 默认 provider（Providers map 中的 key）\n\tModelName string `json:"model"`    // 默认模型名\n'''
+          new = '''\t// WEB-only browser runtime. When Enabled, no provider/API credential path is constructed.\n\tWeb WebAIConfig `json:"web,omitzero"`\n\n\t// Legacy API-era model fields are retained temporarily for migration through W5B/W5C.\n\tProvider  string `json:"provider,omitempty"`\n\tModelName string `json:"model,omitempty"`\n'''
+          s = replace_once(s, old, new, 'Config web field')
+
+          needle = '''// ValidateBase 校验基础配置。\nfunc (c *Config) ValidateBase() error {\n'''
+          repl = '''// ValidateBase 校验基础配置。\nfunc (c *Config) ValidateBase() error {\n\tif c.Web.Enabled {\n\t\treturn c.validateWebOnly()\n\t}\n'''
+          s = replace_once(s, needle, repl, 'ValidateBase web branch')
+
+          marker = 'func validateProviderConfigText(name string, pc ProviderConfig) error {'
+          web_validate = '''func (c *Config) validateWebOnly() error {\n\tc.Web.fillDefaults()\n\tsite := strings.ToLower(strings.TrimSpace(c.Web.Site))\n\tif site != "gemini-web" && site != "gemini" {\n\t\treturn fmt.Errorf("web.site %q is not supported; W5 currently supports gemini-web only: %w", c.Web.Site, errs.ErrConfig)\n\t}\n\tfields := []struct {\n\t\tname  string\n\t\tvalue string\n\t}{\n\t\t{"web.site", c.Web.Site},\n\t\t{"web.browser_path", c.Web.BrowserPath},\n\t\t{"web.profile_name", c.Web.ProfileName},\n\t\t{"web.start_url", c.Web.StartURL},\n\t}\n\tfor _, field := range fields {\n\t\tif err := validateConfigText(field.name, field.value); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\tprofile := strings.TrimSpace(c.Web.ProfileName)\n\tif profile == "." || profile == ".." || strings.ContainsAny(profile, `/\\\\`) {\n\t\treturn fmt.Errorf("web.profile_name %q is invalid: %w", c.Web.ProfileName, errs.ErrConfig)\n\t}\n\tif c.Provider != "" && c.Provider != "web" {\n\t\treturn fmt.Errorf("legacy API provider %q cannot be used with web.enabled=true; remove provider/providers/api_key/base_url: %w", c.Provider, errs.ErrConfig)\n\t}\n\tif c.ModelName != "" && c.ModelName != "gemini-web" {\n\t\treturn fmt.Errorf("legacy API model %q cannot be used with web.enabled=true; remove provider/model API routing: %w", c.ModelName, errs.ErrConfig)\n\t}\n\tif len(c.Providers) != 0 {\n\t\treturn fmt.Errorf("legacy API providers are forbidden when web.enabled=true; remove providers/api_key/base_url: %w", errs.ErrConfig)\n\t}\n\tfor role, rc := range c.Roles {\n\t\tif !knownRoles[role] {\n\t\t\treturn fmt.Errorf("unknown role %q in roles config: %w", role, errs.ErrConfig)\n\t\t}\n\t\tif strings.TrimSpace(rc.Provider) != "" || strings.TrimSpace(rc.Model) != "" || len(rc.Fallbacks) != 0 {\n\t\t\treturn fmt.Errorf("role %q contains legacy provider/model/fallback routing; WEB-only mode uses one browser session for all roles: %w", role, errs.ErrConfig)\n\t\t}\n\t}\n\tif c.Budget.BookUSD < 0 {\n\t\treturn fmt.Errorf("budget.book_usd must be >= 0: %w", errs.ErrConfig)\n\t}\n\tif c.Budget.Enabled() && (c.Budget.WarnRatio <= 0 || c.Budget.WarnRatio >= 1) {\n\t\treturn fmt.Errorf("budget.warn_ratio must be in (0, 1): %w", errs.ErrConfig)\n\t}\n\tif err := validateConfigText("notify.command", c.Notify.Command); err != nil {\n\t\treturn err\n\t}\n\tfor _, ev := range c.Notify.Events {\n\t\tif !notify.IsKnownKind(ev) {\n\t\t\treturn fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)\n\t\t}\n\t}\n\treturn nil\n}\n\n'''
+          s = replace_once(s, marker, web_validate + marker, 'validateWebOnly')
+
+          old = '''func (c *Config) FillDefaults() {\n\tif c.OutputDir == "" {\n\t\tc.OutputDir = filepath.Join("output", "novel")\n\t}\n'''
+          new = '''func (c *Config) FillDefaults() {\n\tif c.OutputDir == "" {\n\t\tc.OutputDir = filepath.Join("output", "novel")\n\t}\n\tif c.Web.Enabled {\n\t\tc.Web.fillDefaults()\n\t\tif strings.TrimSpace(c.Provider) == "" {\n\t\t\tc.Provider = "web"\n\t\t}\n\t\tif strings.TrimSpace(c.ModelName) == "" {\n\t\t\tc.ModelName = "gemini-web"\n\t\t}\n\t}\n'''
+          s = replace_once(s, old, new, 'FillDefaults web')
+
+          old = '''func (c Config) ResolveContextWindow(provider, modelName string) (int, ContextWindowSource) {\n\tif pc, ok := c.Providers[strings.TrimSpace(provider)]; ok {\n'''
+          new = '''func (c Config) ResolveContextWindow(provider, modelName string) (int, ContextWindowSource) {\n\tif c.Web.Enabled {\n\t\tif c.ContextWindow > 0 {\n\t\t\treturn c.ContextWindow, CtxWindowConfig\n\t\t}\n\t\treturn DefaultContextWindow, CtxWindowDefault\n\t}\n\tif pc, ok := c.Providers[strings.TrimSpace(provider)]; ok {\n'''
+          s = replace_once(s, old, new, 'ResolveContextWindow web')
+
+          old = '''func (c Config) CandidateModels(provider string) []string {\n\tif provider == "" {\n'''
+          new = '''func (c Config) CandidateModels(provider string) []string {\n\tif c.Web.Enabled {\n\t\tif provider == "" || provider == "web" {\n\t\t\treturn []string{"gemini-web"}\n\t\t}\n\t\treturn nil\n\t}\n\tif provider == "" {\n'''
+          s = replace_once(s, old, new, 'CandidateModels web')
+          p.write_text(s)
+
+          # ---- bootstrap/models.go ----
+          p = Path('internal/bootstrap/models.go')
+          s = p.read_text()
+          old = '\t"github.com/voocel/ainovel-cli/internal/llmcontract"\n)\n'
+          new = '\t"github.com/voocel/ainovel-cli/internal/llmcontract"\n\t"github.com/voocel/ainovel-cli/internal/webai"\n)\n'
+          s = replace_once(s, old, new, 'models import webai')
+          old = '''\tfallbacks map[string][]modelTarget\n\tconfig    Config\n}\n'''
+          new = '''\tfallbacks map[string][]modelTarget\n\tconfig    Config\n\twebOnly   bool\n}\n'''
+          s = replace_once(s, old, new, 'ModelSet webOnly flag')
+          old = '''func (ms *ModelSet) Swap(role, provider, model string) error {\n\tms.mu.Lock()\n\tdefer ms.mu.Unlock()\n'''
+          new = '''func (ms *ModelSet) Swap(role, provider, model string) error {\n\tms.mu.Lock()\n\tdefer ms.mu.Unlock()\n\tif ms.webOnly {\n\t\treturn fmt.Errorf("WEB-only runtime uses the logged-in browser session and does not support provider/API model switching: %w", errs.ErrConfig)\n\t}\n'''
+          s = replace_once(s, old, new, 'Swap web-only guard')
+          old = '''\tms.fallbacks = candidate.fallbacks\n\tms.config = CloneConfig(candidate.config)\n}\n'''
+          new = '''\tms.fallbacks = candidate.fallbacks\n\tms.config = CloneConfig(candidate.config)\n\tms.webOnly = candidate.webOnly\n}\n'''
+          s = replace_once(s, old, new, 'ApplyPrepared webOnly')
+          old = '''func NewModelSet(cfg Config) (*ModelSet, error) {\n\tcache := make(map[string]agentcore.ChatModel)\n'''
+          new = '''func NewModelSet(cfg Config) (*ModelSet, error) {\n\tif cfg.Web.Enabled {\n\t\treturn nil, fmt.Errorf("WEB-only config must use NewWebModelSet; refusing legacy API constructor: %w", errs.ErrConfig)\n\t}\n\tcache := make(map[string]agentcore.ChatModel)\n'''
+          s = replace_once(s, old, new, 'NewModelSet guard')
+          marker = '// createModelFromConfig 创建或复用 ChatModel 实例。\n'
+          constructor = '''// NewWebModelSet builds the production WEB-only model graph over one owned browser session.\n// Architect/Writer/Editor/Arbiter all share this local browser transport; there is no provider fallback.\nfunc NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error) {\n\tif !cfg.Web.Enabled {\n\t\treturn nil, fmt.Errorf("web runtime is not enabled: %w", errs.ErrConfig)\n\t}\n\tif session == nil {\n\t\treturn nil, fmt.Errorf("WEB-only model set requires a browser session: %w", errs.ErrConfig)\n\t}\n\ttransport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})\n\tif err != nil {\n\t\treturn nil, fmt.Errorf("create Gemini Web transport: %w", err)\n\t}\n\tmodel, err := webai.NewModel(webai.ModelConfig{Site: "gemini-web", Model: "gemini-web", Transport: transport})\n\tif err != nil {\n\t\treturn nil, fmt.Errorf("create WEB ChatModel: %w", err)\n\t}\n\treturn &ModelSet{\n\t\tDefault:   NewSwappableModel("web", "gemini-web", model, nil),\n\t\tmodels:    make(map[string]*SwappableModel),\n\t\tfallbacks: make(map[string][]modelTarget),\n\t\tconfig:    cfg,\n\t\twebOnly:   true,\n\t}, nil\n}\n\n'''
+          s = replace_once(s, marker, constructor + marker, 'NewWebModelSet')
+          p.write_text(s)
+
+          # ---- host/host.go ----
+          p = Path('internal/host/host.go')
+          s = p.read_text()
+          old = '\t"github.com/voocel/ainovel-cli/internal/userrules"\n)\n'
+          new = '\t"github.com/voocel/ainovel-cli/internal/userrules"\n\t"github.com/voocel/ainovel-cli/internal/webai"\n)\n'
+          s = replace_once(s, old, new, 'host import webai')
+          old = '''\tmodels          *bootstrap.ModelSet\n\tengine          *engine\n'''
+          new = '''\tmodels          *bootstrap.ModelSet\n\twebSession      *webai.SessionManager\n\tengine          *engine\n'''
+          s = replace_once(s, old, new, 'Host webSession field')
+          old = '''\tkeepBookLease := false\n\tvar logCleanup func()\n\tdefer func() {\n'''
+          new = '''\tkeepBookLease := false\n\tvar logCleanup func()\n\tvar webSession *webai.SessionManager\n\tdefer func() {\n'''
+          s = replace_once(s, old, new, 'Host cleanup session var')
+          old = '''\t\tif logCleanup != nil {\n\t\t\tlogCleanup()\n\t\t}\n\t}()\n'''
+          new = '''\t\tif webSession != nil {\n\t\t\t_ = webSession.Stop()\n\t\t}\n\t\tif logCleanup != nil {\n\t\t\tlogCleanup()\n\t\t}\n\t}()\n'''
+          s = replace_once(s, old, new, 'Host constructor cleanup')
+          old = '''\t// 起后台 goroutine 从 OpenRouter 刷新模型元数据（窗口/价格），磁盘缓存 24h。\n\tmodelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())\n'''
+          new = '''\t// API-era pricing metadata is never refreshed in WEB-only mode.\n\tif !cfg.Web.Enabled {\n\t\tmodelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())\n\t}\n'''
+          s = replace_once(s, old, new, 'disable pricing refresh in web mode')
+          old = '''\tmodels, err := bootstrap.NewModelSet(cfg)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf("create models: %w", err)\n\t}\n'''
+          new = '''\tvar models *bootstrap.ModelSet\n\tif cfg.Web.Enabled {\n\t\twebSession, models, err = startWebRuntime(context.Background(), cfg, nil)\n\t} else {\n\t\tmodels, err = bootstrap.NewModelSet(cfg)\n\t}\n\tif err != nil {\n\t\treturn nil, fmt.Errorf("create models: %w", err)\n\t}\n'''
+          s = replace_once(s, old, new, 'Host web model boot')
+          old = '''\t\tmodels:          models,\n\t\tthinkingApplier: applyThinking,\n'''
+          new = '''\t\tmodels:          models,\n\t\twebSession:      webSession,\n\t\tthinkingApplier: applyThinking,\n'''
+          s = replace_once(s, old, new, 'Host assign webSession')
+          old = '''\t\th.engine.abort()\n\t\th.engine.wait()\n\t\th.asyncWG.Wait()\n\n\t\tif h.usageCancel != nil {\n'''
+          new = '''\t\th.engine.abort()\n\t\th.engine.wait()\n\t\th.asyncWG.Wait()\n\t\tif h.webSession != nil {\n\t\t\tif err := h.webSession.Stop(); err != nil {\n\t\t\t\tslog.Warn("WEB browser session stop failed", "module", "webai", "err", err)\n\t\t\t}\n\t\t\th.webSession = nil\n\t\t}\n\n\t\tif h.usageCancel != nil {\n'''
+          s = replace_once(s, old, new, 'Host Close web session')
+          p.write_text(s)
+
+          # ---- new host web runtime helper ----
+          Path('internal/host/web_runtime.go').write_text(r'''package host
+
+import (
+    "context"
+    "fmt"
+    "log/slog"
+
+    "github.com/voocel/ainovel-cli/internal/bootstrap"
+    "github.com/voocel/ainovel-cli/internal/webai"
+)
+
+// startWebRuntime owns production browser bootstrap for W5A. A readiness probe
+// may transiently return DEGRADED while Chrome starts; as long as the owned
+// process is alive, the WebChatModel can later converge through Refresh.
+func startWebRuntime(ctx context.Context, cfg bootstrap.Config, session *webai.SessionManager) (*webai.SessionManager, *bootstrap.ModelSet, error) {
+    if !cfg.Web.Enabled {
+        return nil, nil, fmt.Errorf("WEB-only runtime is not enabled")
+    }
+    if session == nil {
+        session = webai.NewSessionManager(webai.SessionConfig{
+            Site:        cfg.Web.Site,
+            BrowserPath: cfg.Web.BrowserPath,
+            ProfileName: cfg.Web.ProfileName,
+            StartURL:    cfg.Web.StartURL,
+        })
+    }
+    snap, startErr := session.Start(ctx)
+    if startErr != nil {
+        if snap.PID == 0 || snap.State == webai.SessionFailed || snap.State == webai.SessionStopped {
+            _ = session.Stop()
+            return nil, nil, fmt.Errorf("start WEB browser session: %w", startErr)
+        }
+        slog.Warn("WEB browser started before readiness settled", "module", "webai", "state", snap.State, "err", startErr)
+    }
+    models, err := bootstrap.NewWebModelSet(cfg, session)
+    if err != nil {
+        _ = session.Stop()
+        return nil, nil, err
+    }
+    return session, models, nil
+}
+''')
+
+          # ---- deterministic tests ----
+          Path('internal/bootstrap/web_config_test.go').write_text(r'''package bootstrap
+
+import (
+    "strings"
+    "testing"
+)
+
+func TestWebOnlyConfigNeedsNoAPICredential(t *testing.T) {
+    cfg := Config{
+        Web: WebAIConfig{Enabled: true},
+        Roles: map[string]RoleConfig{"writer": {ReasoningEffort: "high"}},
+    }
+    cfg.FillDefaults()
+    if err := cfg.ValidateBase(); err != nil {
+        t.Fatalf("ValidateBase: %v", err)
+    }
+    if cfg.Provider != "web" || cfg.ModelName != "gemini-web" {
+        t.Fatalf("identity = %s/%s", cfg.Provider, cfg.ModelName)
+    }
+    if got := cfg.CandidateModels("web"); len(got) != 1 || got[0] != "gemini-web" {
+        t.Fatalf("CandidateModels = %v", got)
+    }
+}
+
+func TestWebOnlyConfigRejectsLegacyAPIProvider(t *testing.T) {
+    cfg := Config{
+        Web: WebAIConfig{Enabled: true},
+        Providers: map[string]ProviderConfig{"openai": {APIKey: "must-not-be-used"}},
+    }
+    cfg.FillDefaults()
+    err := cfg.ValidateBase()
+    if err == nil || !strings.Contains(err.Error(), "legacy API providers") {
+        t.Fatalf("expected legacy API rejection, got %v", err)
+    }
+}
+''')
+
+          Path('internal/bootstrap/web_models_test.go').write_text(r'''package bootstrap
+
+import (
+    "strings"
+    "testing"
+
+    "github.com/voocel/ainovel-cli/internal/webai"
+)
+
+func TestNewWebModelSetHasNoProviderFailover(t *testing.T) {
+    cfg := Config{Web: WebAIConfig{Enabled: true}}
+    cfg.FillDefaults()
+    session := webai.NewSessionManager(webai.SessionConfig{Site: "gemini-web"})
+    models, err := NewWebModelSet(cfg, session)
+    if err != nil {
+        t.Fatalf("NewWebModelSet: %v", err)
+    }
+    if got := models.Summary(); got != "default=web/gemini-web" {
+        t.Fatalf("Summary = %q", got)
+    }
+    if err := models.Swap("default", "openai", "gpt-anything"); err == nil || !strings.Contains(err.Error(), "WEB-only") {
+        t.Fatalf("expected WEB-only swap rejection, got %v", err)
+    }
+}
+''')
+
+          Path('internal/host/web_runtime_test.go').write_text(r'''package host
+
+import (
+    "context"
+    "os"
+    "path/filepath"
+    "testing"
+
+    "github.com/voocel/ainovel-cli/internal/bootstrap"
+    "github.com/voocel/ainovel-cli/internal/webai"
+)
+
+type w5FakeProcess struct {
+    done chan error
+    stopped bool
+}
+
+func (p *w5FakeProcess) PID() int { return 5050 }
+func (p *w5FakeProcess) Done() <-chan error { return p.done }
+func (p *w5FakeProcess) Stop() error { p.stopped = true; return nil }
+
+type w5FakeLauncher struct{ process *w5FakeProcess }
+func (l w5FakeLauncher) Launch(context.Context, webai.BrowserLaunchConfig) (webai.BrowserProcess, error) { return l.process, nil }
+
+type w5ReadyProbe struct{}
+func (w5ReadyProbe) Probe(context.Context, webai.SessionSnapshot) (webai.ReadinessResult, error) {
+    return webai.ReadinessResult{State: webai.SessionReady, Reason: "test READY"}, nil
+}
+
+func TestStartWebRuntimeBootsWithoutAPICredential(t *testing.T) {
+    fakeChrome := filepath.Join(t.TempDir(), "chrome")
+    if err := os.WriteFile(fakeChrome, []byte("test"), 0o700); err != nil { t.Fatal(err) }
+    process := &w5FakeProcess{done: make(chan error)}
+    session := webai.NewSessionManager(webai.SessionConfig{
+        Site: "gemini-web", BrowserPath: fakeChrome, ProfileDir: t.TempDir(),
+        Launcher: w5FakeLauncher{process: process}, Probe: w5ReadyProbe{},
+    })
+    cfg := bootstrap.Config{Web: bootstrap.WebAIConfig{Enabled: true}}
+    cfg.FillDefaults()
+    gotSession, models, err := startWebRuntime(context.Background(), cfg, session)
+    if err != nil { t.Fatalf("startWebRuntime: %v", err) }
+    if gotSession != session || models == nil { t.Fatalf("runtime not wired") }
+    if snap := session.Snapshot(); snap.State != webai.SessionReady { t.Fatalf("state = %s", snap.State) }
+    if err := session.Stop(); err != nil { t.Fatal(err) }
+    if !process.stopped { t.Fatal("owned browser was not stopped") }
+}
+''')
+          PY
+      - name: Format W5A files
+        run: gofmt -w internal/bootstrap/config.go internal/bootstrap/models.go internal/bootstrap/web_config_test.go internal/bootstrap/web_models_test.go internal/host/host.go internal/host/web_runtime.go internal/host/web_runtime_test.go
+      - name: Guarded package tests
+        run: go test -buildvcs=false -count=1 ./internal/bootstrap ./internal/webai ./internal/host
+      - name: Guard against active API constructor in WEB path
+        shell: bash
+        run: |
+          grep -q 'NewWebModelSet' internal/bootstrap/models.go
+          grep -q 'startWebRuntime' internal/host/host.go
+          grep -q 'if !cfg.Web.Enabled' internal/host/host.go
+      - name: Commit W5A migration
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal/bootstrap/config.go internal/bootstrap/models.go internal/bootstrap/web_config_test.go internal/bootstrap/web_models_test.go internal/host/host.go internal/host/web_runtime.go internal/host/web_runtime_test.go
+          git diff --cached --check
+          git commit -m 'feat(webai): wire browser runtime into production bootstrap'
+          git push origin HEAD:w5-web-only-integration-api-removal
