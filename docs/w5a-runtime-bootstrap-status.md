@@ -1,6 +1,6 @@
 # W5A — WEB-ONLY RUNTIME BOOTSTRAP MIGRATION
 
-Status: IMPLEMENTED — awaiting full PR CI.
+Status: PASS / LOCKED
 
 Production WEB path:
 
@@ -15,10 +15,12 @@ Locked properties:
 - Browser readiness may transiently be DEGRADED while Chrome starts; an alive owned process remains available for later readiness convergence.
 - No Gemini/OpenAI/Anthropic/OpenRouter AI API is introduced by W5A.
 
-Guarded migration evidence:
-- migration assertions: PASS
+Verification evidence:
+- guarded migration assertions: PASS
 - `gofmt`: PASS
-- `go test ./internal/bootstrap ./internal/webai ./internal/host`: PASS
+- guarded package tests (`bootstrap + webai + host`): PASS
+- full PR CI run #53: PASS
+  - Ubuntu: format, installer syntax, `go vet`, full `go test`, critical race tests
+  - Windows: format, `go vet`, full `go test`
 
-Blocking gate before W5A LOCKED:
-- full pull-request CI on Linux + Windows must PASS.
+W5A is locked. W5B may proceed; W5 overall remains OPEN until W5B–W5E and W5.5 pass.
