@@ -31,22 +31,21 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Expose Git Bash to subsequent steps
+      - name: Force Git Bash for subsequent steps
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
-            $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
-            $bash = Join-Path $gitBin 'bash.exe'
-            if (-not (Test-Path -LiteralPath $bash)) {
-              throw 'Git Bash is required but bash.exe was not found under Program Files\Git\bin.'
-            }
-            [System.IO.File]::AppendAllText(
-              $env:GITHUB_PATH,
-              "$gitBin`r`n",
-              (New-Object System.Text.UTF8Encoding($false))
-            )
+          $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+          $bash = Join-Path $gitBin 'bash.exe'
+          if (-not (Test-Path -LiteralPath $bash)) {
+            throw 'Git Bash is required but bash.exe was not found under Program Files\Git\bin.'
           }
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_PATH,
+            "$gitBin`r`n",
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+          Write-Host "Git Bash forced for subsequent steps: $bash"
 
       - name: Verify exact candidate and interactive desktop session
         shell: powershell
@@ -77,6 +76,12 @@ jobs:
             }
           }
 
+          $bashResolved = (Get-Command bash -ErrorAction Stop).Source
+          $expectedBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+          if ([IO.Path]::GetFullPath($bashResolved) -ne [IO.Path]::GetFullPath($expectedBash)) {
+            throw "bash did not resolve to Git Bash: $bashResolved"
+          }
+
           if (-not (Test-Path -LiteralPath 'scripts/w5e-production-smoke.ps1')) {
             throw 'Exact candidate does not contain scripts/w5e-production-smoke.ps1'
           }
@@ -84,6 +89,7 @@ jobs:
           Write-Host "W5E R1 executor precondition PASS"
           Write-Host "Candidate: $actual"
           Write-Host "Interactive session: $runnerSession"
+          Write-Host "Bash: $bashResolved"
 
       - name: Run real production desktop smoke
         shell: powershell
