@@ -37,11 +37,14 @@ jobs:
           check_absent 'API model constructors/options' 'llm\.NewModel|WithAPIKey|WithBaseURL|WithProviderExtra|WithExtra'
           check_absent 'provider failover/hot-swap constructors' 'ForRoleWithFailover|FailoverEvent|NewModelSet|ProviderPresets|ProviderConfig'
           check_absent 'credential-bearing production symbols' '\bAPIKey\b|\bBaseURL\b|SaveProviderConfig'
-          if grep -nE '^[[:space:]]*github\.com/voocel/litellm([[:space:]]|$)' go.mod; then
+          direct_litellm="$(grep -nE '^[[:space:]]*github\.com/voocel/litellm([[:space:]]|$)' go.mod | grep -v '// indirect' || true)"
+          if [ -n "$direct_litellm" ]; then
+            echo "$direct_litellm"
             echo 'HARD_FAIL: direct litellm dependency remains in go.mod'
             fail=1
           else
             echo 'PASS: no direct litellm dependency in go.mod'
+            grep -n 'github.com/voocel/litellm' go.mod || echo 'INFO: no transitive litellm line either'
           fi
           exit "$fail"
 
@@ -57,6 +60,9 @@ jobs:
               fail=1
             fi
           done
+          if [ "$fail" -eq 0 ]; then
+            echo 'PASS: no persisted API credential/provider/fallback schema tags'
+          fi
           exit "$fail"
 
       - name: Migration detectors and soft references
@@ -76,10 +82,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          found="$(find .github -maxdepth 2 -type f \( -name 'w5c-*patch*' -o -name 'w5c-*cleanup*' -o -name 'w5c_c*_patch.py' \) -print)"
+          found="$(find .github -maxdepth 2 -type f \( -name 'w5c-*patch*' -o -name 'w5c-*cleanup*' -o -name 'w5c-*tidy*' -o -name 'w5c_c*_patch.py' \) -print)"
           if [ -n "$found" ]; then
             echo "$found"
-            echo 'HARD_FAIL: temporary W5 patch/cleanup files remain'
+            echo 'HARD_FAIL: temporary W5 patch/cleanup/tidy files remain'
             exit 1
           fi
-          echo 'PASS: no temporary W5 patch/cleanup files'
+          echo 'PASS: no temporary W5 patch/cleanup/tidy files'
