@@ -2,6 +2,7 @@ package webai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -85,6 +86,17 @@ For a small local tool request, emit only one strict valid JSON object with kind
 For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined; after the raw-value start delimiter, preserve the complete intended raw string until the end of the assistant message and do not append a closing delimiter.
 Do not claim a tool ran. This is a transport-format repair only.`
 
+// jsonSyntaxRepairPrompt is used only when the strict response decoder reports
+// a JSON syntax error. The malformed response has not executed a local tool, so
+// this remains a side-effect-free correction inside the existing repair budget.
+const jsonSyntaxRepairPrompt = `Your previous answer was rejected because it contained invalid JSON syntax. No local tool from that answer has been executed.
+Do not redo the user's task, change the intended answer, change the intended tool, change any intended argument value, summarize, or add commentary.
+Re-emit the same intended answer using one exact AINOVEL whole-message body already defined earlier in this conversation.
+If the intended response is normal assistant text, use TEXT followed by one newline and the same intended text verbatim.
+If the intended response is a small local tool request, emit one strict JSON object only. Use double-quoted JSON keys and string values, put commas only between object fields or array elements, use no comments or trailing commas, emit no unquoted prose inside JSON, and escape embedded quotes, backslashes, and control characters correctly.
+If the intended response is one local tool request with one long top-level string argument, use TOOL_CALL_RAW exactly as already defined so the long raw value is not embedded into JSON metadata.
+Do not add an outer response wrapper or Markdown fence and do not claim a tool ran. This is a JSON-syntax transport repair only.`
+
 // rawStringFieldRepairPrompt is used only when a TOOL_CALL_RAW response reached
 // the strict raw-tool parser but its raw_string_field metadata was invalid.
 // The malformed call has not executed, so this remains a side-effect-free,
@@ -147,9 +159,21 @@ func invalidRawStringFieldProtocolError(err error) bool {
 		webErr.Cause.Error() == "raw_string_field is invalid"
 }
 
+func jsonSyntaxProtocolError(err error) bool {
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr == nil || webErr.Kind != ErrorProtocol || webErr.Op != "decode response" {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	return errors.As(webErr.Cause, &syntaxErr)
+}
+
 func repairPromptForProtocolError(err error) string {
 	if invalidRawStringFieldProtocolError(err) {
 		return rawStringFieldRepairPrompt
+	}
+	if jsonSyntaxProtocolError(err) {
+		return jsonSyntaxRepairPrompt
 	}
 	return protocolRepairPrompt
 }
@@ -271,7 +295,7 @@ func (m *Model) ModelName() string    { return m.model }
 func (m *Model) Info() llm.ModelInfo {
 	return llm.ModelInfo{
 		Name:     m.model,
-		Provider: "web",
+		Provider: m.site,
 		Capabilities: []string{
 			string(llm.CapabilityChat),
 			string(llm.CapabilityToolCalling),
@@ -285,7 +309,7 @@ func (m *Model) Info() llm.ModelInfo {
 // and controllable reasoning are intentionally reported as unsupported.
 func (m *Model) Capabilities() llm.Capabilities {
 	return llm.Capabilities{
-		Provider: "web",
+		Provider: m.site,
 		Model:    m.model,
 		Thinking: llm.ThinkingCapabilities{
 			Supported: llm.SupportNo,
