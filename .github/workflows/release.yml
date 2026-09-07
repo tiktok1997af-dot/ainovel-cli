@@ -10,13 +10,15 @@ permissions:
 
 jobs:
   goreleaser:
-    if: ${{ github.repository == 'tiktok1997af-dot/ainovel-cli' }}
+    if: ${{ github.repository == 'tiktok1997af-dot/ainovel-cli' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout exact release tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -24,8 +26,56 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Verify fork-owned strict SemVer release authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${tag}^{commit}")"
+          test "$(git remote get-url origin)" = "https://github.com/tiktok1997af-dot/ainovel-cli"
+          grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
+          grep -Fq 'name: ainovel-cli' .goreleaser.yml
+          grep -Fq 'name_template: "ainovel-cli_checksums.txt"' .goreleaser.yml
+          grep -Fq 'algorithm: sha256' .goreleaser.yml
+          test -z "$(git status --porcelain)"
+
+      - name: W5.5 NO-API release preflight
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: Go regression preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./...
+          go test ./internal/version
+
       - name: Generate deterministic release notes
+        shell: bash
         run: sh .github/scripts/gen-changelog.sh > release-notes.md
+
+      - name: Verify deterministic release notes contain no secret-like material
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp release-notes.md /tmp/release-notes-a.md
+          sh .github/scripts/gen-changelog.sh > /tmp/release-notes-b.md
+          cmp /tmp/release-notes-a.md /tmp/release-notes-b.md
+          python3 - <<'PY'
+          import re
+          body=open('release-notes.md',encoding='utf-8').read()
+          patterns=[
+            r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+            r'\bghp_[A-Za-z0-9]{20,}\b',
+            r'\bgithub_pat_[A-Za-z0-9_]{20,}\b',
+            r'\bAIza[0-9A-Za-z_-]{20,}\b',
+            r'(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{8,}',
+            r'(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}',
+          ]
+          if any(re.search(p,body) for p in patterns):
+              raise SystemExit('release notes contain secret-like material')
+          PY
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
