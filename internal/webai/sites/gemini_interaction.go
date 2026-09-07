@@ -44,22 +44,43 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("gemini submit: prompt is empty")
 	}
-	pointer, ok := evaluator.(PointerEvaluator)
+	input, ok := evaluator.(TextInputEvaluator)
 	if !ok {
-		return fmt.Errorf("gemini submit: evaluator does not support trusted pointer input")
+		return fmt.Errorf("gemini submit: evaluator does not support trusted text input")
 	}
 	encoded, err := json.Marshal(prompt)
 	if err != nil {
 		return fmt.Errorf("gemini submit: encode prompt: %w", err)
 	}
 
-	// Keep the side-effecting submit path synchronous from CDP's perspective.
-	// Prompt preparation may mutate only the composer. The resolver polls DOM
-	// readiness without clicking until one canonical actionable control is found.
-	// Go then emits exactly one trusted Chrome pointer click. A click is not
-	// delivery ACK; transport independently observes user-turn/BUSY/response.
-	prepareExpression := fmt.Sprintf(geminiPreparePromptExpressionTemplate, string(encoded))
-	raw, err := evaluator.Eval(ctx, prepareExpression)
+	// DOM JavaScript is read-only for the controlled editor. Resolve its visible
+	// viewport point, then let Chrome's trusted Input domain focus/select/clear/
+	// insert the prompt. Verify the rendered editor text without mutating it.
+	// Only after that do we resolve Send and perform exactly one trusted click.
+	raw, err := evaluator.Eval(ctx, geminiResolveComposerExpression)
+	if err != nil {
+		return err
+	}
+	var composer struct {
+		Found bool    `json:"found"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+	}
+	if err := json.Unmarshal(raw, &composer); err != nil {
+		return fmt.Errorf("gemini resolve composer result: %w", err)
+	}
+	if !composer.Found {
+		return fmt.Errorf("gemini submit: prompt composer not found")
+	}
+	if composer.X < 0 || composer.Y < 0 {
+		return fmt.Errorf("gemini submit: resolved composer coordinates are invalid")
+	}
+	if err := input.ReplaceText(ctx, composer.X, composer.Y, prompt); err != nil {
+		return fmt.Errorf("gemini trusted composer input: %w", err)
+	}
+
+	verifyExpression := fmt.Sprintf(geminiVerifyPromptExpressionTemplate, string(encoded))
+	raw, err = evaluator.Eval(ctx, verifyExpression)
 	if err != nil {
 		return err
 	}
@@ -69,17 +90,17 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 		ComposerLength int    `json:"composer_length"`
 	}
 	if err := json.Unmarshal(raw, &prepared); err != nil {
-		return fmt.Errorf("gemini prepare prompt result: %w", err)
+		return fmt.Errorf("gemini verify prompt result: %w", err)
 	}
 	if !prepared.OK {
 		reason := strings.TrimSpace(prepared.Reason)
 		if reason == "" {
-			reason = "prompt composer is not ready"
+			reason = "prompt composer did not retain trusted input"
 		}
 		return fmt.Errorf("gemini submit: %s", reason)
 	}
 	if prepared.ComposerLength <= 0 {
-		return fmt.Errorf("gemini submit: prepared composer is empty")
+		return fmt.Errorf("gemini submit: verified composer is empty")
 	}
 
 	deadline := time.Now().Add(geminiSendWait)
@@ -107,7 +128,7 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 			if result.X < 0 || result.Y < 0 {
 				return fmt.Errorf("gemini submit: resolved send coordinates are invalid")
 			}
-			if err := pointer.Click(ctx, result.X, result.Y); err != nil {
+			if err := input.Click(ctx, result.X, result.Y); err != nil {
 				return fmt.Errorf("gemini trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
 			}
 			return nil
@@ -221,9 +242,6 @@ const geminiConversationExpression = `(() => {
     if (text) texts.push(text);
   }
 
-  // A resolved send action seeds sanitized capture state containing only
-  // response count, a length/hash signature, composer length, action strategy
-  // and timestamps. No prompt or response text is stored in page state.
   const last = texts.length ? texts[texts.length - 1] : '';
   const captureState = window.__ainovelWebCaptureState;
   if (captureState && last) {
@@ -291,7 +309,39 @@ const geminiConversationExpression = `(() => {
   };
 })()`
 
-const geminiPreparePromptExpressionTemplate = `(() => {
+const geminiResolveComposerExpression = `(() => {
+  const visible = (el) => {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+  };
+  const selectors = [
+    'rich-textarea .ql-editor[contenteditable="true"]',
+    'rich-textarea [contenteditable="true"]',
+    'div.ql-editor[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[aria-label="Enter a prompt here"]',
+    'textarea[aria-label*="prompt" i]'
+  ];
+  for (const selector of selectors) {
+    for (const composer of document.querySelectorAll(selector)) {
+      if (!visible(composer)) continue;
+      const rect = composer.getBoundingClientRect();
+      const maxX = Math.max(0, window.innerWidth - 1);
+      const maxY = Math.max(0, window.innerHeight - 1);
+      return {
+        found: true,
+        x: Math.min(maxX, Math.max(0, rect.left + Math.min(rect.width / 2, 48))),
+        y: Math.min(maxY, Math.max(0, rect.top + rect.height / 2))
+      };
+    }
+  }
+  return {found: false, x: 0, y: 0};
+})()`
+
+const geminiVerifyPromptExpressionTemplate = `(() => {
   const prompt = %s;
   const visible = (el) => {
     if (!el) return false;
@@ -308,13 +358,6 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     }
     return null;
   };
-  const readComposer = (composer) => String(
-    (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
-      ? composer.value
-      : (composer.innerText || composer.textContent || '')
-  );
-  const samePrompt = (actual) => String(actual || '').replace(/\r\n/g, '\n').trim() === String(prompt).replace(/\r\n/g, '\n').trim();
-
   const composer = firstVisible([
     'rich-textarea .ql-editor[contenteditable="true"]',
     'rich-textarea [contenteditable="true"]',
@@ -323,43 +366,19 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     '[aria-label="Enter a prompt here"]',
     'textarea[aria-label*="prompt" i]'
   ]);
-  if (!composer) return {ok: false, reason: 'prompt composer not found', composer_length: 0};
-  composer.focus();
-
-  if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
-    const proto = composer instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(composer, prompt); else composer.value = prompt;
-    try {
-      composer.dispatchEvent(new InputEvent('beforeinput', {bubbles: true, cancelable: true, inputType: 'insertText', data: prompt}));
-    } catch (_) {}
-    composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
-    composer.dispatchEvent(new Event('change', {bubbles: true}));
-  } else {
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(composer);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    try {
-      composer.dispatchEvent(new InputEvent('beforeinput', {bubbles: true, cancelable: true, inputType: 'insertText', data: prompt}));
-    } catch (_) {}
-    let inserted = false;
-    try { inserted = document.execCommand('insertText', false, prompt); } catch (_) {}
-    if (!inserted || !samePrompt(readComposer(composer))) {
-      composer.textContent = prompt;
-      composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
-    }
-    composer.dispatchEvent(new Event('change', {bubbles: true}));
+  if (!composer) return {ok: false, reason: 'prompt composer disappeared after trusted input', composer_length: 0};
+  const actual = String(
+    (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
+      ? composer.value
+      : (composer.innerText || composer.textContent || '')
+  );
+  const normalize = (value) => String(value || '').replace(/\r\n/g, '\n').trim();
+  const composerLength = normalize(actual).length;
+  if (normalize(actual) !== normalize(prompt)) {
+    return {ok: false, reason: 'prompt composer did not retain trusted input', composer_length: composerLength};
   }
-
-  const actual = readComposer(composer);
-  if (!samePrompt(actual)) {
-    return {ok: false, reason: 'prompt composer did not retain prepared text', composer_length: String(actual || '').trim().length};
-  }
-  const composerLength = String(actual || '').trim().length;
   if (composerLength === 0) {
-    return {ok: false, reason: 'prompt composer is empty after prepare', composer_length: 0};
+    return {ok: false, reason: 'prompt composer is empty after trusted input', composer_length: 0};
   }
   return {ok: true, reason: '', composer_length: composerLength};
 })()`
