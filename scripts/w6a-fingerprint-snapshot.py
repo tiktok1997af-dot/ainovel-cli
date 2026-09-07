@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import struct
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -19,6 +19,35 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def command_output(argv: list[str]) -> str:
+    proc = subprocess.run(
+        argv,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return f"<exit:{proc.returncode}>"
+    return proc.stdout.strip()
+
+
+def go_build_identity(path: Path) -> dict[str, object]:
+    build_id = command_output(["go", "tool", "buildid", str(path)])
+    module_text = command_output(["go", "version", "-m", str(path)])
+    build_settings: list[str] = []
+    if not module_text.startswith("<exit:"):
+        for raw in module_text.splitlines():
+            line = raw.strip()
+            if line.startswith("build\t") or line.startswith("build "):
+                build_settings.append(line)
+    return {
+        "build_id": build_id,
+        "build_settings": sorted(build_settings),
+    }
 
 
 def gzip_header_mtime(path: Path) -> int | None:
@@ -81,11 +110,14 @@ def main() -> None:
     for path in sorted(dist.glob("ainovel-cli_*/*")):
         if not path.is_file() or path.name not in {"ainovel-cli", "ainovel-cli.exe"}:
             continue
+        identity = go_build_identity(path)
         binaries.append(
             {
                 "path": path.relative_to(dist).as_posix(),
                 "size": path.stat().st_size,
                 "sha256": sha256(path),
+                "build_id": identity["build_id"],
+                "build_settings": identity["build_settings"],
             }
         )
 
@@ -127,7 +159,7 @@ def main() -> None:
         }
 
     fingerprint = {
-        "schema": "ainovel-w6a-determinism-fingerprint/1",
+        "schema": "ainovel-w6a-determinism-fingerprint/2",
         "binary_count": len(binaries),
         "archive_count": len(archives),
         "binaries": binaries,
