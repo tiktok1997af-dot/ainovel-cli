@@ -295,7 +295,7 @@ func (m *Model) ModelName() string    { return m.model }
 func (m *Model) Info() llm.ModelInfo {
 	return llm.ModelInfo{
 		Name:     m.model,
-		Provider: m.site,
+		Provider: "web",
 		Capabilities: []string{
 			string(llm.CapabilityChat),
 			string(llm.CapabilityToolCalling),
@@ -309,7 +309,7 @@ func (m *Model) Info() llm.ModelInfo {
 // and controllable reasoning are intentionally reported as unsupported.
 func (m *Model) Capabilities() llm.Capabilities {
 	return llm.Capabilities{
-		Provider: m.site,
+		Provider: "web",
 		Model:    m.model,
 		Thinking: llm.ThinkingCapabilities{
 			Supported: llm.SupportNo,
