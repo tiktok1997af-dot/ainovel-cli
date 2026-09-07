@@ -28,10 +28,10 @@ func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
 	}
 
 	common := map[string]any{
-		"x":          x,
-		"y":          y,
-		"button":     "left",
-		"clickCount": 1,
+		"x":           x,
+		"y":           y,
+		"button":      "left",
+		"clickCount":  1,
 		"pointerType": "mouse",
 	}
 	pressed := clonePointerParams(common)
