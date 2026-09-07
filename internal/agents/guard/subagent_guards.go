@@ -13,6 +13,11 @@ import (
 // subagentMaxConsecutiveBlocks 连续阻拦 N 次后升级为终止，避免弱模型死循环。
 const subagentMaxConsecutiveBlocks = 3
 
+// localToolRequiredMarker is a transport-neutral machine marker embedded only
+// in writer recovery messages. The WEB model recognizes it as a hard signal
+// that a TEXT-only response cannot satisfy the current blocked worker turn.
+const localToolRequiredMarker = "AINOVEL_LOCAL_TOOL_REQUIRED"
+
 // BlockHook 是 StopGuard 的审计回调：每次拦截/升级时同步调用。Host 用它把拦截
 // 事实浮出到 TUI 事件流与离屏通知——否则拦截只进日志，用户在界面上只看到
 // "卡顿+token 变快"，无从判断系统是在自愈还是在空转（issue #75）。
@@ -128,6 +133,10 @@ func NewWriterStopGuard(st *store.Store, onBlock BlockHook) agentcore.StopGuard 
 	return newCheckpointDeltaGuard(st, "writer", []string{"commit"}, writerBlockMsg, onBlock)
 }
 
+func writerToolRequired(msg string) string {
+	return localToolRequiredMarker + "\n" + msg + "\n不要回复 TEXT、解释或承诺；下一条响应必须直接调用一个能推进当前阶段的本地工具。"
+}
+
 // writerBlockMsg 按本轮已出现的 checkpoint step 判断 writer 卡在哪一步。
 // step 名与各工具落盘值对应：plan / draft / edit / consistency_check / commit。
 func writerBlockMsg(seen map[string]struct{}) string {
@@ -136,11 +145,11 @@ func writerBlockMsg(seen map[string]struct{}) string {
 	_, hasCheck := seen["consistency_check"]
 	switch {
 	case !hasDraft && !hasEdit:
-		return "禁止结束：本轮尚未落盘任何正文。请按 plan_chapter → draft_chapter → check_consistency → commit_chapter 的顺序完成本章；正文只输出在聊天里等于丢失，必须通过工具落盘并提交。"
+		return writerToolRequired("禁止结束：本轮尚未落盘任何正文。请按 plan_chapter → draft_chapter → check_consistency → commit_chapter 的顺序完成本章；正文只输出在聊天里等于丢失，必须通过工具落盘并提交。")
 	case !hasCheck:
-		return "禁止结束：正文已落盘但未收尾。请先调 check_consistency 核对一致性，再调 commit_chapter 提交本章。draft_chapter / edit_chapter 只是保存草稿，不算完成。"
+		return writerToolRequired("禁止结束：正文已落盘但未收尾。请先调 check_consistency 核对一致性，再调 commit_chapter 提交本章。draft_chapter / edit_chapter 只是保存草稿，不算完成。")
 	default:
-		return "禁止结束：本章只差 commit_chapter 提交。请立即调用 commit_chapter；若它返回错误，先按错误信息处理（核对章节号、按提示补齐前置动作）再重试提交，不要在未提交的状态下结束。"
+		return writerToolRequired("禁止结束：本章只差 commit_chapter 提交。请立即调用 commit_chapter；若它返回错误，先按错误信息处理（核对章节号、按提示补齐前置动作）再重试提交，不要在未提交的状态下结束。")
 	}
 }
 
@@ -161,8 +170,8 @@ func NewArchitectStopGuard(st *store.Store, onBlock BlockHook) agentcore.StopGua
 // 任务感知：被派去生成摘要时，仅 save_review（复核）不算完成——必须产出对应摘要。
 // 否则"被派生成弧摘要却先复核"的 editor 会满足旧的宽松判据提前结束，弧摘要永不落盘
 // （配合 dispatcher 去重哑火曾导致卷中骨架弧死循环，详见 outline-exhaustion-livelock）。
-// 终态工具退出同样会咨询 StopGuard（契约测试 TestContract_TerminalToolExitConsultsStopGuard），
-// 所以 save_review 在 build.go 里硬停是安全的：摘要任务里 editor 先复核时本 guard 会
+// 终态工具退出同样会咨询 StopGuard（契约测试 TestContract_
+// TerminalToolExitConsultsStopGuard），所以 save_review 在 build.go 里硬停是安全的：摘要任务里 editor 先复核时本 guard 会
 // 否决该次退出并催促，直到对应摘要落盘。
 func NewEditorStopGuard(st *store.Store, task string, onBlock BlockHook) agentcore.StopGuard {
 	switch {

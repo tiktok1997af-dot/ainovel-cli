@@ -11,7 +11,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/llmcontract"
 	"github.com/voocel/ainovel-cli/internal/llmretry"
-	"github.com/voocel/litellm"
+	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
 // callModel 是内核对模型的最小依赖，便于测试注入 mock。
@@ -96,43 +96,20 @@ func briefErr(err error) string {
 	return snippet(s, 100)
 }
 
-// errTypeLabels 把 litellm 错误分类翻成一眼可读的中文短标签。
-var errTypeLabels = map[litellm.ErrorType]string{
-	litellm.ErrorTypeAuth:            "鉴权失败",
-	litellm.ErrorTypeRateLimit:       "限流",
-	litellm.ErrorTypeNetwork:         "网络错误",
-	litellm.ErrorTypeValidation:      "请求参数非法",
-	litellm.ErrorTypeProvider:        "上游服务错误",
-	litellm.ErrorTypeTimeout:         "超时",
-	litellm.ErrorTypeQuota:           "配额不足",
-	litellm.ErrorTypeModel:           "模型不可用",
-	litellm.ErrorTypeInternal:        "内部错误",
-	litellm.ErrorTypeContextOverflow: "上下文超限",
-	litellm.ErrorTypeOverloaded:      "上游过载",
-	litellm.ErrorTypeContentFilter:   "内容过滤拦截",
-}
-
-// modelErrDetail 从错误链提取适配器的结构化事实（错误分类、HTTP 状态、provider、模型）。
-// 网关的 message 常常只有一句空泛的 "Provider returned error"，单靠它无法判断是配置错、
-// 上游故障还是限流；这些事实 litellm 一直带着，只是不进 Error() 文案。agentcore 适配器的
-// Unwrap 明确允许知道 litellm 的调用方 errors.As 取原始错误。非模型调用错误返回空串。
+// modelErrDetail extracts browser-transport facts without depending on an API
+// provider implementation. The web adapter preserves the actionable failure
+// classes needed by import retry/error reporting.
 func modelErrDetail(err error) string {
-	var le *litellm.LiteLLMError
-	if !errors.As(err, &le) {
+	var webErr *webai.Error
+	if !errors.As(err, &webErr) {
 		return ""
 	}
-	parts := make([]string, 0, 4)
-	if label := errTypeLabels[le.Type]; label != "" {
-		parts = append(parts, label)
+	parts := make([]string, 0, 2)
+	if webErr.Kind != "" {
+		parts = append(parts, string(webErr.Kind))
 	}
-	if le.StatusCode != 0 {
-		parts = append(parts, fmt.Sprintf("HTTP %d", le.StatusCode))
-	}
-	if le.Provider != "" {
-		parts = append(parts, le.Provider)
-	}
-	if le.Model != "" {
-		parts = append(parts, le.Model)
+	if webErr.Op != "" {
+		parts = append(parts, webErr.Op)
 	}
 	return strings.Join(parts, "，")
 }

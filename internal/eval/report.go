@@ -44,7 +44,6 @@ type RepeatSummary struct {
 	PassRate        float64       `json:"pass_rate"`
 	HardFailRuns    int           `json:"hard_fail_runs"`
 	WarningRuns     int           `json:"warning_runs"`
-	CostUSD         *RangeSummary `json:"cost_usd,omitempty"`
 	ToolCalls       *RangeSummary `json:"tool_calls,omitempty"`
 	VariantPassRate float64       `json:"variant_pass_rate,omitempty"`
 	DeltaPassRate   float64       `json:"delta_pass_rate,omitempty"`
@@ -114,7 +113,7 @@ func summarizeRuns(runs []RunResult, deltas []Delta) RepeatSummary {
 	total := len(runs)
 	if total > 0 {
 		pass := 0
-		var costs, toolCalls []float64
+		var toolCalls []float64
 		for _, run := range runs {
 			switch run.Result.Outcome {
 			case Fail:
@@ -124,15 +123,11 @@ func summarizeRuns(runs []RunResult, deltas []Delta) RepeatSummary {
 			case Pass:
 				pass++
 			}
-			if run.Result.Metrics.Usage.UsageRecorded {
-				costs = append(costs, run.Result.Metrics.Usage.CostUSD)
-			}
 			if run.Result.Metrics.ToolCalls > 0 {
 				toolCalls = append(toolCalls, float64(run.Result.Metrics.ToolCalls))
 			}
 		}
 		s.PassRate = round2(float64(pass) / float64(total))
-		s.CostUSD = summarizeRange(costs)
 		s.ToolCalls = summarizeRange(toolCalls)
 	}
 	variantTotal, variantPass := 0, 0
@@ -248,10 +243,6 @@ func renderMarkdown(s Suite) string {
 				c.Summary.VariantPassRate, c.Summary.DeltaPassRate)
 		}
 		fmt.Fprintf(&b, "\n")
-		if c.Summary.CostUSD != nil {
-			r := c.Summary.CostUSD
-			fmt.Fprintf(&b, "- cost_usd: min=%.2f avg=%.2f max=%.2f\n", r.Min, r.Avg, r.Max)
-		}
 		if c.Summary.ToolCalls != nil {
 			r := c.Summary.ToolCalls
 			fmt.Fprintf(&b, "- tool_calls: min=%.0f avg=%.0f max=%.0f\n", r.Min, r.Avg, r.Max)
@@ -278,9 +269,6 @@ func writeRun(b *strings.Builder, run RunResult) {
 	fmt.Fprintf(b, "- %s: %s phase=%s flow=%s completed=%d/%d words=%d findings(crit=%d warn=%d) tool_calls=%d",
 		label, r.Outcome, m.Phase, m.Flow, m.CompletedChapters, m.TotalChapters, m.TotalWords,
 		m.CriticalFindings, m.WarningFindings, m.ToolCalls)
-	if m.Usage.UsageRecorded {
-		fmt.Fprintf(b, " cost=$%.4f tokens(in=%d out=%d)", m.Usage.CostUSD, m.Usage.Input, m.Usage.Output)
-	}
 	if m.StylestatStatus != "" {
 		fmt.Fprintf(b, " stylestat=%s", m.StylestatStatus)
 	}
@@ -295,9 +283,9 @@ func writeRun(b *strings.Builder, run RunResult) {
 
 func writeDelta(b *strings.Builder, idx int, d Delta) {
 	m := d.Metrics
-	fmt.Fprintf(b, "- delta#%d: %s completed_delta=%+d crit_delta=%+d warn_delta=%+d words_ratio=%.2f tool_calls_delta=%.2f cost_delta=%.2f\n",
+	fmt.Fprintf(b, "- delta#%d: %s completed_delta=%+d crit_delta=%+d warn_delta=%+d words_ratio=%.2f tool_calls_delta=%.2f\n",
 		idx, d.Outcome, m.CompletedChapters, m.CriticalFindings, m.WarningFindings,
-		m.TotalWordsRatio, m.ToolCallDeltaRatio, m.CostDeltaRatio)
+		m.TotalWordsRatio, m.ToolCallDeltaRatio)
 	if m.Stylestat != nil {
 		sd := m.Stylestat
 		fmt.Fprintf(b, "  - stylestat: %s pattern_top=%+0.1f ending_short=%+0.2f repeated=%+d title_mixed=%+d\n",

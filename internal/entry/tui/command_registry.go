@@ -10,11 +10,23 @@ func newCommandRegistry(specs []slashCommandSpec) commandRegistry {
 	return commandRegistry{specs: append([]slashCommandSpec(nil), specs...)}
 }
 
+func browserOnlyCommandPresentation(spec slashCommandSpec) slashCommandSpec {
+	switch spec.Name {
+	case "model":
+		spec.Usage = "/model"
+		spec.Description = "Xem trạng thái Gemini Web và phiên Chrome WEB-only"
+	case "config":
+		spec.Usage = "/config"
+		spec.Description = "Cấu hình Chrome và hồ sơ đăng nhập Gemini Web"
+	}
+	return spec
+}
+
 func (r commandRegistry) Visible() []slashCommandSpec {
 	var out []slashCommandSpec
 	for _, spec := range r.specs {
 		if !spec.Hidden {
-			out = append(out, spec)
+			out = append(out, browserOnlyCommandPresentation(spec))
 		}
 	}
 	return out
@@ -27,7 +39,7 @@ func (r commandRegistry) Find(name string) (slashCommandSpec, bool) {
 	}
 	for _, spec := range r.specs {
 		if spec.matches(name) {
-			return spec, true
+			return browserOnlyCommandPresentation(spec), true
 		}
 	}
 	return slashCommandSpec{}, false

@@ -12,8 +12,8 @@ import (
 
 func TestRenderTopBarShowsVersion(t *testing.T) {
 	out := renderTopBar(host.UISnapshot{
-		Provider:  "openrouter",
-		ModelName: "test-model",
+		Provider:  "web",
+		ModelName: "gemini-web",
 		BookTitle: "测试小说",
 	}, 120, "", "v1.2.3")
 	if !strings.Contains(out, "ainovel-cli v1.2.3") {
@@ -58,19 +58,19 @@ func TestRenderErrorEventKeepsOneLineSummary(t *testing.T) {
 // 花费/预算、书目录都必须在（样式剥离后按纯文本断言）。
 func TestRenderStatusBar(t *testing.T) {
 	out := ansi.Strip(renderStatusBar(host.UISnapshot{
-		Provider:           "openrouter",
-		ModelName:          "test-model",
+		Provider:           "web",
+		ModelName:          "gemini-web",
 		ModelContextWindow: 200000,
 		ThinkingLevel:      "medium",
-		TotalInputTokens:   1_234_000,
-		TotalOutputTokens:  89_300,
-		TotalCostUSD:       0.31,
-		BudgetLimitUSD:     5,
-		TotalSavedUSD:      0.12,
 	}, "/tmp/output", 120))
-	for _, want := range []string{"test-model(200K,med)", "↑1.2M", "↓89.3k", "$0.31/$5.00", "tiết kiệm $0.12", "./output"} {
+	for _, want := range []string{"web", "gemini-web(200K,med)", "./output"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("状态栏缺少 %q：%q", want, out)
+			t.Fatalf("WEB-only status bar missing %q: %q", want, out)
+		}
+	}
+	for _, forbidden := range []string{"$", "↑", "↓", "tiết kiệm"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("WEB-only status bar must not fabricate billing/usage %q: %q", forbidden, out)
 		}
 	}
 }
@@ -85,13 +85,6 @@ func TestRenderStatusBarAutoThinkingAndEmpty(t *testing.T) {
 	}
 	if out := ansi.Strip(renderStatusBar(host.UISnapshot{}, "", 120)); out != "SẴN SÀNG" {
 		t.Fatalf("空快照应回退 READY，得 %q", out)
-	}
-}
-
-func TestRenderUsageLineSeparatesFullWidthNameAndTokens(t *testing.T) {
-	out := renderUsageLine("gpt-5.6-sol", bodyTextColor, 5300, 0, 0.23, 32)
-	if !strings.Contains(out, "gpt-5.6-sol 5.3k") {
-		t.Fatalf("model name and tokens should have a visible gap: %q", out)
 	}
 }
 
@@ -131,5 +124,17 @@ func TestRenderDetailContentWrapsCJK(t *testing.T) {
 	joined := strings.ReplaceAll(strings.ReplaceAll(out, "\n", ""), " ", "")
 	if !strings.Contains(joined, "坚持程序正义") {
 		t.Errorf("折行后应保留完整描述，实际输出:\n%s", out)
+	}
+}
+
+func TestRenderWebTelemetrySidebarIsExplicit(t *testing.T) {
+	out := ansi.Strip(renderWebTelemetrySidebar(host.UISnapshot{AITelemetryStatus: host.WebAITelemetryUnavailable}, 48))
+	if !strings.Contains(out, "không cung cấp") || !strings.Contains(out, "billing") {
+		t.Fatalf("WEB telemetry boundary missing: %q", out)
+	}
+	for _, forbidden := range []string{"$0", "0%"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("WEB telemetry notice must not imply measured zero %q: %q", forbidden, out)
+		}
 	}
 }

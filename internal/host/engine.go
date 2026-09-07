@@ -39,7 +39,6 @@ type engine struct {
 	reconsult func(text string)
 
 	observer  *observer
-	budget    *BudgetSentinel
 	gate      *ChapterAdvanceGate
 	refresh   func() // 每次 writer 派发前刷新 RestorePack
 	emitEvent func(Event)
@@ -266,10 +265,6 @@ func (e *engine) run(ctx context.Context) {
 			}
 		}
 
-		// 政策边界:预算止损优先于验收/推进暂停。
-		if e.budget.HandleBoundary() {
-			return
-		}
 		if e.gate.HandleBoundary() {
 			return
 		}

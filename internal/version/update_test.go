@@ -12,15 +12,21 @@ import (
 	"testing"
 )
 
+func TestProductRepository(t *testing.T) {
+	if ProductRepository != "tiktok1997af-dot/ainovel-cli" {
+		t.Fatalf("ProductRepository = %q", ProductRepository)
+	}
+}
+
 func TestReleaseURL(t *testing.T) {
 	cases := map[string]string{
-		"":       "https://api.github.com/repos/voocel/ainovel-cli/releases/latest",
-		"latest": "https://api.github.com/repos/voocel/ainovel-cli/releases/latest",
-		"1.2.3":  "https://api.github.com/repos/voocel/ainovel-cli/releases/tags/v1.2.3",
-		"v1.2.3": "https://api.github.com/repos/voocel/ainovel-cli/releases/tags/v1.2.3",
+		"":       "https://api.github.com/repos/tiktok1997af-dot/ainovel-cli/releases/latest",
+		"latest": "https://api.github.com/repos/tiktok1997af-dot/ainovel-cli/releases/latest",
+		"1.2.3":  "https://api.github.com/repos/tiktok1997af-dot/ainovel-cli/releases/tags/v1.2.3",
+		"v1.2.3": "https://api.github.com/repos/tiktok1997af-dot/ainovel-cli/releases/tags/v1.2.3",
 	}
 	for target, want := range cases {
-		if got := releaseURL("voocel/ainovel-cli", target); got != want {
+		if got := releaseURL(ProductRepository, target); got != want {
 			t.Fatalf("releaseURL(%q) = %q, want %q", target, got, want)
 		}
 	}

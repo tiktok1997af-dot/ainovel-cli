@@ -84,6 +84,15 @@ func newFastGeminiProbe() *DevToolsReadinessProbe {
 	return probe
 }
 
+func TestCDPEvaluationTimeoutOutlivesGeminiSubmitBoundedWait(t *testing.T) {
+	// geminiSubmitExpressionTemplate allows the page up to 6s to enable its send
+	// control. CDP must never expire first or a valid delayed submit becomes an
+	// ambiguous transport timeout.
+	if cdpEvaluationTimeout <= 6*time.Second {
+		t.Fatalf("cdpEvaluationTimeout = %s, must exceed Gemini submit bounded wait", cdpEvaluationTimeout)
+	}
+}
+
 func TestDevToolsGeminiReadinessReady(t *testing.T) {
 	profile := fakeDevToolsProfile(t, "https://gemini.google.com/app", map[string]any{
 		"host":                "gemini.google.com",

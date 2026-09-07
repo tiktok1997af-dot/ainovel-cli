@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestCollectReadsStyleUsageAndToolCalls(t *testing.T) {
+func TestCollectReadsStyleAndToolCalls(t *testing.T) {
 	dir := t.TempDir()
 	s := store.NewStore(dir)
 	progress := &domain.Progress{
@@ -42,12 +42,6 @@ func TestCollectReadsStyleUsageAndToolCalls(t *testing.T) {
 			t.Fatalf("save chapter %d: %v", ch, err)
 		}
 	}
-	if err := s.Usage.Save(domain.UsageState{
-		Overall:      domain.AgentUsageTotals{Input: 100, Output: 40, Cost: 0.12},
-		MissingUsage: 1,
-	}); err != nil {
-		t.Fatalf("save usage: %v", err)
-	}
 	writeSessionLine(t, dir, "meta/sessions/agents/writer-ch01.jsonl", agentcore.Message{
 		Role: agentcore.RoleAssistant,
 		Content: []agentcore.ContentBlock{
@@ -65,9 +59,6 @@ func TestCollectReadsStyleUsageAndToolCalls(t *testing.T) {
 	}
 	if col.Style.Stats.TitleFormats == nil {
 		t.Fatal("标题混用应被 stylestat 捕获")
-	}
-	if !col.Usage.UsageRecorded || col.Usage.Input != 100 || col.Usage.Output != 40 || col.Usage.CostUSD != 0.12 {
-		t.Fatalf("usage 读取不正确: %+v", col.Usage)
 	}
 	if col.ToolCalls != 2 {
 		t.Fatalf("tool calls = %d want 2", col.ToolCalls)
