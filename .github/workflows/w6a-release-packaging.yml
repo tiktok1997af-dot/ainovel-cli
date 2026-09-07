@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      W6A_TMP: ${{ runner.temp }}/ainovel-w6a
+      W6A_TMP: /tmp/ainovel-w6a
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -168,12 +168,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
           path: |
-            ${{ runner.temp }}/ainovel-w6a/w6a-pass1.json
-            ${{ runner.temp }}/ainovel-w6a/w6a-pass2.json
-            ${{ runner.temp }}/ainovel-w6a/w6a-pass1-fingerprint.json
-            ${{ runner.temp }}/ainovel-w6a/w6a-pass2-fingerprint.json
-            ${{ runner.temp }}/ainovel-w6a/w6a-determinism-diagnostic.json
-            ${{ runner.temp }}/ainovel-w6a/w6a-pass1-checksums.txt
+            /tmp/ainovel-w6a/w6a-pass1.json
+            /tmp/ainovel-w6a/w6a-pass2.json
+            /tmp/ainovel-w6a/w6a-pass1-fingerprint.json
+            /tmp/ainovel-w6a/w6a-pass2-fingerprint.json
+            /tmp/ainovel-w6a/w6a-determinism-diagnostic.json
+            /tmp/ainovel-w6a/w6a-pass1-checksums.txt
             dist/ainovel-cli_checksums.txt
 
       - name: Generate deterministic release notes
