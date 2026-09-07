@@ -13,28 +13,33 @@ jobs:
   deterministic-release-packaging:
     name: Deterministic release packaging
     runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: true
 
       - name: Verify candidate and no-publish boundary
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "${GITHUB_EVENT_NAME}" = "pull_request" -o "${GITHUB_EVENT_NAME}" = "workflow_dispatch"
           ! git tag --points-at HEAD | grep -q .
           grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
           grep -Fq 'name: ainovel-cli' .goreleaser.yml
           grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
+          grep -Fq 'go-version-file: go.mod' .github/workflows/release.yml
+          grep -Fq 'version: "v2.18.1"' .github/workflows/release.yml
 
       - name: Repository-wide W5.5 NO-API audit
         shell: bash
@@ -55,7 +60,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: "v2.18.1"
           args: release --snapshot --clean
 
       - name: Verify snapshot pass 1
@@ -64,7 +69,7 @@ jobs:
           set -euo pipefail
           python3 scripts/w6a-verify-release-snapshot.py \
             --dist dist \
-            --expected-sha "$GITHUB_SHA" \
+            --expected-sha "$CANDIDATE_SHA" \
             --evidence w6a-pass1.json
           cp dist/ainovel-cli_checksums.txt w6a-pass1-checksums.txt
           sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > w6a-pass1-manifest.sha256
@@ -73,7 +78,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: "v2.18.1"
           args: release --snapshot --clean
 
       - name: Verify snapshot pass 2 and byte determinism
@@ -82,7 +87,7 @@ jobs:
           set -euo pipefail
           python3 scripts/w6a-verify-release-snapshot.py \
             --dist dist \
-            --expected-sha "$GITHUB_SHA" \
+            --expected-sha "$CANDIDATE_SHA" \
             --evidence w6a-pass2.json
           cmp -s w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt || {
             echo '::error::two independent GoReleaser snapshots produced different checksum manifests'
@@ -116,6 +121,7 @@ jobs:
           second['checksum_manifest_sha256'] = manifest_sha
           second['release_notes_ai_api_free'] = True
           second['w55_no_api'] = 'PASS'
+          second['toolchain'] = {'go': 'go.mod', 'goreleaser': 'v2.18.1'}
           Path('w6a-release-packaging-evidence.json').write_text(
               json.dumps(second, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
@@ -131,7 +137,7 @@ jobs:
       - name: Upload snapshot package and sanitized evidence
         uses: actions/upload-artifact@v4
         with:
-          name: ainovel-w6a-release-snapshot-${{ github.sha }}
+          name: ainovel-w6a-release-snapshot-${{ github.event.pull_request.head.sha || github.sha }}
           if-no-files-found: error
           retention-days: 7
           path: |
