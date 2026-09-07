@@ -85,6 +85,18 @@ For a small local tool request, emit only one strict valid JSON object with kind
 For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined; after the raw-value start delimiter, preserve the complete intended raw string until the end of the assistant message and do not append a closing delimiter.
 Do not claim a tool ran. This is a transport-format repair only.`
 
+// rawStringFieldRepairPrompt is used only when a TOOL_CALL_RAW response reached
+// the strict raw-tool parser but its raw_string_field metadata was invalid.
+// The malformed call has not executed, so this remains a side-effect-free,
+// format-only correction inside the existing bounded protocol-repair budget.
+const rawStringFieldRepairPrompt = `Your previous TOOL_CALL_RAW answer was rejected because raw_string_field was invalid. No local tool from that answer has been executed.
+Do not redo the user's task, change the intended tool, change any intended argument value, summarize, or add commentary.
+Re-emit the same intended tool call and the same raw string value using one valid TOOL_CALL_RAW body.
+Set raw_string_field to one exact top-level string field name from the requested tool schema, with no leading or trailing whitespace, newline, carriage return, or tab.
+The metadata arguments must omit that same field; keep every other intended small argument in the metadata arguments object.
+After the raw-value start delimiter, preserve the complete same raw string value verbatim until the end of the assistant message. Do not append a closing delimiter, outer response wrapper, or Markdown fence.
+Do not claim the tool ran. This is a transport-format repair only.`
+
 // toolRequiredRepairPrompt is narrower than the generic format repair. It is
 // used only after a StopGuard-injected machine marker proves that the worker
 // still owes a persisted artifact, yet the web model returned a valid TEXT-only
@@ -122,6 +134,24 @@ func localToolRequired(messages []agentcore.Message, tools []agentcore.ToolSpec)
 		}
 	}
 	return false
+}
+
+func invalidRawStringFieldProtocolError(err error) bool {
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr == nil {
+		return false
+	}
+	return webErr.Kind == ErrorProtocol &&
+		webErr.Op == "validate raw tool call" &&
+		webErr.Cause != nil &&
+		webErr.Cause.Error() == "raw_string_field is invalid"
+}
+
+func repairPromptForProtocolError(err error) string {
+	if invalidRawStringFieldProtocolError(err) {
+		return rawStringFieldRepairPrompt
+	}
+	return protocolRepairPrompt
 }
 
 func (m *Model) repairRequiredLocalTool(ctx context.Context, requestPrompt string, tools []agentcore.ToolSpec) (*agentcore.LLMResponse, error) {
@@ -192,7 +222,8 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	// violation after the second repair fails hard.
 	lastProtocolErr := parseErr
 	for attempt := 0; attempt < maxProtocolFormatRepairs; attempt++ {
-		repairedRaw, repairErr := m.transport.RoundTrip(ctx, protocolRepairPrompt)
+		repairPrompt := repairPromptForProtocolError(lastProtocolErr)
+		repairedRaw, repairErr := m.transport.RoundTrip(ctx, repairPrompt)
 		if repairErr != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
