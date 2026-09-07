@@ -97,28 +97,20 @@ jobs:
           function Read-All([string[]]$paths) {
             $parts = New-Object System.Collections.Generic.List[string]
             foreach ($p in $paths) {
-              if (Test-Path -LiteralPath $p) { $parts.Add((Get-Content -LiteralPath $p -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)) }
+              if (Test-Path -LiteralPath $p) {
+                $value = Get-Content -LiteralPath $p -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($null -ne $value) { $parts.Add([string]$value) }
+              }
             }
             return ($parts -join "`n")
           }
-          function Safe-Tail([string[]]$paths) {
-            $safe = New-Object System.Collections.Generic.List[string]
-            $userHome = [Environment]::GetFolderPath('UserProfile')
-            foreach ($p in $paths) {
-              if (-not (Test-Path -LiteralPath $p)) { continue }
-              foreach ($raw in @(Get-Content -LiteralPath $p -Encoding UTF8 -Tail 120 -ErrorAction SilentlyContinue)) {
-                $line = [string]$raw
-                if ($line -notmatch '(?i)(webai|error|fail|fatal|panic|invalid|timeout|StopGuard|deadlock|DISPATCH|TOOL|SYSTEM|错误|失败|暂停|chapter|draft_chapter|commit_chapter)') { continue }
-                if ($userHome) { $line = $line.Replace($userHome, '<USERPROFILE>') }
-                $line = [regex]::Replace($line, '（[^）]*）', '（<redacted-task>）')
-                $line = [regex]::Replace($line, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
-                $line = [regex]::Replace($line, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
-                $line = [regex]::Replace($line, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
-                if ($line.Length -gt 500) { $line = $line.Substring(0,500) + '<truncated>' }
-                $safe.Add($line)
-              }
-            }
-            return @($safe | Select-Object -Last 16)
+          function Count-Matches([string]$text, [string]$pattern) {
+            if ([string]::IsNullOrEmpty($text)) { return 0 }
+            return [regex]::Matches($text, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Count
+          }
+          function File-Bytes([string]$path) {
+            if (-not (Test-Path -LiteralPath $path)) { return 0 }
+            return [int64](Get-Item -LiteralPath $path).Length
           }
 
           $resumeOut = Join-Path $evidenceDir 'resume.stdout.log'
@@ -129,42 +121,53 @@ jobs:
           $errorSafe = $smokeError
           $userHome = [Environment]::GetFolderPath('UserProfile')
           if ($userHome) { $errorSafe = $errorSafe.Replace($userHome,'<USERPROFILE>') }
-          if ($errorSafe.Length -gt 1000) { $errorSafe = $errorSafe.Substring(0,1000) + '<truncated>' }
+          $errorSafe = [regex]::Replace($errorSafe, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+          $errorSafe = [regex]::Replace($errorSafe, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+          if ($errorSafe.Length -gt 600) { $errorSafe = $errorSafe.Substring(0,600) + '<truncated>' }
 
           $diag = [ordered]@{
-            schema = 'ainovel-w5e-resume-diagnostic/1'
+            schema = 'ainovel-w5e-resume-diagnostic/2'
             candidate_sha = $env:CANDIDATE_SHA
             run_id = [string]$env:GITHUB_RUN_ID
             smoke_pass = $smokePass
             smoke_error = $errorSafe
-            resume_marker_detected = [bool]($resumeText -match 'headless\s+恢復|headless\s+恢复')
-            signatures = [ordered]@{
-              protocol = [bool]($allText -match '\[protocol\]')
-              transport = [bool]($allText -match '\[transport\]')
-              timeout = [bool]($allText -match '\[timeout\]|context deadline exceeded')
-              json_syntax = [bool]($allText -match 'invalid character .* after|json_shape')
-              raw_string_empty = [bool]($allText -match 'raw string argument is empty')
-              stopguard = [bool]($allText -match 'StopGuard')
-              deadlock = [bool]($allText -match 'deadlock|僵局')
-              draft_chapter = [bool]($allText -match 'draft_chapter')
-              commit_chapter = [bool]($allText -match 'commit_chapter')
-              writer_error = [bool]($allText -match '\[DISPATCH\]\s+writer.*(错误|error|fail)')
-              editor_error = [bool]($allText -match '\[DISPATCH\]\s+editor.*(错误|error|fail)')
-              system_retry = [bool]($allText -match '\[SYSTEM\].*(重试|retry)')
+            log_bytes = [ordered]@{
+              first_stderr = File-Bytes $firstErr
+              resume_stdout = File-Bytes $resumeOut
+              resume_stderr = File-Bytes $resumeErr
             }
-            first_error_tail = @(Safe-Tail @($firstErr))
-            resume_error_tail = @(Safe-Tail @($resumeOut,$resumeErr))
+            signatures = [ordered]@{
+              webai_count = Count-Matches $allText 'webai'
+              protocol_count = Count-Matches $allText '\[protocol\]'
+              transport_count = Count-Matches $allText '\[transport\]'
+              timeout_count = Count-Matches $allText '\[timeout\]|context deadline exceeded'
+              json_syntax_count = Count-Matches $allText 'invalid character .* after|json_shape'
+              raw_string_empty_count = Count-Matches $allText 'raw string argument is empty'
+              stopguard_count = Count-Matches $allText 'StopGuard'
+              deadlock_ascii_count = Count-Matches $allText 'deadlock'
+              draft_chapter_count = Count-Matches $allText 'draft_chapter'
+              commit_chapter_count = Count-Matches $allText 'commit_chapter'
+              writer_dispatch_count = Count-Matches $allText '\[DISPATCH\]\s+writer'
+              editor_dispatch_count = Count-Matches $allText '\[DISPATCH\]\s+editor'
+              system_event_count = Count-Matches $allText '\[SYSTEM\]'
+              tool_event_count = Count-Matches $allText '\[TOOL\]'
+              invalid_count = Count-Matches $allText 'invalid'
+              required_count = Count-Matches $allText 'required'
+              precondition_count = Count-Matches $allText 'precondition'
+              retry_ascii_count = Count-Matches $allText 'retry'
+            }
+            resume_has_headless_ascii = [bool]($resumeText -match 'headless')
             captured_at = (Get-Date).ToUniversalTime().ToString('o')
           }
           $diagPath = Join-Path $env:RUNNER_TEMP ("w5e-r1-2c1c-resume-diagnostic-" + $env:GITHUB_RUN_ID + '.json')
           $diag | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $diagPath -Encoding UTF8
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "W5E_RESUME_DIAG_PATH=$diagPath`r`n", (New-Object System.Text.UTF8Encoding($false)))
-          Write-Host 'Sanitized resume diagnostic captured.'
+          Write-Host 'Sanitized ASCII-only resume diagnostic captured.'
 
       - name: Upload sanitized resume diagnostic only
         uses: actions/upload-artifact@v4
         with:
-          name: w5e-r1-candidate-2c1c-resume-diagnostic
+          name: w5e-r1-candidate-2c1c-resume-diagnostic-v2
           path: ${{ env.W5E_RESUME_DIAG_PATH }}
           if-no-files-found: error
           retention-days: 7
