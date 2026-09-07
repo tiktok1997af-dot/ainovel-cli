@@ -115,7 +115,7 @@ $firstErr = Join-Path $EvidenceDir "first.stderr.log"
 $resumeOut = Join-Path $EvidenceDir "resume.stdout.log"
 $resumeErr = Join-Path $EvidenceDir "resume.stderr.log"
 $resumeExitCodePath = Join-Path $EvidenceDir "resume.exitcode.txt"
-$resumeWrapperPath = Join-Path $workspace "w5e-resume-wrapper.ps1"
+$resumeWrapperPath = Join-Path $workspace "w5e-resume-wrapper.cmd"
 
 Push-Location $RepoRoot
 try {
@@ -194,31 +194,25 @@ $chapterOneFile = @(Get-ChildItem -LiteralPath (Join-Path $workspace "output\nov
 $chapterOneHashBefore = (Get-FileHash -LiteralPath $chapterOneFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $completedBefore = @($checkpoint.completed_chapters | ForEach-Object { [int]$_ })
 
-@'
-$ErrorActionPreference = "Continue"
-$exitCode = 1
-try {
-    & $env:W5E_RESUME_PRODUCTION_EXE --headless
-    if ($null -ne $LASTEXITCODE) {
-        $exitCode = [int]$LASTEXITCODE
-    }
-} catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    $exitCode = 1
-}
-[System.IO.File]::WriteAllText(
-    $env:W5E_RESUME_EXIT_CODE_PATH,
-    [string]$exitCode,
-    (New-Object System.Text.UTF8Encoding($false))
+$cmdLines = @(
+    '@echo off',
+    '"%W5E_RESUME_PRODUCTION_EXE%" --headless',
+    'set "W5E_RESUME_EXIT_CODE=%ERRORLEVEL%"',
+    '> "%W5E_RESUME_EXIT_CODE_PATH%" echo %W5E_RESUME_EXIT_CODE%',
+    'exit /b %W5E_RESUME_EXIT_CODE%'
 )
-exit $exitCode
-'@ | Set-Content -LiteralPath $resumeWrapperPath -Encoding UTF8
+[System.IO.File]::WriteAllLines($resumeWrapperPath, $cmdLines, [System.Text.Encoding]::ASCII)
 
 Remove-Item -LiteralPath $resumeExitCodePath -Force -ErrorAction SilentlyContinue
 $env:W5E_RESUME_PRODUCTION_EXE = $productionExe
 $env:W5E_RESUME_EXIT_CODE_PATH = $resumeExitCodePath
-$powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
-$resume = Start-Process -FilePath $powerShellExe -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ('"' + $resumeWrapperPath + '"')) -WorkingDirectory $workspace -RedirectStandardOutput $resumeOut -RedirectStandardError $resumeErr -PassThru
+$cmdExe = [string]$env:ComSpec
+if ([string]::IsNullOrWhiteSpace($cmdExe) -or -not (Test-Path -LiteralPath $cmdExe)) {
+    Remove-Item Env:W5E_RESUME_PRODUCTION_EXE -ErrorAction SilentlyContinue
+    Remove-Item Env:W5E_RESUME_EXIT_CODE_PATH -ErrorAction SilentlyContinue
+    Fail "cmd.exe is required for byte-preserving resume output"
+}
+$resume = Start-Process -FilePath $cmdExe -ArgumentList @("/d", "/s", "/c", ('"' + $resumeWrapperPath + '"')) -WorkingDirectory $workspace -RedirectStandardOutput $resumeOut -RedirectStandardError $resumeErr -PassThru
 Remove-Item Env:W5E_RESUME_PRODUCTION_EXE -ErrorAction SilentlyContinue
 Remove-Item Env:W5E_RESUME_EXIT_CODE_PATH -ErrorAction SilentlyContinue
 
