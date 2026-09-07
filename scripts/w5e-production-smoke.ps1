@@ -38,6 +38,22 @@ function Stop-SmokeChrome([string]$ProfileDir) {
         }
 }
 
+function Stop-SmokeProduction([string]$ExecutablePath) {
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return }
+    $target = [IO.Path]::GetFullPath($ExecutablePath)
+    Get-CimInstance Win32_Process -Filter "Name='ainovel-cli.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            try {
+                $_.ExecutablePath -and ([IO.Path]::GetFullPath([string]$_.ExecutablePath) -eq $target)
+            } catch {
+                $false
+            }
+        } |
+        ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { }
+        }
+}
+
 function Read-TextFiles([string[]]$Paths) {
     $parts = New-Object System.Collections.Generic.List[string]
     foreach ($path in $Paths) {
@@ -98,6 +114,8 @@ $firstOut = Join-Path $EvidenceDir "first.stdout.log"
 $firstErr = Join-Path $EvidenceDir "first.stderr.log"
 $resumeOut = Join-Path $EvidenceDir "resume.stdout.log"
 $resumeErr = Join-Path $EvidenceDir "resume.stderr.log"
+$resumeExitCodePath = Join-Path $EvidenceDir "resume.exitcode.txt"
+$resumeWrapperPath = Join-Path $workspace "w5e-resume-wrapper.ps1"
 
 Push-Location $RepoRoot
 try {
@@ -176,30 +194,56 @@ $chapterOneFile = @(Get-ChildItem -LiteralPath (Join-Path $workspace "output\nov
 $chapterOneHashBefore = (Get-FileHash -LiteralPath $chapterOneFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $completedBefore = @($checkpoint.completed_chapters | ForEach-Object { [int]$_ })
 
-$resume = Start-Process -FilePath $productionExe -ArgumentList @("--headless") -WorkingDirectory $workspace -RedirectStandardOutput $resumeOut -RedirectStandardError $resumeErr -PassThru
+@'
+$ErrorActionPreference = "Continue"
+$exitCode = 1
+try {
+    & $env:W5E_RESUME_PRODUCTION_EXE --headless
+    if ($null -ne $LASTEXITCODE) {
+        $exitCode = [int]$LASTEXITCODE
+    }
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    $exitCode = 1
+}
+[System.IO.File]::WriteAllText(
+    $env:W5E_RESUME_EXIT_CODE_PATH,
+    [string]$exitCode,
+    (New-Object System.Text.UTF8Encoding($false))
+)
+exit $exitCode
+'@ | Set-Content -LiteralPath $resumeWrapperPath -Encoding UTF8
+
+Remove-Item -LiteralPath $resumeExitCodePath -Force -ErrorAction SilentlyContinue
+$env:W5E_RESUME_PRODUCTION_EXE = $productionExe
+$env:W5E_RESUME_EXIT_CODE_PATH = $resumeExitCodePath
+$powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+$resume = Start-Process -FilePath $powerShellExe -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ('"' + $resumeWrapperPath + '"')) -WorkingDirectory $workspace -RedirectStandardOutput $resumeOut -RedirectStandardError $resumeErr -PassThru
+Remove-Item Env:W5E_RESUME_PRODUCTION_EXE -ErrorAction SilentlyContinue
+Remove-Item Env:W5E_RESUME_EXIT_CODE_PATH -ErrorAction SilentlyContinue
+
 if (-not $resume.WaitForExit($ResumeTimeoutSeconds * 1000)) {
     Stop-Process -Id $resume.Id -Force -ErrorAction SilentlyContinue
+    Stop-SmokeProduction $productionExe
     Stop-SmokeChrome $profileDir
     Fail "resume process timed out"
 }
-try {
-    $resume.WaitForExit()
-    $resume.Refresh()
-} catch {
-    Stop-SmokeChrome $profileDir
-    Fail ("cannot finalize resume process state: " + $_.Exception.Message)
-}
-if (-not $resume.HasExited) {
-    Stop-SmokeChrome $profileDir
-    Fail "resume process reported completion but is still running after refresh"
-}
-$resumeExitCode = $resume.ExitCode
-if ($null -eq $resumeExitCode) {
-    Stop-SmokeChrome $profileDir
-    Fail "resume process exit code unavailable after WaitForExit/Refresh"
-}
+try { $resume.WaitForExit() } catch { }
 Stop-SmokeChrome $profileDir
-if ($resumeExitCode -ne 0) { Fail ("resume production process failed; exit=" + $resumeExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $resumeErr)) }
+
+if (-not (Test-Path -LiteralPath $resumeExitCodePath)) {
+    Stop-SmokeProduction $productionExe
+    Fail "resume exit-code sidecar missing after process completion"
+}
+$resumeExitRaw = (Get-Content -LiteralPath $resumeExitCodePath -Raw -Encoding UTF8).Trim()
+$resumeExitCode = 0
+if (-not [int]::TryParse($resumeExitRaw, [ref]$resumeExitCode)) {
+    Stop-SmokeProduction $productionExe
+    Fail ("resume exit-code sidecar is invalid: " + $resumeExitRaw)
+}
+if ($resumeExitCode -ne 0) {
+    Fail ("resume production process failed; exit=" + $resumeExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $resumeErr))
+}
 
 $finalProgress = Get-Progress $progressPath
 if ($null -eq $finalProgress) { Fail "progress.json missing after restart" }
