@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: w6c-release-artifact-desktop-${{ github.event.pull_request.number || github.ref }}
+  group: w6c-release-artifact-desktop-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -187,10 +187,6 @@ jobs:
     needs: package-release-input
     runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
     timeout-minutes: 60
-    env:
-      W6C_INPUT_DIR: ${{ runner.temp }}/ainovel-w6c-input-${{ github.run_id }}
-      W6C_EVIDENCE_DIR: ${{ runner.temp }}/ainovel-w6c-evidence-${{ github.run_id }}
-      W6C_RUNTIME_DIR: ${{ runner.temp }}/ainovel-w6c-runtime-${{ github.run_id }}
     steps:
       - name: Checkout exact candidate authority scripts only
         uses: actions/checkout@v4
@@ -202,7 +198,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ainovel-w6c-release-input-${{ env.CANDIDATE_SHA }}
-          path: ${{ env.W6C_INPUT_DIR }}
+          path: ${{ runner.temp }}/ainovel-w6c-input-${{ github.run_id }}
 
       - name: Force Git Bash
         shell: powershell
@@ -217,10 +213,20 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($path in @($env:W6C_EVIDENCE_DIR, $env:W6C_RUNTIME_DIR)) {
+          $inputDir = Join-Path $env:RUNNER_TEMP ("ainovel-w6c-input-" + $env:GITHUB_RUN_ID)
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("ainovel-w6c-evidence-" + $env:GITHUB_RUN_ID)
+          $runtimeDir = Join-Path $env:RUNNER_TEMP ("ainovel-w6c-runtime-" + $env:GITHUB_RUN_ID)
+          if (-not (Test-Path -LiteralPath $inputDir)) { throw 'Downloaded W6C release input directory is missing.' }
+          foreach ($path in @($evidenceDir, $runtimeDir)) {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
             New-Item -ItemType Directory -Force -Path $path | Out-Null
           }
+          $envLines = @(
+            "W6C_INPUT_DIR=$inputDir",
+            "W6C_EVIDENCE_DIR=$evidenceDir",
+            "W6C_RUNTIME_DIR=$runtimeDir"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Verify exact candidate interactive desktop and transport provenance
         shell: powershell
