@@ -5,26 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/webai/sites"
 )
 
 var _ sites.PointerEvaluator = (*cdpEvaluator)(nil)
+var _ sites.TextInputEvaluator = (*cdpEvaluator)(nil)
 
 // Click emits one trusted left-button click at CSS viewport coordinates through
 // the already-connected loopback Chrome DevTools session. It does not retry a
 // pressed/released sequence: any ambiguous CDP failure is returned to the
 // transport, which performs only read-only SEND ACK observation afterwards.
 func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
-	if e == nil || e.conn == nil {
-		return errors.New("CDP evaluator is closed")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := e.validateInputTarget(ctx, x, y); err != nil {
 		return err
-	}
-	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) || x < 0 || y < 0 {
-		return fmt.Errorf("invalid pointer coordinates %.2f,%.2f", x, y)
 	}
 
 	common := map[string]any{
@@ -45,6 +41,61 @@ func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
 	released["buttons"] = 0
 	if err := e.callCDPNoResult(ctx, "Input.dispatchMouseEvent", released); err != nil {
 		return fmt.Errorf("CDP pointer release: %w", err)
+	}
+	return nil
+}
+
+// ReplaceText drives the visible controlled editor like a real user input path:
+// focus with a trusted pointer click, Ctrl+A, Backspace, then Input.insertText.
+// The method deliberately does not press Enter or touch any submit control.
+func (e *cdpEvaluator) ReplaceText(ctx context.Context, x, y float64, text string) error {
+	if err := e.validateInputTarget(ctx, x, y); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return errors.New("trusted text input is empty")
+	}
+	if err := e.Click(ctx, x, y); err != nil {
+		return fmt.Errorf("focus editor: %w", err)
+	}
+	if err := e.dispatchKey(ctx, "rawKeyDown", "a", "KeyA", 65, 2); err != nil {
+		return fmt.Errorf("select editor contents keydown: %w", err)
+	}
+	if err := e.dispatchKey(ctx, "keyUp", "a", "KeyA", 65, 2); err != nil {
+		return fmt.Errorf("select editor contents keyup: %w", err)
+	}
+	if err := e.dispatchKey(ctx, "rawKeyDown", "Backspace", "Backspace", 8, 0); err != nil {
+		return fmt.Errorf("clear editor keydown: %w", err)
+	}
+	if err := e.dispatchKey(ctx, "keyUp", "Backspace", "Backspace", 8, 0); err != nil {
+		return fmt.Errorf("clear editor keyup: %w", err)
+	}
+	if err := e.callCDPNoResult(ctx, "Input.insertText", map[string]any{"text": text}); err != nil {
+		return fmt.Errorf("insert editor text: %w", err)
+	}
+	return nil
+}
+
+func (e *cdpEvaluator) dispatchKey(ctx context.Context, eventType, key, code string, virtualKeyCode, modifiers int) error {
+	return e.callCDPNoResult(ctx, "Input.dispatchKeyEvent", map[string]any{
+		"type":                  eventType,
+		"key":                   key,
+		"code":                  code,
+		"windowsVirtualKeyCode": virtualKeyCode,
+		"nativeVirtualKeyCode":  virtualKeyCode,
+		"modifiers":             modifiers,
+	})
+}
+
+func (e *cdpEvaluator) validateInputTarget(ctx context.Context, x, y float64) error {
+	if e == nil || e.conn == nil {
+		return errors.New("CDP evaluator is closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) || x < 0 || y < 0 {
+		return fmt.Errorf("invalid pointer coordinates %.2f,%.2f", x, y)
 	}
 	return nil
 }
