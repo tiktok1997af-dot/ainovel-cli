@@ -109,12 +109,15 @@ jobs:
               raise SystemExit('W6B installer scenario count mismatch')
           if any(item.get('status') != 'PASS' for item in installer.get('scenarios', [])):
               raise SystemExit('W6B installer scenario did not PASS')
+          snapshot_version = snapshot.get('snapshot_version')
+          if not snapshot_version:
+              raise SystemExit('W6B snapshot version missing from provenance evidence')
           evidence = {
               'schema': 'ainovel-w6b-install-update-integrity/1',
               'candidate_sha': candidate,
               'product_repository': 'tiktok1997af-dot/ainovel-cli',
               'archive_matrix': snapshot.get('archive_matrix'),
-              'snapshot_version': snapshot.get('version'),
+              'snapshot_version': snapshot_version,
               'installer': installer,
               'updater_integrity_regressions': 'PASS',
               'updater_exact_fork_lock': 'PASS',
