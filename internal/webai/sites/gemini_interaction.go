@@ -44,16 +44,20 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("gemini submit: prompt is empty")
 	}
+	pointer, ok := evaluator.(PointerEvaluator)
+	if !ok {
+		return fmt.Errorf("gemini submit: evaluator does not support trusted pointer input")
+	}
 	encoded, err := json.Marshal(prompt)
 	if err != nil {
 		return fmt.Errorf("gemini submit: encode prompt: %w", err)
 	}
 
 	// Keep the side-effecting submit path synchronous from CDP's perspective.
-	// Prompt preparation may probe/mutate only the composer. The send phase polls
-	// readiness without side effects until one canonical actionable control is
-	// found, then performs exactly one click. A click is not delivery ACK; the
-	// transport independently confirms a rendered user turn/BUSY/response.
+	// Prompt preparation may mutate only the composer. The resolver polls DOM
+	// readiness without clicking until one canonical actionable control is found.
+	// Go then emits exactly one trusted Chrome pointer click. A click is not
+	// delivery ACK; transport independently observes user-turn/BUSY/response.
 	prepareExpression := fmt.Sprintf(geminiPreparePromptExpressionTemplate, string(encoded))
 	raw, err := evaluator.Eval(ctx, prepareExpression)
 	if err != nil {
@@ -84,19 +88,28 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		raw, err := evaluator.Eval(ctx, geminiClickSendExpression)
+		raw, err := evaluator.Eval(ctx, geminiResolveSendExpression)
 		if err != nil {
 			return err
 		}
 		var result struct {
-			OK     bool   `json:"ok"`
-			Retry  bool   `json:"retry"`
-			Reason string `json:"reason"`
+			OK     bool    `json:"ok"`
+			Retry  bool    `json:"retry"`
+			Reason string  `json:"reason"`
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+			Action string  `json:"action"`
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
-			return fmt.Errorf("gemini click send result: %w", err)
+			return fmt.Errorf("gemini resolve send result: %w", err)
 		}
 		if result.OK {
+			if result.X < 0 || result.Y < 0 {
+				return fmt.Errorf("gemini submit: resolved send coordinates are invalid")
+			}
+			if err := pointer.Click(ctx, result.X, result.Y); err != nil {
+				return fmt.Errorf("gemini trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
+			}
 			return nil
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
@@ -120,17 +133,32 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 }
 
 func (Gemini) Cancel(ctx context.Context, evaluator Evaluator) (bool, error) {
-	raw, err := evaluator.Eval(ctx, geminiCancelExpression)
+	pointer, ok := evaluator.(PointerEvaluator)
+	if !ok {
+		return false, fmt.Errorf("gemini cancel: evaluator does not support trusted pointer input")
+	}
+	raw, err := evaluator.Eval(ctx, geminiResolveCancelExpression)
 	if err != nil {
 		return false, err
 	}
 	var result struct {
-		Clicked bool `json:"clicked"`
+		Found bool    `json:"found"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return false, fmt.Errorf("gemini cancel result: %w", err)
 	}
-	return result.Clicked, nil
+	if !result.Found {
+		return false, nil
+	}
+	if result.X < 0 || result.Y < 0 {
+		return false, fmt.Errorf("gemini cancel: resolved stop coordinates are invalid")
+	}
+	if err := pointer.Click(ctx, result.X, result.Y); err != nil {
+		return false, fmt.Errorf("gemini trusted stop click: %w", err)
+	}
+	return true, nil
 }
 
 const geminiConversationExpression = `(() => {
@@ -193,11 +221,9 @@ const geminiConversationExpression = `(() => {
     if (text) texts.push(text);
   }
 
-  // A send click seeds sanitized capture state containing only response count,
-  // a length/hash signature, composer length, action strategy and timestamps.
-  // Gemini can briefly hide its Stop control while a response is still changing.
-  // Treat recent DOM text activity as BUSY for a short bounded grace independent
-  // of any protocol markers. No prompt or response text is stored in page state.
+  // A resolved send action seeds sanitized capture state containing only
+  // response count, a length/hash signature, composer length, action strategy
+  // and timestamps. No prompt or response text is stored in page state.
   const last = texts.length ? texts[texts.length - 1] : '';
   const captureState = window.__ainovelWebCaptureState;
   if (captureState && last) {
@@ -222,10 +248,6 @@ const geminiConversationExpression = `(() => {
     }
   }
 
-  // Count rendered user turns without returning their text. Gemini has used
-  // user-query as the stable custom element; the fallbacks cover current test-id
-  // and role-based variants. A Set prevents the same element from being counted
-  // twice when more than one selector matches it.
   const userElements = new Set();
   for (const selector of [
     'user-query',
@@ -325,8 +347,6 @@ const geminiPreparePromptExpressionTemplate = `(() => {
     let inserted = false;
     try { inserted = document.execCommand('insertText', false, prompt); } catch (_) {}
     if (!inserted || !samePrompt(readComposer(composer))) {
-      // Last-resort framework-compatible mutation. The event is dispatched after
-      // the DOM value is present so controlled editors can read the actual value.
       composer.textContent = prompt;
       composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: prompt}));
     }
@@ -344,13 +364,13 @@ const geminiPreparePromptExpressionTemplate = `(() => {
   return {ok: true, reason: '', composer_length: composerLength};
 })()`
 
-const geminiClickSendExpression = `(() => {
+const geminiResolveSendExpression = `(() => {
   const visible = (el) => {
     if (!el) return false;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
   };
   const disabled = (el) => Boolean(el && (
     el.disabled || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true'
@@ -363,6 +383,15 @@ const geminiClickSendExpression = `(() => {
       hash = Math.imul(hash, 16777619);
     }
     return value.length + ':' + String(hash >>> 0);
+  };
+  const center = (el) => {
+    const rect = el.getBoundingClientRect();
+    const maxX = Math.max(0, window.innerWidth - 1);
+    const maxY = Math.max(0, window.innerHeight - 1);
+    return {
+      x: Math.min(maxX, Math.max(0, rect.left + rect.width / 2)),
+      y: Math.min(maxY, Math.max(0, rect.top + rect.height / 2))
+    };
   };
   const composerSelectors = [
     'rich-textarea .ql-editor[contenteditable="true"]',
@@ -480,6 +509,7 @@ const geminiClickSendExpression = `(() => {
   const action = findSendAction();
   if (!action) return {ok: false, retry: true, reason: 'actionable send control not found'};
   if (disabled(action.element)) return {ok: false, retry: true, reason: 'actionable send control is disabled'};
+  const point = center(action.element);
 
   const responseRoots = Array.from(document.querySelectorAll(
     'model-response, [data-test-id="model-response"], .model-response'
@@ -504,22 +534,29 @@ const geminiClickSendExpression = `(() => {
     submitAction: action.strategy
   };
 
-  action.element.focus();
-  action.element.click();
-  return {ok: true, retry: false, reason: '', action: action.strategy};
+  return {ok: true, retry: false, reason: '', action: action.strategy, x: point.x, y: point.y};
 })()`
 
-const geminiCancelExpression = `(() => {
+const geminiResolveCancelExpression = `(() => {
   const visible = (el) => {
     if (!el) return false;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
   };
   const disabled = (el) => Boolean(el && (
     el.disabled || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true'
   ));
+  const center = (el) => {
+    const rect = el.getBoundingClientRect();
+    const maxX = Math.max(0, window.innerWidth - 1);
+    const maxY = Math.max(0, window.innerHeight - 1);
+    return {
+      x: Math.min(maxX, Math.max(0, rect.left + rect.width / 2)),
+      y: Math.min(maxY, Math.max(0, rect.top + rect.height / 2))
+    };
+  };
   const explicitStopSemantic = (el) => {
     if (!el) return false;
     const aria = String(el.getAttribute('aria-label') || '').trim().toLowerCase();
@@ -557,18 +594,16 @@ const geminiCancelExpression = `(() => {
       if (!visible(candidate)) continue;
       const action = canonicalAction(candidate);
       if (!action || disabled(action)) continue;
-      action.focus();
-      action.click();
-      return {clicked: true};
+      const point = center(action);
+      return {found: true, x: point.x, y: point.y};
     }
   }
   for (const control of document.querySelectorAll('button, gem-icon-button, [role="button"]')) {
     if (!visible(control) || !explicitStopSemantic(control)) continue;
     const action = canonicalAction(control);
     if (!action || disabled(action)) continue;
-    action.focus();
-    action.click();
-    return {clicked: true};
+    const point = center(action);
+    return {found: true, x: point.x, y: point.y};
   }
-  return {clicked: false};
+  return {found: false, x: 0, y: 0};
 })()`
