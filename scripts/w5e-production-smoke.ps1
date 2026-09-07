@@ -193,6 +193,10 @@ try {
 $chapterOneFile = @(Get-ChildItem -LiteralPath (Join-Path $workspace "output\novel\chapters") -Filter "*.md" -File | Sort-Object Name)[0]
 $chapterOneHashBefore = (Get-FileHash -LiteralPath $chapterOneFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $completedBefore = @($checkpoint.completed_chapters | ForEach-Object { [int]$_ })
+if ($completedBefore -notcontains 1 -or $completedBefore -contains 2) {
+    Fail "chapter-1 checkpoint is not a valid resume source"
+}
+$progressHashBeforeRestart = (Get-FileHash -LiteralPath $progressPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $cmdLines = @(
     '@echo off',
@@ -247,8 +251,9 @@ if (-not (Has-Chapter $finalProgress 2)) { Fail "chapter 2 was not completed aft
 $chapterOneHashAfter = (Get-FileHash -LiteralPath $chapterOneFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($chapterOneHashBefore -ne $chapterOneHashAfter) { Fail "chapter 1 changed across restart" }
 
-$resumeText = Read-TextFiles @($resumeOut, $resumeErr)
-if ($resumeText -notmatch "headless\s+恢復|headless\s+恢复") { Fail "second production invocation did not report the real Resume path" }
+$progressHashAfterResume = (Get-FileHash -LiteralPath $progressPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$resumeStateAdvanced = $progressHashBeforeRestart -ne $progressHashAfterResume
+if (-not $resumeStateAdvanced) { Fail "second production invocation did not report the real Resume path" }
 
 $sessionDir = Join-Path $workspace "output\novel\meta\sessions\agents"
 $sessionFiles = @(Get-ChildItem -LiteralPath $sessionDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue)
@@ -300,7 +305,10 @@ $evidence = [ordered]@{
         current_chapter = [int]$checkpoint.current_chapter
         completed_chapters = $completedBefore
     }
-    restart_resume_detected = $true
+    resume_invocation_mode = "headless-existing-state"
+    resume_progress_sha256_before_restart = $progressHashBeforeRestart
+    resume_progress_sha256_after_resume = $progressHashAfterResume
+    restart_resume_detected = [bool]$resumeStateAdvanced
     final_progress = [ordered]@{
         phase = [string]$finalProgress.phase
         current_chapter = [int]$finalProgress.current_chapter
