@@ -31,6 +31,10 @@ The W6D publication workflow MUST fail closed unless all of the following are tr
 
 Only after those preconditions pass may the workflow create a lightweight `v0.1.0` tag pointing directly to the exact W6D authority SHA and invoke GoReleaser publication with the repository-scoped `GITHUB_TOKEN`.
 
+## One-shot authorization sentinel
+
+This document revision is the final W6D publication candidate sentinel. Publication remains inert while this commit is only on `w6d-first-fork-release-publication`. After the exact SHA passes the non-publishing prepublication and publisher dry-contract gates, the W6 authority branch may be fast-forwarded to this same SHA. Only that exact branch transition with this commit message authorizes the one-shot `v0.1.0` publication workflow.
+
 ## Published release assertions
 
 The live release must prove:
