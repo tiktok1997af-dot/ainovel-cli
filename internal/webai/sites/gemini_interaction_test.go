@@ -9,17 +9,17 @@ import (
 )
 
 type scriptedEvaluator struct {
-	responses   []json.RawMessage
-	exprs       []string
-	clicks      int
-	clickX      float64
-	clickY      float64
-	clickErr    error
+	responses    []json.RawMessage
+	exprs        []string
+	clicks       int
+	clickX       float64
+	clickY       float64
+	clickErr     error
 	replacements int
-	replaceX    float64
-	replaceY    float64
-	replaceText string
-	replaceErr  error
+	replaceX     float64
+	replaceY     float64
+	replaceText  string
+	replaceErr   error
 }
 
 func (s *scriptedEvaluator) Eval(_ context.Context, expression string) (json.RawMessage, error) {
