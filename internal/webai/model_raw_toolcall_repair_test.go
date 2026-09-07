@@ -20,7 +20,7 @@ func rawDraftToolSpec() agentcore.ToolSpec {
 			"properties": map[string]any{
 				"chapter": map[string]any{"type": "integer"},
 				"content": map[string]any{"type": "string"},
-				"mode": map[string]any{"type": "string", "enum": []string{"write", "append"}},
+				"mode":    map[string]any{"type": "string", "enum": []string{"write", "append"}},
 			},
 			"required":             []string{"chapter", "content", "mode"},
 			"additionalProperties": false,
