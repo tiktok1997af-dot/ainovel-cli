@@ -1,0 +1,250 @@
+name: W6.5 Post-Release Audit
+
+on:
+  push:
+    branches:
+      - w6-5-post-release-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AUTHORITY_SHA: dc7d53edb5d0c9f1a343a1c224c800b335704368
+  RELEASE_TAG: v0.1.0
+  RELEASE_ID: "384311483"
+  REPOSITORY_NAME: tiktok1997af-dot/ainovel-cli
+  WINDOWS_X64_SHA256: 5c07764d4d6d2195f16a337d5d40c7700b11ce5efe504fb645f52e4d67aa258d
+  WINDOWS_X64_BINARY_SHA256: 7daafdd0b799a484e5f90a01098aa7890234b3668924ad3be8fa781f95848214
+
+jobs:
+  post-release-audit:
+    name: Exact published authority / install / updater / NO-API
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact released source authority
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.AUTHORITY_SHA }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify immutable tag and exact source authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$AUTHORITY_SHA"
+          test "$(git rev-parse refs/tags/$RELEASE_TAG)" = "$AUTHORITY_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Fetch and verify live public release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          mkdir -p "$ROOT/assets" "$ROOT/evidence" "$ROOT/install"
+          API="https://api.github.com/repos/$REPOSITORY_NAME"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$API/releases/$RELEASE_ID" > "$ROOT/release.json"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$API/releases/tags/$RELEASE_TAG" > "$ROOT/release-by-tag.json"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$API/releases/latest" > "$ROOT/release-latest.json"
+
+          jq -e --argjson id "$RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$AUTHORITY_SHA" '
+            .id == $id and
+            .tag_name == $tag and
+            .target_commitish == $sha and
+            .draft == false and
+            .prerelease == false and
+            (.assets | length == 7)
+          ' "$ROOT/release.json" >/dev/null
+          jq -e --argjson id "$RELEASE_ID" '.id == $id' "$ROOT/release-by-tag.json" >/dev/null
+          jq -e --argjson id "$RELEASE_ID" '.id == $id' "$ROOT/release-latest.json" >/dev/null
+
+      - name: Download exact seven live release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          jq -r '.assets[] | [.name, .browser_download_url] | @tsv' "$ROOT/release.json" |
+          while IFS=$'\t' read -r name url; do
+            case "$name" in
+              ainovel-cli_0.1.0_Linux_x86_64.tar.gz|ainovel-cli_0.1.0_Linux_arm64.tar.gz|ainovel-cli_0.1.0_Darwin_x86_64.tar.gz|ainovel-cli_0.1.0_Darwin_arm64.tar.gz|ainovel-cli_0.1.0_Windows_x86_64.zip|ainovel-cli_0.1.0_Windows_arm64.zip|ainovel-cli_checksums.txt) ;;
+              *) echo "::error::unexpected release asset: $name"; exit 1 ;;
+            esac
+            curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$ROOT/assets/$name" "$url"
+          done
+          test "$(find "$ROOT/assets" -maxdepth 1 -type f | wc -l)" -eq 7
+
+      - name: Re-run published release verifier against live assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          python3 scripts/w6d-verify-published-release.py \
+            --release-json "$ROOT/release.json" \
+            --assets-dir "$ROOT/assets" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-sha "$AUTHORITY_SHA" \
+            --output "$ROOT/evidence/w65-live-release-evidence.json"
+
+          printf '%s  %s\n' "$WINDOWS_X64_SHA256" "ainovel-cli_0.1.0_Windows_x86_64.zip" |
+            (cd "$ROOT/assets" && sha256sum -c -)
+
+          python3 - <<'PY'
+          import hashlib, zipfile
+          from pathlib import Path
+          import os
+          archive = Path(os.environ['RUNNER_TEMP']) / 'w65/assets/ainovel-cli_0.1.0_Windows_x86_64.zip'
+          expected = os.environ['WINDOWS_X64_BINARY_SHA256']
+          with zipfile.ZipFile(archive) as zf:
+              names = [n for n in zf.namelist() if n == 'ainovel-cli.exe']
+              if len(names) != 1:
+                  raise SystemExit(f'expected exactly one root ainovel-cli.exe, found {len(names)}')
+              actual = hashlib.sha256(zf.read(names[0])).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'published Windows binary hash mismatch: {actual} != {expected}')
+          print('W6.5 locked Windows production binary hash PASS')
+          PY
+
+      - name: Run live exact-version installer from released source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          AINOVEL_INSTALL_DIR="$ROOT/install" AINOVEL_VERSION="$RELEASE_TAG" bash scripts/install.sh |
+            tee "$ROOT/evidence/live-installer.log"
+          test -x "$ROOT/install/ainovel-cli"
+          "$ROOT/install/ainovel-cli" --version | tee "$ROOT/evidence/installed-version.txt"
+          grep -Fq '0.1.0' "$ROOT/evidence/installed-version.txt"
+
+      - name: Exercise live updater exact-release resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          "$ROOT/install/ainovel-cli" update "$RELEASE_TAG" | tee "$ROOT/evidence/live-updater.txt"
+
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: Updater integrity regressions
+        shell: bash
+        env:
+          GOWORK: "off"
+        run: go test -buildvcs=false -count=1 ./internal/version
+
+      - name: Full exact-authority regression suite
+        shell: bash
+        env:
+          GOWORK: "off"
+        run: go test -buildvcs=false -count=1 ./...
+
+      - name: Build sanitized W6.5 authority evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/w65"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'w65'
+          release = json.loads((root / 'release.json').read_text(encoding='utf-8'))
+          live = json.loads((root / 'evidence/w65-live-release-evidence.json').read_text(encoding='utf-8'))
+          authority = os.environ['AUTHORITY_SHA']
+          tag = os.environ['RELEASE_TAG']
+          rid = int(os.environ['RELEASE_ID'])
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          assets = []
+          for item in sorted(release['assets'], key=lambda x: x['name']):
+              path = root / 'assets' / item['name']
+              assets.append({
+                  'id': item['id'],
+                  'name': item['name'],
+                  'size': item['size'],
+                  'sha256': sha256(path),
+                  'browser_download_url': item['browser_download_url'],
+              })
+
+          evidence = {
+              'schema': 'ainovel-w6-5-post-release-audit/1',
+              'repository': os.environ['REPOSITORY_NAME'],
+              'authority_sha': authority,
+              'tag': tag,
+              'release_id': rid,
+              'release_published_at': release.get('published_at'),
+              'release_latest': True,
+              'draft': False,
+              'prerelease': False,
+              'asset_count': len(assets),
+              'assets': assets,
+              'live_release_verifier': 'PASS',
+              'locked_windows_archive_sha256': os.environ['WINDOWS_X64_SHA256'],
+              'locked_windows_binary_sha256': os.environ['WINDOWS_X64_BINARY_SHA256'],
+              'live_installer_exact_version': 'PASS',
+              'live_installed_version': (root / 'evidence/installed-version.txt').read_text(encoding='utf-8').strip(),
+              'live_updater_exact_release_resolution': 'PASS',
+              'updater_integrity_regressions': 'PASS',
+              'full_go_regression': 'PASS',
+              'w55_no_api': 'PASS',
+              'no_upstream_fallback': True,
+              'release_mutation_performed': False,
+              'source_mutation_performed': False,
+              'w6d_live_release_evidence': live,
+          }
+          if evidence['asset_count'] != 7:
+              raise SystemExit('W6.5 expected exactly seven assets')
+          (root / 'evidence/w65-post-release-authority.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print('W6.5 sanitized post-release authority evidence built')
+          PY
+
+      - name: Verify audit did not modify released source authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$AUTHORITY_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Upload W6.5 sanitized authority evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: w6-5-post-release-authority
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/w65/evidence/w65-post-release-authority.json
+            ${{ runner.temp }}/w65/evidence/w65-live-release-evidence.json
+            ${{ runner.temp }}/w65/evidence/installed-version.txt
+            ${{ runner.temp }}/w65/evidence/live-installer.log
+            ${{ runner.temp }}/w65/evidence/live-updater.txt
