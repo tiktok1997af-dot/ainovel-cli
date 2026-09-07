@@ -38,7 +38,11 @@ var (
 	_ llm.CapabilityProvider  = (*Model)(nil)
 )
 
-const maxProtocolFormatRepairs = 2
+const (
+	maxProtocolFormatRepairs = 2
+	maxToolRequiredRepairs   = 2
+	localToolRequiredMarker  = "AINOVEL_LOCAL_TOOL_REQUIRED"
+)
 
 // rawTextProtocolInstruction replaces the legacy response-format instruction
 // before a request crosses the browser boundary. Gemini's rendered assistant
@@ -64,6 +68,7 @@ Rules:
 - The raw value must not contain the reserved string <<<AINOVEL_RAW_VALUE>>>.
 - Use only tool names and argument fields present in the request tool schema.
 - Never represent a tool request as TEXT.
+- If the conversation contains the exact marker AINOVEL_LOCAL_TOOL_REQUIRED, the local runtime has blocked a TEXT-only worker turn. While that marker remains in the current task history, TEXT is forbidden: respond with a valid available local tool request that advances the persisted artifact instead.
 - Do not claim that a tool ran; the local ainovel runtime executes tools only after validating the call.
 - Do not write Markdown fences around any response form.
 - Do not emit commentary before or after the selected response form.`
@@ -80,6 +85,18 @@ For a small local tool request, emit only one strict valid JSON object with kind
 For one local tool request containing one long top-level string argument, use TOOL_CALL_RAW exactly as already defined; after the raw-value start delimiter, preserve the complete intended raw string until the end of the assistant message and do not append a closing delimiter.
 Do not claim a tool ran. This is a transport-format repair only.`
 
+// toolRequiredRepairPrompt is narrower than the generic format repair. It is
+// used only after a StopGuard-injected machine marker proves that the worker
+// still owes a persisted artifact, yet the web model returned a valid TEXT-only
+// answer. No local tool has executed from that TEXT answer, so asking the same
+// web conversation to emit one advancing local tool call is side-effect safe.
+const toolRequiredRepairPrompt = `AINOVEL_LOCAL_TOOL_REQUIRED
+The local runtime rejected the previous TEXT-only answer because this worker still owes a persisted artifact. No local tool from that rejected answer has executed.
+Do not repeat, explain, summarize, promise, or return TEXT.
+Continue the same task by issuing exactly one available local tool call that advances the required artifact.
+Use one strict tool_calls JSON object for small/simple arguments, or TOOL_CALL_RAW for exactly one call containing one long top-level string argument.
+Use only exact tool names and argument fields from the request tool schema already present in this conversation. Do not claim the tool ran and do not add commentary or Markdown fences.`
+
 func NewModel(cfg ModelConfig) (*Model, error) {
 	if cfg.Transport == nil {
 		return nil, fmt.Errorf("webai: transport is required")
@@ -95,6 +112,47 @@ func NewModel(cfg ModelConfig) (*Model, error) {
 	return &Model{site: site, model: model, transport: cfg.Transport}, nil
 }
 
+func localToolRequired(messages []agentcore.Message, tools []agentcore.ToolSpec) bool {
+	if len(tools) == 0 {
+		return false
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.Contains(messages[i].TextContent(), localToolRequiredMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) repairRequiredLocalTool(ctx context.Context, requestPrompt string, tools []agentcore.ToolSpec) (*agentcore.LLMResponse, error) {
+	lastErr := protocolError("enforce required local tool call", fmt.Errorf("assistant returned TEXT while a local tool was required"))
+	for attempt := 0; attempt < maxToolRequiredRepairs; attempt++ {
+		raw, err := m.transport.RoundTrip(ctx, toolRequiredRepairPrompt)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		msg, parseErr := parseResponseWithRawText(requestPrompt, raw, tools)
+		if parseErr == nil {
+			if msg.StopReason == agentcore.StopReasonToolUse {
+				return &agentcore.LLMResponse{Message: msg}, nil
+			}
+			lastErr = protocolError(
+				"enforce required local tool call",
+				fmt.Errorf("repair attempt %d returned stop reason %q instead of a local tool call", attempt+1, msg.StopReason),
+			)
+			continue
+		}
+		if !errors.Is(parseErr, ErrProtocol) {
+			return nil, parseErr
+		}
+		lastErr = parseErr
+	}
+	return nil, lastErr
+}
+
 func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -107,6 +165,7 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		return nil, protocolError("prepare raw text response protocol", fmt.Errorf("legacy protocol instruction prefix is missing"))
 	}
 	prompt = rawTextProtocolInstruction + strings.TrimPrefix(prompt, protocolInstruction)
+	mustUseLocalTool := localToolRequired(messages, tools)
 
 	raw, err := m.transport.RoundTrip(ctx, prompt)
 	if err != nil {
@@ -117,6 +176,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	}
 	msg, parseErr := parseResponseWithRawText(prompt, raw, tools)
 	if parseErr == nil {
+		if mustUseLocalTool && msg.StopReason != agentcore.StopReasonToolUse {
+			return m.repairRequiredLocalTool(ctx, prompt, tools)
+		}
 		return &agentcore.LLMResponse{Message: msg}, nil
 	}
 	if !errors.Is(parseErr, ErrProtocol) {
@@ -139,6 +201,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		}
 		repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
 		if repairErr == nil {
+			if mustUseLocalTool && repaired.StopReason != agentcore.StopReasonToolUse {
+				return m.repairRequiredLocalTool(ctx, prompt, tools)
+			}
 			return &agentcore.LLMResponse{Message: repaired}, nil
 		}
 		if !errors.Is(repairErr, ErrProtocol) {
