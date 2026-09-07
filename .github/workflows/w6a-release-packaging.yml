@@ -71,6 +71,9 @@ jobs:
             --dist dist \
             --expected-sha "$CANDIDATE_SHA" \
             --evidence w6a-pass1.json
+          python3 scripts/w6a-fingerprint-snapshot.py \
+            --dist dist \
+            --output w6a-pass1-fingerprint.json
           cp dist/ainovel-cli_checksums.txt w6a-pass1-checksums.txt
           sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > w6a-pass1-manifest.sha256
 
@@ -89,13 +92,74 @@ jobs:
             --dist dist \
             --expected-sha "$CANDIDATE_SHA" \
             --evidence w6a-pass2.json
-          cmp -s w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt || {
+          python3 scripts/w6a-fingerprint-snapshot.py \
+            --dist dist \
+            --output w6a-pass2-fingerprint.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          first = json.loads(Path('w6a-pass1-fingerprint.json').read_text(encoding='utf-8'))
+          second = json.loads(Path('w6a-pass2-fingerprint.json').read_text(encoding='utf-8'))
+
+          def hashes(doc, key, name_key):
+              return {item[name_key]: item['sha256'] for item in doc[key]}
+
+          binaries1 = hashes(first, 'binaries', 'path')
+          binaries2 = hashes(second, 'binaries', 'path')
+          archives1 = hashes(first, 'archives', 'name')
+          archives2 = hashes(second, 'archives', 'name')
+          changed_binaries = sorted(name for name in set(binaries1) | set(binaries2) if binaries1.get(name) != binaries2.get(name))
+          changed_archives = sorted(name for name in set(archives1) | set(archives2) if archives1.get(name) != archives2.get(name))
+
+          diagnostic = {
+              'schema': 'ainovel-w6a-determinism-diagnostic/1',
+              'binary_reproducible': not changed_binaries,
+              'archive_reproducible': not changed_archives,
+              'changed_binaries': changed_binaries,
+              'changed_archives': changed_archives,
+              'pass1_goreleaser_metadata': first.get('goreleaser_metadata', {}),
+              'pass2_goreleaser_metadata': second.get('goreleaser_metadata', {}),
+              'pass1': first,
+              'pass2': second,
+          }
+          Path('w6a-determinism-diagnostic.json').write_text(
+              json.dumps(diagnostic, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(
+              'W6A determinism classification: '
+              f"binary_reproducible={diagnostic['binary_reproducible']} "
+              f"archive_reproducible={diagnostic['archive_reproducible']}"
+          )
+          if changed_binaries:
+              print('changed raw binaries: ' + ', '.join(changed_binaries))
+          if changed_archives:
+              print('changed archives: ' + ', '.join(changed_archives))
+          PY
+          if ! cmp -s w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt; then
             echo '::error::two independent GoReleaser snapshots produced different checksum manifests'
             diff -u w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt || true
             exit 1
-          }
+          fi
           sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > w6a-pass2-manifest.sha256
           cmp -s w6a-pass1-manifest.sha256 w6a-pass2-manifest.sha256
+
+      - name: Upload sanitized determinism diagnostic on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6a-determinism-diagnostic-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: ignore
+          retention-days: 3
+          path: |
+            w6a-pass1.json
+            w6a-pass2.json
+            w6a-pass1-fingerprint.json
+            w6a-pass2-fingerprint.json
+            w6a-determinism-diagnostic.json
+            w6a-pass1-checksums.txt
+            dist/ainovel-cli_checksums.txt
 
       - name: Generate deterministic release notes
         shell: bash
