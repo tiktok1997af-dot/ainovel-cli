@@ -60,20 +60,26 @@ jobs:
             'Start-Process -FilePath $cmdExe',
             '[int]::TryParse($resumeExitRaw, [ref]$resumeExitCode)',
             'resume exit-code sidecar missing after process completion',
+            '$progressHashBeforeRestart =',
+            '$progressHashAfterResume =',
+            '$resumeStateAdvanced = $progressHashBeforeRestart -ne $progressHashAfterResume',
+            'resume_invocation_mode = "headless-existing-state"',
+            'restart_resume_detected = [bool]$resumeStateAdvanced',
             'second production invocation did not report the real Resume path'
           )
           foreach ($marker in $requiredMarkers) {
             if (-not $source.Contains($marker)) {
-              throw "Resume byte-preserving sidecar contract is missing marker: $marker"
+              throw "Resume structural authority contract is missing marker: $marker"
             }
           }
           foreach ($forbidden in @(
             'w5e-resume-wrapper.ps1',
             'Start-Process -FilePath $powerShellExe',
-            '& $env:W5E_RESUME_PRODUCTION_EXE --headless'
+            '& $env:W5E_RESUME_PRODUCTION_EXE --headless',
+            'restart_resume_detected = $true'
           )) {
             if ($source.Contains($forbidden)) {
-              throw "Resume path must not route native stdout/stderr through PowerShell: $forbidden"
+              throw "Resume authority path contains a forbidden weak witness: $forbidden"
             }
           }
           if ($source -match '\$resume\.ExitCode') {
