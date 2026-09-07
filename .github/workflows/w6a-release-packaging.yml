@@ -180,7 +180,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          .github/scripts/gen-changelog.sh > dist/release-notes.md
+          sh .github/scripts/gen-changelog.sh > dist/release-notes.md
           test -s dist/release-notes.md
 
       - name: Build sanitized W6A authority evidence
