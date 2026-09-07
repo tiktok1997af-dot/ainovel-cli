@@ -78,6 +78,7 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		if parseErr == nil {
 			return parsed, nil
 		}
+		parseErr = annotateJSONSyntaxShape(body, parseErr)
 		return agentcore.Message{}, parseErr
 	}
 
