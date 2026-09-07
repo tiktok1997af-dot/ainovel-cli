@@ -53,8 +53,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $home = [Environment]::GetFolderPath('UserProfile')
-          $configDir = Join-Path $home '.ainovel'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
           $configPath = Join-Path $configDir 'config.json'
           $backupPath = Join-Path $env:RUNNER_TEMP ("w5e-config-backup-" + $env:GITHUB_RUN_ID + ".json")
           New-Item -ItemType Directory -Force -Path $configDir | Out-Null
@@ -77,6 +77,7 @@ jobs:
           $cfg = [ordered]@{ web=$web; language='vi' }
           [System.IO.File]::WriteAllText($configPath, (($cfg | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, ("W5E_LOCAL_CONFIG_PATH=$configPath`r`nW5E_LOCAL_CONFIG_BACKUP=$backupPath`r`nW5E_LOCAL_CONFIG_HAD_ORIGINAL=$hadOriginal`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "Transient WEB-only config staged for profile '$profileName'."
 
       - name: Run real production desktop smoke
         shell: powershell
@@ -90,8 +91,8 @@ jobs:
             & ./scripts/w5e-production-smoke.ps1 -RepoRoot $env:GITHUB_WORKSPACE -EvidenceDir $evidenceDir -ReadinessTimeoutSeconds 60 -FirstChapterTimeoutSeconds 1200 -ResumeTimeoutSeconds 1200
           } catch {
             $message = [string]$_.Exception.Message
-            $home = [Environment]::GetFolderPath('UserProfile')
-            if ($home) { $message = $message.Replace($home, '<USERPROFILE>') }
+            $userHome = [Environment]::GetFolderPath('UserProfile')
+            if ($userHome) { $message = $message.Replace($userHome, '<USERPROFILE>') }
             $message = [regex]::Replace($message, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
             $message = [regex]::Replace($message, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
             $message = [regex]::Replace($message, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
@@ -102,12 +103,12 @@ jobs:
           }
 
       - name: Upload sanitized failure diagnostic only
-        if: failure()
+        if: failure() && env.W5E_EVIDENCE_DIR != ''
         uses: actions/upload-artifact@v4
         with:
           name: w5e-r1-2c1c-failure-diagnostic
           path: ${{ env.W5E_EVIDENCE_DIR }}/w5e-desktop-failure-diagnostic.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Validate sanitized authority evidence
