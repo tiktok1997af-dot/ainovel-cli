@@ -68,10 +68,9 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "$API/releases/latest" > "$ROOT/release-latest.json"
 
-          jq -e --argjson id "$RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$AUTHORITY_SHA" '
+          jq -e --argjson id "$RELEASE_ID" --arg tag "$RELEASE_TAG" '
             .id == $id and
             .tag_name == $tag and
-            .target_commitish == $sha and
             .draft == false and
             .prerelease == false and
             (.assets | length == 7)
@@ -201,6 +200,8 @@ jobs:
               'authority_sha': authority,
               'tag': tag,
               'release_id': rid,
+              'release_target_commitish_metadata': release.get('target_commitish'),
+              'tag_resolves_to_authority_sha': True,
               'release_published_at': release.get('published_at'),
               'release_latest': True,
               'draft': False,
