@@ -3,17 +3,23 @@ package sites
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
 
 type scriptedEvaluator struct {
-	responses []json.RawMessage
-	exprs     []string
-	clicks    int
-	clickX    float64
-	clickY    float64
-	clickErr  error
+	responses   []json.RawMessage
+	exprs       []string
+	clicks      int
+	clickX      float64
+	clickY      float64
+	clickErr    error
+	replacements int
+	replaceX    float64
+	replaceY    float64
+	replaceText string
+	replaceErr  error
 }
 
 func (s *scriptedEvaluator) Eval(_ context.Context, expression string) (json.RawMessage, error) {
@@ -31,6 +37,14 @@ func (s *scriptedEvaluator) Click(_ context.Context, x, y float64) error {
 	s.clickX = x
 	s.clickY = y
 	return s.clickErr
+}
+
+func (s *scriptedEvaluator) ReplaceText(_ context.Context, x, y float64, text string) error {
+	s.replacements++
+	s.replaceX = x
+	s.replaceY = y
+	s.replaceText = text
+	return s.replaceErr
 }
 
 type evalOnlyEvaluator struct{}
@@ -55,9 +69,6 @@ func TestGeminiConversationExpressionExposesAckSignalsWithoutPromptText(t *testi
 	if _, err := (Gemini{}).Conversation(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 1 {
-		t.Fatalf("expressions = %d, want 1", len(e.exprs))
-	}
 	expr := e.exprs[0]
 	for _, want := range []string{"user-query", "user_message_count", "composer_present", "composer_empty", "composer_length", "submit_action"} {
 		if !strings.Contains(expr, want) {
@@ -76,95 +87,112 @@ func TestGeminiConversationRejectsNegativeComposerLength(t *testing.T) {
 	}
 }
 
-func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":32}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":321.5,"y":654.25}`),
+func successfulSubmitEvaluator() *scriptedEvaluator {
+	return &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"found":true,"x":40,"y":50}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":100,"y":200}`),
 	}}
+}
+
+func TestGeminiSubmitUsesTrustedComposerReplacementThenOneTrustedSendClick(t *testing.T) {
+	e := successfulSubmitEvaluator()
 	prompt := "line 1\n`quoted` </script> \"x\""
 	if err := (Gemini{}).Submit(context.Background(), e, prompt); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 2 {
-		t.Fatalf("expressions = %d, want prepare + resolve", len(e.exprs))
+	if len(e.exprs) != 3 {
+		t.Fatalf("expressions = %d, want resolve composer + verify + resolve send", len(e.exprs))
+	}
+	if e.replacements != 1 || e.replaceX != 40 || e.replaceY != 50 || e.replaceText != prompt {
+		t.Fatalf("trusted replacement mismatch: count=%d point=%.2f,%.2f text=%q", e.replacements, e.replaceX, e.replaceY, e.replaceText)
+	}
+	if e.clicks != 1 || e.clickX != 100 || e.clickY != 200 {
+		t.Fatalf("trusted send clicks=%d at %.2f,%.2f, want exactly one", e.clicks, e.clickX, e.clickY)
 	}
 	encoded, _ := json.Marshal(prompt)
-	if !strings.Contains(e.exprs[0], string(encoded)) {
-		t.Fatalf("prompt was not JSON encoded in prepare expression")
-	}
-	if e.clicks != 1 || e.clickX != 321.5 || e.clickY != 654.25 {
-		t.Fatalf("trusted clicks=%d at %.2f,%.2f, want exactly one at resolved point", e.clicks, e.clickX, e.clickY)
+	if !strings.Contains(e.exprs[1], string(encoded)) {
+		t.Fatal("read-only verification did not JSON-encode the expected prompt")
 	}
 }
 
-func TestGeminiSubmitRequiresTrustedPointerCapability(t *testing.T) {
+func TestGeminiSubmitRequiresTrustedTextInputCapability(t *testing.T) {
 	var evaluator Evaluator = &evalOnlyEvaluator{}
-	if _, ok := evaluator.(PointerEvaluator); ok {
-		t.Fatal("test evaluator unexpectedly implements PointerEvaluator")
+	if _, ok := evaluator.(TextInputEvaluator); ok {
+		t.Fatal("test evaluator unexpectedly implements TextInputEvaluator")
 	}
-	if err := (Gemini{}).Submit(context.Background(), evaluator, "prompt"); err == nil || !strings.Contains(err.Error(), "trusted pointer input") {
-		t.Fatalf("err = %v, want trusted-pointer requirement", err)
+	if err := (Gemini{}).Submit(context.Background(), evaluator, "prompt"); err == nil || !strings.Contains(err.Error(), "trusted text input") {
+		t.Fatalf("err = %v, want trusted-text-input requirement", err)
 	}
 }
 
-func TestGeminiSubmitRequiresPreparedComposerText(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":0}`),
-	}}
-	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err == nil || !strings.Contains(err.Error(), "prepared composer is empty") {
-		t.Fatalf("err = %v, want prepared-composer rejection", err)
+func TestGeminiSubmitTrustedReplacementFailureNeverAttemptsSend(t *testing.T) {
+	e := &scriptedEvaluator{
+		responses:  []json.RawMessage{json.RawMessage(`{"found":true,"x":40,"y":50}`)},
+		replaceErr: errors.New("input failed"),
 	}
-	if len(e.exprs) != 1 || e.clicks != 0 {
-		t.Fatalf("expressions=%d clicks=%d, want prepare only and no click", len(e.exprs), e.clicks)
+	err := (Gemini{}).Submit(context.Background(), e, "prompt")
+	if err == nil || !strings.Contains(err.Error(), "trusted composer input") {
+		t.Fatalf("err = %v, want trusted composer input failure", err)
+	}
+	if e.replacements != 1 || e.clicks != 0 || len(e.exprs) != 1 {
+		t.Fatalf("replacement=%d clicks=%d expressions=%d, send must not run", e.replacements, e.clicks, len(e.exprs))
+	}
+}
+
+func TestGeminiSubmitReadbackFailureNeverAttemptsSend(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"found":true,"x":40,"y":50}`),
+		json.RawMessage(`{"ok":false,"reason":"prompt composer did not retain trusted input","composer_length":3}`),
+	}}
+	err := (Gemini{}).Submit(context.Background(), e, "prompt")
+	if err == nil || !strings.Contains(err.Error(), "did not retain trusted input") {
+		t.Fatalf("err = %v, want readback failure", err)
+	}
+	if e.replacements != 1 || e.clicks != 0 || len(e.exprs) != 2 {
+		t.Fatalf("replacement=%d clicks=%d expressions=%d, send must not run", e.replacements, e.clicks, len(e.exprs))
+	}
+}
+
+func TestGeminiComposerDOMPathsAreReadOnly(t *testing.T) {
+	for name, expr := range map[string]string{
+		"resolve": geminiResolveComposerExpression,
+		"verify":  geminiVerifyPromptExpressionTemplate,
+	} {
+		for _, forbidden := range []string{"execCommand(", ".focus()", ".click()", "textContent = prompt", "dispatchEvent(new InputEvent", "dispatchEvent(new Event"} {
+			if strings.Contains(expr, forbidden) {
+				t.Fatalf("%s composer expression contains synthetic mutation %q", name, forbidden)
+			}
+		}
+	}
+	if !strings.Contains(geminiResolveComposerExpression, "getBoundingClientRect") || !strings.Contains(geminiVerifyPromptExpressionTemplate, "composer_length") {
+		t.Fatal("composer resolver/readback structural invariants are missing")
 	}
 }
 
 func TestGeminiSubmitSupportsCurrentCustomSendControls(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"nested-native-button","x":100,"y":200}`),
-	}}
+	e := successfulSubmitEvaluator()
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 2 || e.clicks != 1 {
-		t.Fatalf("expressions=%d clicks=%d, want prepare + resolve + one trusted click", len(e.exprs), e.clicks)
-	}
-	resolveExpr := e.exprs[1]
-	for _, want := range []string{
-		"gem-icon-button.send-button",
-		"gem-icon-button.submit",
-		"send-button-container",
-		"arrow_upward",
-	} {
+	resolveExpr := e.exprs[2]
+	for _, want := range []string{"gem-icon-button.send-button", "gem-icon-button.submit", "send-button-container", "arrow_upward"} {
 		if !strings.Contains(resolveExpr, want) {
-			t.Fatalf("resolve expression missing current Gemini compatibility marker %q", want)
+			t.Fatalf("send resolver missing Gemini compatibility marker %q", want)
 		}
 	}
-	for i, expr := range e.exprs {
-		if strings.Contains(expr, "async ()") || strings.Contains(expr, "new Promise") {
-			t.Fatalf("submit expression %d contains browser-side async Promise: %s", i, expr)
-		}
+	if strings.Contains(resolveExpr, ".click()") || strings.Contains(resolveExpr, "new MouseEvent") || strings.Contains(resolveExpr, "new PointerEvent") {
+		t.Fatal("send resolver must remain read-only with respect to click side effects")
 	}
 }
 
 func TestGeminiSubmitCanonicalizesCustomHostsToNativeButtonsFirst(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"shadow-native-button","x":10,"y":20}`),
-	}}
+	e := successfulSubmitEvaluator()
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
 	}
-	resolveExpr := e.exprs[1]
-	for _, want := range []string{
-		"candidate instanceof HTMLButtonElement",
-		"candidate.shadowRoot",
-		"root.querySelectorAll('button')",
-		"nested-native-button",
-		"shadow-native-button",
-		"custom-send-host",
-	} {
+	resolveExpr := e.exprs[2]
+	for _, want := range []string{"candidate instanceof HTMLButtonElement", "candidate.shadowRoot", "root.querySelectorAll('button')", "nested-native-button", "shadow-native-button", "custom-send-host"} {
 		if !strings.Contains(resolveExpr, want) {
 			t.Fatalf("native-action resolver missing %q", want)
 		}
@@ -174,43 +202,9 @@ func TestGeminiSubmitCanonicalizesCustomHostsToNativeButtonsFirst(t *testing.T) 
 	}
 }
 
-func TestGeminiSubmitResolverHasNoBrowserSideClick(t *testing.T) {
+func TestGeminiSubmitPollsDisabledSendWithoutReplacingAgainOrClickingEarly(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":10,"y":20}`),
-	}}
-	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
-		t.Fatal(err)
-	}
-	resolveExpr := e.exprs[1]
-	if strings.Contains(resolveExpr, ".click()") || strings.Contains(resolveExpr, "dispatchEvent(new MouseEvent") || strings.Contains(resolveExpr, "dispatchEvent(new PointerEvent") {
-		t.Fatal("send resolver must be read-only with respect to click side effects")
-	}
-	for _, want := range []string{"const action = findSendAction();", "getBoundingClientRect", "return {ok: true", "x: point.x", "y: point.y"} {
-		if !strings.Contains(resolveExpr, want) {
-			t.Fatalf("send coordinate resolver missing %q", want)
-		}
-	}
-}
-
-func TestGeminiSubmitPreparationUsesFrameworkInputSignalsAndReadback(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":10,"y":20}`),
-	}}
-	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
-		t.Fatal(err)
-	}
-	prepareExpr := e.exprs[0]
-	for _, want := range []string{"beforeinput", "document.execCommand('insertText'", "samePrompt", "composer_length"} {
-		if !strings.Contains(prepareExpr, want) {
-			t.Fatalf("composer preparation missing %q", want)
-		}
-	}
-}
-
-func TestGeminiSubmitPollsDisabledSendControlWithoutReplacingPromptOrClicking(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"found":true,"x":40,"y":50}`),
 		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
 		json.RawMessage(`{"ok":false,"retry":true,"reason":"actionable send control is disabled"}`),
 		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":10,"y":20}`),
@@ -218,28 +212,23 @@ func TestGeminiSubmitPollsDisabledSendControlWithoutReplacingPromptOrClicking(t 
 	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 3 || e.clicks != 1 {
-		t.Fatalf("expressions=%d clicks=%d, want one prepare + two read-only probes + one click", len(e.exprs), e.clicks)
+	if len(e.exprs) != 4 || e.replacements != 1 || e.clicks != 1 {
+		t.Fatalf("expressions=%d replacements=%d clicks=%d", len(e.exprs), e.replacements, e.clicks)
 	}
-	if strings.Contains(e.exprs[1], "const prompt =") || strings.Contains(e.exprs[2], "const prompt =") {
-		t.Fatal("send-control polling must not rewrite the composer")
+	if strings.Contains(e.exprs[2], "const prompt =") || strings.Contains(e.exprs[3], "const prompt =") {
+		t.Fatal("send-control polling must not rewrite or re-verify the prompt")
 	}
 }
 
 func TestGeminiSubmitPointerFailureIsNotRetried(t *testing.T) {
-	e := &scriptedEvaluator{
-		responses: []json.RawMessage{
-			json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
-			json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":10,"y":20}`),
-		},
-		clickErr: context.DeadlineExceeded,
-	}
+	e := successfulSubmitEvaluator()
+	e.clickErr = context.DeadlineExceeded
 	err := (Gemini{}).Submit(context.Background(), e, "prompt")
 	if err == nil || !strings.Contains(err.Error(), "trusted send click") {
 		t.Fatalf("err = %v, want trusted-click failure", err)
 	}
-	if e.clicks != 1 || len(e.exprs) != 2 {
-		t.Fatalf("clicks=%d expressions=%d, ambiguous pointer failure must never resubmit", e.clicks, len(e.exprs))
+	if e.clicks != 1 || e.replacements != 1 || len(e.exprs) != 3 {
+		t.Fatalf("clicks=%d replacements=%d expressions=%d, ambiguous send must never resubmit", e.clicks, e.replacements, len(e.exprs))
 	}
 }
 
@@ -252,11 +241,8 @@ func TestGeminiCancelUsesTrustedPointerAndReadOnlyResolver(t *testing.T) {
 	if !clicked || e.clicks != 1 || e.clickX != 42 || e.clickY != 84 {
 		t.Fatalf("clicked=%v pointer clicks=%d at %.2f,%.2f", clicked, e.clicks, e.clickX, e.clickY)
 	}
-	if len(e.exprs) != 1 {
-		t.Fatalf("expressions = %d, want 1", len(e.exprs))
-	}
-	if strings.Contains(e.exprs[0], ".click()") {
-		t.Fatal("cancel resolver must not click inside browser JavaScript")
+	if len(e.exprs) != 1 || strings.Contains(e.exprs[0], ".click()") {
+		t.Fatal("cancel resolver must be one read-only DOM observation before trusted click")
 	}
 	for _, want := range []string{"candidate.shadowRoot", "root.querySelectorAll('button')", "getBoundingClientRect", "found: true"} {
 		if !strings.Contains(e.exprs[0], want) {
