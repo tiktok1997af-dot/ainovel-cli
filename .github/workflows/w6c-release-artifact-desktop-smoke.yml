@@ -1,0 +1,426 @@
+name: W6C Release Artifact Desktop Smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w6c-release-artifact-desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  package-release-input:
+    name: Build exact release artifact input
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify exact candidate and no-publish boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git tag --points-at HEAD | grep -q .
+          test -z "$(git status --porcelain)"
+          grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
+          grep -Fq 'name: ainovel-cli' .goreleaser.yml
+          grep -Fq 'const ProductRepository = "tiktok1997af-dot/ainovel-cli"' internal/version/repository.go
+
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: Verify W6C prebuilt-only desktop contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f scripts/w6c-release-artifact-smoke.ps1
+          if grep -nE '(^|[^[:alnum:]_])go[[:space:]]+build|goreleaser-action|goreleaser[[:space:]]+release' scripts/w6c-release-artifact-smoke.ps1; then
+            echo '::error::W6C desktop smoke script must never build release binaries'
+            exit 1
+          fi
+          desktop_block="$(awk '/^  real-desktop-smoke:/{flag=1} flag{print}' .github/workflows/w6c-release-artifact-desktop-smoke.yml)"
+          if printf '%s\n' "$desktop_block" | grep -nE 'actions/setup-go|goreleaser/goreleaser-action|(^|[^[:alnum:]_])go[[:space:]]+build'; then
+            echo '::error::W6C real desktop job must consume prebuilt artifacts only'
+            exit 1
+          fi
+          pwsh -NoProfile -NonInteractive -Command '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile("scripts/w6c-release-artifact-smoke.ps1", [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }'
+
+      - name: Build exact-candidate GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify exact snapshot provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6a-verify-release-snapshot.py \
+            --dist dist \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence dist/w6c-snapshot-evidence.json
+          test -z "$(git status --porcelain)"
+
+      - name: Build Windows readiness verifier outside release package
+        shell: bash
+        env:
+          GOWORK: "off"
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist/w6c-helper
+          go build -trimpath -buildvcs=true -o dist/w6c-helper/ainovel-w5e-readiness.exe ./cmd/ainovel-w5e-readiness
+          test -s dist/w6c-helper/ainovel-w5e-readiness.exe
+          test -z "$(git status --porcelain)"
+
+      - name: Build sanitized release-input provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          candidate = os.environ['CANDIDATE_SHA'].strip().lower()
+          dist = Path('dist')
+          snapshot = json.loads((dist / 'w6c-snapshot-evidence.json').read_text(encoding='utf-8'))
+          if snapshot.get('candidate_sha') != candidate or snapshot.get('no_publish') is not True:
+              raise SystemExit('W6C snapshot provenance mismatch')
+          selected = [item for item in snapshot.get('archive_matrix', []) if item.get('os') == 'Windows' and item.get('arch') == 'x86_64']
+          if len(selected) != 1:
+              raise SystemExit('W6C requires exactly one Windows x86_64 release archive')
+          archive_info = selected[0]
+          archive = dist / archive_info['name']
+          if not archive.is_file():
+              raise SystemExit('W6C Windows x86_64 archive missing')
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          archive_sha = sha256(archive)
+          if archive_sha != archive_info.get('sha256'):
+              raise SystemExit('W6C archive SHA differs from W6A snapshot evidence')
+          manifest = dist / 'ainovel-cli_checksums.txt'
+          matches = []
+          for raw in manifest.read_text(encoding='utf-8').splitlines():
+              fields = raw.split()
+              if len(fields) != 2:
+                  continue
+              digest, name = fields
+              name = name.lstrip('*')
+              if name == archive.name:
+                  matches.append(digest.lower())
+          if len(matches) != 1 or not re.fullmatch(r'[0-9a-f]{64}', matches[0]) or matches[0] != archive_sha:
+              raise SystemExit('W6C checksum manifest is not an exact unique match for Windows x86_64 archive')
+
+          helper = dist / 'w6c-helper' / 'ainovel-w5e-readiness.exe'
+          provenance = {
+              'schema': 'ainovel-w6c-package-input/1',
+              'candidate_sha': candidate,
+              'product_repository': 'tiktok1997af-dot/ainovel-cli',
+              'snapshot_version': snapshot.get('snapshot_version'),
+              'archive_name': archive.name,
+              'archive_sha256': archive_sha,
+              'checksum_manifest': manifest.name,
+              'checksum_manifest_sha256': sha256(manifest),
+              'readiness_helper_name': helper.name,
+              'readiness_helper_sha256': sha256(helper),
+              'package_builder': 'github-hosted-goreleaser-v2.18.1',
+              'desktop_build_required': False,
+              'w55_no_api': 'PASS',
+              'no_publish': True,
+          }
+          if not provenance['snapshot_version']:
+              raise SystemExit('W6C snapshot version missing')
+          (dist / 'w6c-package-provenance.json').write_text(
+              json.dumps(provenance, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(f"W6C release input ready: {archive.name} sha256={archive_sha}")
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Upload exact release-artifact transport bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6c-release-input-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/*_Windows_x86_64.zip
+            dist/ainovel-cli_checksums.txt
+            dist/w6c-snapshot-evidence.json
+            dist/w6c-package-provenance.json
+            dist/w6c-helper/ainovel-w5e-readiness.exe
+
+  real-desktop-smoke:
+    name: Real Windows desktop / packaged WEB-only smoke
+    needs: package-release-input
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 60
+    env:
+      W6C_INPUT_DIR: ${{ runner.temp }}/ainovel-w6c-input-${{ github.run_id }}
+      W6C_EVIDENCE_DIR: ${{ runner.temp }}/ainovel-w6c-evidence-${{ github.run_id }}
+      W6C_RUNTIME_DIR: ${{ runner.temp }}/ainovel-w6c-runtime-${{ github.run_id }}
+    steps:
+      - name: Checkout exact candidate authority scripts only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Download exact hosted release input
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-w6c-release-input-${{ env.CANDIDATE_SHA }}
+          path: ${{ env.W6C_INPUT_DIR }}
+
+      - name: Force Git Bash
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+          $bash = Join-Path $gitBin 'bash.exe'
+          if (-not (Test-Path -LiteralPath $bash)) { throw 'Git Bash is required.' }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Prepare transient authority directories
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @($env:W6C_EVIDENCE_DIR, $env:W6C_RUNTIME_DIR)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
+
+      - name: Verify exact candidate interactive desktop and transport provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA) { throw "Candidate drift: expected $env:CANDIDATE_SHA but checked out $actual" }
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $runnerSession } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not in an interactive Windows desktop session.' }
+          foreach ($required in @('git','bash')) {
+            if (-not (Get-Command $required -ErrorAction SilentlyContinue)) { throw "Required command unavailable: $required" }
+          }
+          if (-not (Test-Path -LiteralPath 'scripts/w6c-release-artifact-smoke.ps1')) { throw 'Exact candidate is missing the W6C release-artifact smoke script.' }
+
+          $provFile = @(Get-ChildItem -LiteralPath $env:W6C_INPUT_DIR -Filter 'w6c-package-provenance.json' -File -Recurse)
+          if ($provFile.Count -ne 1) { throw 'Expected exactly one W6C package provenance file.' }
+          $prov = Get-Content -LiteralPath $provFile[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.schema -ne 'ainovel-w6c-package-input/1') { throw 'Unexpected W6C package provenance schema.' }
+          if ([string]$prov.candidate_sha -ne $env:CANDIDATE_SHA) { throw 'W6C package candidate SHA mismatch.' }
+          if ([string]$prov.product_repository -ne 'tiktok1997af-dot/ainovel-cli') { throw 'W6C package repository mismatch.' }
+          if (-not [bool]$prov.no_publish -or [bool]$prov.desktop_build_required) { throw 'W6C package crossed no-publish/prebuilt-only boundary.' }
+          if ([string]$prov.w55_no_api -ne 'PASS') { throw 'W6C hosted NO-API provenance missing.' }
+
+          $archive = @(Get-ChildItem -LiteralPath $env:W6C_INPUT_DIR -Filter ([string]$prov.archive_name) -File -Recurse)
+          $manifest = @(Get-ChildItem -LiteralPath $env:W6C_INPUT_DIR -Filter 'ainovel-cli_checksums.txt' -File -Recurse)
+          $helper = @(Get-ChildItem -LiteralPath $env:W6C_INPUT_DIR -Filter 'ainovel-w5e-readiness.exe' -File -Recurse)
+          if ($archive.Count -ne 1 -or $manifest.Count -ne 1 -or $helper.Count -ne 1) { throw 'W6C transport bundle is incomplete or ambiguous.' }
+          $helperHash = (Get-FileHash -LiteralPath $helper[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($helperHash -ne [string]$prov.readiness_helper_sha256) { throw 'W6C readiness helper transport hash mismatch.' }
+
+          Copy-Item -LiteralPath $provFile[0].FullName -Destination (Join-Path $env:W6C_EVIDENCE_DIR 'w6c-package-provenance.json') -Force
+          $envLines = @(
+            "W6C_PACKAGE_ARCHIVE=$($archive[0].FullName)",
+            "W6C_CHECKSUM_MANIFEST=$($manifest[0].FullName)",
+            "W6C_READINESS_EXE=$($helper[0].FullName)",
+            "W6C_READINESS_SHA256=$([string]$prov.readiness_helper_sha256)",
+            "W6C_SNAPSHOT_VERSION=$([string]$prov.snapshot_version)",
+            "W6C_ARCHIVE_NAME=$([string]$prov.archive_name)",
+            "W6C_ARCHIVE_SHA256=$([string]$prov.archive_sha256)"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "W6C prebuilt desktop precondition PASS: $actual / $([string]$prov.archive_name)"
+
+      - name: Stage transient WEB-only desktop config
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("w6c-config-backup-" + $env:GITHUB_RUN_ID + ".json")
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
+              }
+            } catch { Write-Host 'Existing config parse failed; exact bytes are backed up.' }
+          }
+          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
+          if (-not [string]::IsNullOrWhiteSpace($browserPath)) { $web.browser_path = $browserPath }
+          if (-not [string]::IsNullOrWhiteSpace($startUrl)) { $web.start_url = $startUrl }
+          $cfg = [ordered]@{ web = $web; language = 'vi' }
+          [System.IO.File]::WriteAllText($configPath, (($cfg | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $envLines = @(
+            "W6C_LOCAL_CONFIG_PATH=$configPath",
+            "W6C_LOCAL_CONFIG_BACKUP=$backupPath",
+            "W6C_LOCAL_CONFIG_HAD_ORIGINAL=$hadOriginal"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "Transient WEB-only config staged for profile '$profileName'."
+
+      - name: Run packaged production desktop smoke
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            & ./scripts/w6c-release-artifact-smoke.ps1 `
+              -RepoRoot $env:GITHUB_WORKSPACE `
+              -PackageArchivePath $env:W6C_PACKAGE_ARCHIVE `
+              -ChecksumManifestPath $env:W6C_CHECKSUM_MANIFEST `
+              -ReadinessExe $env:W6C_READINESS_EXE `
+              -ExpectedReadinessSha256 $env:W6C_READINESS_SHA256 `
+              -ExpectedGitSha $env:CANDIDATE_SHA `
+              -ExpectedSnapshotVersion $env:W6C_SNAPSHOT_VERSION `
+              -EvidenceDir $env:W6C_EVIDENCE_DIR `
+              -RuntimeDir $env:W6C_RUNTIME_DIR `
+              -ReadinessTimeoutSeconds 60 `
+              -FirstChapterTimeoutSeconds 1200 `
+              -ResumeTimeoutSeconds 1200
+          } catch {
+            $message = [string]$_.Exception.Message
+            $userHome = [Environment]::GetFolderPath('UserProfile')
+            if (-not [string]::IsNullOrWhiteSpace($userHome)) { $message = $message.Replace($userHome, '<USERPROFILE>') }
+            $message = [regex]::Replace($message, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+            $message = [regex]::Replace($message, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
+            $message = [regex]::Replace($message, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+            if ($message.Length -gt 4000) { $message = $message.Substring(0, 4000) + '<truncated>' }
+            $diag = [ordered]@{
+              schema = 'ainovel-w6c-desktop-failure/1'
+              candidate_sha = $env:CANDIDATE_SHA
+              package_archive_name = $env:W6C_ARCHIVE_NAME
+              run_id = [string]$env:GITHUB_RUN_ID
+              stage = 'release-artifact-smoke'
+              error = $message
+              captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            }
+            $diag | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $env:W6C_EVIDENCE_DIR 'w6c-desktop-failure-diagnostic.json') -Encoding UTF8
+            throw
+          }
+
+      - name: Upload sanitized failure diagnostic only
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w6c-release-artifact-failure-${{ env.CANDIDATE_SHA }}
+          path: ${{ env.W6C_EVIDENCE_DIR }}/w6c-desktop-failure-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Validate sanitized W6C authority evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:W6C_EVIDENCE_DIR 'w6c-release-artifact-smoke-evidence.json'
+          if (-not (Test-Path -LiteralPath $path)) { throw 'Missing w6c-release-artifact-smoke-evidence.json' }
+          $ev = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$ev.schema -ne 'ainovel-w6c-release-artifact-smoke/1') { throw 'Unexpected W6C evidence schema' }
+          if ([string]$ev.git_sha -ne $env:CANDIDATE_SHA) { throw 'W6C evidence candidate SHA mismatch' }
+          if ([string]$ev.binary_source -ne 'github-actions-goreleaser-snapshot-artifact') { throw 'Production binary did not come from the release artifact path' }
+          if ([bool]$ev.desktop_build_performed) { throw 'Desktop build was performed; W6C requires prebuilt-only execution' }
+          if (-not [bool]$ev.package_checksum_verified -or -not [bool]$ev.production_binary_commit_verified) { throw 'Package checksum/embedded commit verification incomplete' }
+          if ([string]$ev.package_archive_name -ne $env:W6C_ARCHIVE_NAME -or [string]$ev.package_archive_sha256 -ne $env:W6C_ARCHIVE_SHA256) { throw 'Package provenance mismatch after desktop execution' }
+          if ([string]$ev.package_snapshot_version -ne $env:W6C_SNAPSHOT_VERSION) { throw 'Package snapshot version mismatch' }
+          if ([string]$ev.production_binary_commit -ne $env:CANDIDATE_SHA) { throw 'Packaged production commit mismatch' }
+          if (-not [bool]$ev.first_ready -or -not [bool]$ev.restart_ready -or -not [bool]$ev.restart_resume_detected) { throw 'Readiness/restart/resume evidence incomplete' }
+          if ([string]$ev.runtime_no_api_marker_scan -ne 'PASS' -or [string]$ev.w55_static_no_api_gate -ne 'PASS' -or -not [bool]$ev.no_upstream_fallback) { throw 'NO-API/no-fallback authority failed' }
+          if ([string]$ev.chapter_1_sha256_before_restart -ne [string]$ev.chapter_1_sha256_after_restart) { throw 'Chapter 1 persistence hash mismatch' }
+          $tools = @($ev.observed_local_tools | ForEach-Object { [string]$_ })
+          foreach ($requiredTool in @('draft_chapter','commit_chapter')) { if ($tools -notcontains $requiredTool) { throw "Missing required local tool evidence: $requiredTool" } }
+          $completed = @($ev.final_progress.completed_chapters | ForEach-Object { [int]$_ })
+          if ($completed -notcontains 1 -or $completed -notcontains 2) { throw 'Final progress does not contain completed chapters 1 and 2' }
+          Write-Host 'W6C RELEASE-ARTIFACT REAL DESKTOP AUTHORITY: PASS'
+          Write-Host "Candidate: $env:CANDIDATE_SHA"
+          Write-Host "Archive: $env:W6C_ARCHIVE_NAME"
+
+      - name: Upload sanitized W6C authority evidence only
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6c-release-artifact-authority-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ env.W6C_EVIDENCE_DIR }}/w6c-release-artifact-smoke-evidence.json
+            ${{ env.W6C_EVIDENCE_DIR }}/w6c-readiness-evidence.json
+            ${{ env.W6C_EVIDENCE_DIR }}/w6c-package-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean transient W6C runtime and downloaded package
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:W6C_RUNTIME_DIR)) {
+            Get-CimInstance Win32_Process -Filter "Name='ainovel-cli.exe'" -ErrorAction SilentlyContinue |
+              Where-Object { $_.ExecutablePath -and ([string]$_.ExecutablePath).StartsWith($env:W6C_RUNTIME_DIR, [StringComparison]::OrdinalIgnoreCase) } |
+              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
+          }
+          foreach ($path in @($env:W6C_RUNTIME_DIR, $env:W6C_INPUT_DIR, $env:W6C_EVIDENCE_DIR)) {
+            if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path)) {
+              Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          Write-Host 'Transient W6C package/runtime/evidence data removed from desktop runner.'
+
+      - name: Restore local config exactly
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:W6C_LOCAL_CONFIG_PATH)) { exit 0 }
+          if ($env:W6C_LOCAL_CONFIG_HAD_ORIGINAL -eq 'True') {
+            if (Test-Path -LiteralPath $env:W6C_LOCAL_CONFIG_BACKUP) {
+              Copy-Item -LiteralPath $env:W6C_LOCAL_CONFIG_BACKUP -Destination $env:W6C_LOCAL_CONFIG_PATH -Force
+              Remove-Item -LiteralPath $env:W6C_LOCAL_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+              Write-Host 'Original local config restored exactly.'
+            } else {
+              Write-Error 'Expected local config backup is missing.'
+              exit 1
+            }
+          } else {
+            Remove-Item -LiteralPath $env:W6C_LOCAL_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+            Write-Host 'Transient local config removed; original state restored.'
+          }
