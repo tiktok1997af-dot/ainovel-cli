@@ -3,7 +3,7 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - go mod tidy -diff
     - go vet ./...
     - go test -count=1 ./...
 
@@ -13,6 +13,9 @@ builds:
     binary: ainovel-cli
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -36,9 +39,23 @@ archives:
       - goos: windows
         formats:
           - zip
+    builds_info:
+      owner: root
+      group: root
+      mtime: "{{ .CommitDate }}"
     files:
-      - README.md
-      - LICENSE
+      - src: README.md
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_
       {{- title .Os }}_
@@ -48,6 +65,9 @@ archives:
 checksum:
   name_template: "{{ .ProjectName }}_checksums.txt"
   algorithm: sha256
+
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
 
 changelog:
   sort: asc

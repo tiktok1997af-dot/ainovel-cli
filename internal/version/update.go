@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,14 +43,17 @@ type releaseAsset struct {
 }
 
 func Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
-	if runtime.GOOS == "windows" {
-		return nil, fmt.Errorf("Windows 不支持原地自更新，请到 https://github.com/%s/releases 下载新版", opts.Repo)
-	}
 	if opts.Repo == "" {
 		return nil, fmt.Errorf("missing repo")
 	}
+	if opts.Repo != ProductRepository {
+		return nil, fmt.Errorf("updater repository %q is not authorized; expected %s", opts.Repo, ProductRepository)
+	}
 	if opts.BinaryName == "" {
 		return nil, fmt.Errorf("missing binary name")
+	}
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("Windows 不支持原地自更新，请到 https://github.com/%s/releases 下载新版", ProductRepository)
 	}
 	client := opts.Client
 	if client == nil {
@@ -62,6 +66,9 @@ func Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
 	}
 	if rel.TagName == "" {
 		return nil, fmt.Errorf("release 缺少 tag_name")
+	}
+	if targetTag := normalizedTargetTag(opts.TargetVersion); targetTag != "" && rel.TagName != targetTag {
+		return nil, fmt.Errorf("release tag mismatch: got %s, expected %s", rel.TagName, targetTag)
 	}
 	if sameVersion(opts.CurrentVersion, rel.TagName) {
 		return &UpdateResult{Version: rel.TagName, Path: executablePath()}, nil
@@ -136,51 +143,90 @@ func releaseURL(repo, target string) string {
 	return "https://api.github.com/repos/" + repo + "/releases/tags/" + target
 }
 
+func normalizedTargetTag(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" || target == "latest" {
+		return ""
+	}
+	if !strings.HasPrefix(target, "v") {
+		target = "v" + target
+	}
+	return target
+}
+
 func selectAsset(rel *release, binaryName string) (releaseAsset, error) {
 	suffix, err := assetSuffix()
 	if err != nil {
 		return releaseAsset{}, err
 	}
-	versions := []string{strings.TrimPrefix(rel.TagName, "v"), rel.TagName}
-	for _, version := range versions {
-		expected := binaryName + "_" + version + suffix
-		for _, asset := range rel.Assets {
-			if asset.Name == expected && asset.BrowserDownloadURL != "" {
-				return asset, nil
-			}
-		}
+	if rel == nil || !strings.HasPrefix(rel.TagName, "v") || len(rel.TagName) == 1 {
+		return releaseAsset{}, fmt.Errorf("release tag %q is not a supported v-prefixed release tag", releaseTag(rel))
 	}
-	return releaseAsset{}, fmt.Errorf("release %s 未找到当前平台的精确安装包 %s_<version>%s", rel.TagName, binaryName, suffix)
+	expected := binaryName + "_" + strings.TrimPrefix(rel.TagName, "v") + suffix
+	return selectExactReleaseAsset(rel, expected)
 }
 
 func selectChecksumAsset(rel *release, binaryName string) (releaseAsset, error) {
-	expected := binaryName + "_checksums.txt"
-	for _, asset := range rel.Assets {
-		if asset.Name == expected && asset.BrowserDownloadURL != "" {
-			return asset, nil
-		}
+	if rel == nil || !strings.HasPrefix(rel.TagName, "v") || len(rel.TagName) == 1 {
+		return releaseAsset{}, fmt.Errorf("release tag %q is not a supported v-prefixed release tag", releaseTag(rel))
 	}
-	return releaseAsset{}, fmt.Errorf("release %s 缺少校验文件 %s，拒绝自更新", rel.TagName, expected)
+	expected := binaryName + "_checksums.txt"
+	asset, err := selectExactReleaseAsset(rel, expected)
+	if err != nil {
+		return releaseAsset{}, fmt.Errorf("release %s 缺少唯一可信校验文件 %s，拒绝自更新: %w", rel.TagName, expected, err)
+	}
+	return asset, nil
+}
+
+func selectExactReleaseAsset(rel *release, expected string) (releaseAsset, error) {
+	var match releaseAsset
+	count := 0
+	for _, asset := range rel.Assets {
+		if asset.Name != expected {
+			continue
+		}
+		count++
+		match = asset
+	}
+	if count != 1 {
+		return releaseAsset{}, fmt.Errorf("release %s expected exactly one asset %s, found %d", rel.TagName, expected, count)
+	}
+	wantURL := "https://github.com/" + ProductRepository + "/releases/download/" + rel.TagName + "/" + expected
+	if match.BrowserDownloadURL != wantURL {
+		return releaseAsset{}, fmt.Errorf("release asset %s has unauthorized download URL %q", expected, match.BrowserDownloadURL)
+	}
+	return match, nil
+}
+
+func releaseTag(rel *release) string {
+	if rel == nil {
+		return ""
+	}
+	return rel.TagName
 }
 
 func assetSuffix() (string, error) {
+	return assetSuffixFor(runtime.GOOS, runtime.GOARCH)
+}
+
+func assetSuffixFor(goos, goarch string) (string, error) {
 	var osName string
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		osName = "Darwin"
 	case "linux":
 		osName = "Linux"
 	default:
-		return "", fmt.Errorf("不支持的系统 %s", runtime.GOOS)
+		return "", fmt.Errorf("不支持的系统 %s", goos)
 	}
 	var arch string
-	switch runtime.GOARCH {
+	switch goarch {
 	case "amd64":
 		arch = "x86_64"
 	case "arm64":
 		arch = "arm64"
 	default:
-		return "", fmt.Errorf("不支持的架构 %s", runtime.GOARCH)
+		return "", fmt.Errorf("不支持的架构 %s", goarch)
 	}
 	return "_" + osName + "_" + arch + ".tar.gz", nil
 }
@@ -214,29 +260,37 @@ func download(ctx context.Context, client *http.Client, url, dst string, expecte
 }
 
 // verifyChecksum 校验 GoReleaser 生成的 SHA256 清单。清单与安装包必须来自同一个
-// release；缺项、格式错误或摘要不匹配均拒绝替换当前可执行文件。
+// release；缺项、重复项、格式错误或摘要不匹配均拒绝替换当前可执行文件。
 func verifyChecksum(archivePath, checksumPath, assetName string) error {
 	data, err := os.ReadFile(checksumPath)
 	if err != nil {
 		return fmt.Errorf("read checksum file: %w", err)
 	}
 	var expected string
+	matches := 0
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
 		name := strings.TrimPrefix(fields[1], "*")
-		if name == assetName {
-			expected = strings.ToLower(fields[0])
-			break
+		if name != assetName {
+			continue
 		}
+		matches++
+		expected = strings.ToLower(fields[0])
 	}
-	if expected == "" {
+	if matches == 0 {
 		return fmt.Errorf("checksum 清单中未找到 %s", assetName)
+	}
+	if matches != 1 {
+		return fmt.Errorf("checksum 清单中 %s 出现 %d 次，拒绝歧义校验", assetName, matches)
 	}
 	if len(expected) != sha256.Size*2 {
 		return fmt.Errorf("%s 的 SHA256 格式非法", assetName)
+	}
+	if _, err := hex.DecodeString(expected); err != nil {
+		return fmt.Errorf("%s 的 SHA256 格式非法: %w", assetName, err)
 	}
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -254,7 +308,7 @@ func verifyChecksum(archivePath, checksumPath, assetName string) error {
 	return nil
 }
 
-func extractBinary(archivePath, dstDir, binaryName string) (string, error) {
+func extractBinary(archivePath, dstDir, binaryName string) (out string, err error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return "", fmt.Errorf("open archive: %w", err)
@@ -266,32 +320,50 @@ func extractBinary(archivePath, dstDir, binaryName string) (string, error) {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	out = filepath.Join(dstDir, binaryName)
+	found := 0
+	defer func() {
+		if err != nil {
+			_ = os.Remove(out)
+		}
+	}()
 	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
+		hdr, nextErr := tr.Next()
+		if nextErr == io.EOF {
 			break
 		}
-		if err != nil {
-			return "", fmt.Errorf("read archive tar: %w", err)
+		if nextErr != nil {
+			err = fmt.Errorf("read archive tar: %w", nextErr)
+			return "", err
 		}
-		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != binaryName {
+		if hdr.Typeflag != tar.TypeReg || hdr.Name != binaryName {
 			continue
 		}
-		out := filepath.Join(dstDir, binaryName)
-		w, err := os.OpenFile(out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-		if err != nil {
-			return "", fmt.Errorf("extract binary: %w", err)
+		found++
+		if found != 1 {
+			err = fmt.Errorf("安装包中 %s 出现多次，拒绝歧义内容", binaryName)
+			return "", err
 		}
-		if _, err := io.Copy(w, tr); err != nil {
+		w, openErr := os.OpenFile(out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+		if openErr != nil {
+			err = fmt.Errorf("extract binary: %w", openErr)
+			return "", err
+		}
+		if _, copyErr := io.Copy(w, tr); copyErr != nil {
 			_ = w.Close()
-			return "", fmt.Errorf("extract binary: %w", err)
+			err = fmt.Errorf("extract binary: %w", copyErr)
+			return "", err
 		}
-		if err := w.Close(); err != nil {
-			return "", fmt.Errorf("extract binary: %w", err)
+		if closeErr := w.Close(); closeErr != nil {
+			err = fmt.Errorf("extract binary: %w", closeErr)
+			return "", err
 		}
-		return out, nil
 	}
-	return "", fmt.Errorf("安装包中未找到 %s", binaryName)
+	if found != 1 {
+		err = fmt.Errorf("安装包中未找到根目录可执行文件 %s", binaryName)
+		return "", err
+	}
+	return out, nil
 }
 
 func replaceCurrentExecutable(src string) (string, error) {

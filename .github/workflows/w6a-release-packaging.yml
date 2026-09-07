@@ -1,0 +1,229 @@
+name: W6A Release Packaging Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-release-packaging:
+    name: Deterministic release packaging
+    runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      W6A_TMP: /tmp/ainovel-w6a
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify candidate and no-publish boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "${GITHUB_EVENT_NAME}" = "pull_request" -o "${GITHUB_EVENT_NAME}" = "workflow_dispatch"
+          ! git tag --points-at HEAD | grep -q .
+          grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
+          grep -Fq 'name: ainovel-cli' .goreleaser.yml
+          grep -Fq 'go mod tidy -diff' .goreleaser.yml
+          grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
+          grep -Fq 'go-version-file: go.mod' .github/workflows/release.yml
+          grep -Fq 'version: "v2.18.1"' .github/workflows/release.yml
+          test -z "$(git status --porcelain)"
+
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: Verify deterministic release-notes implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden='GEMINI_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|curl[[:space:]]'
+          if grep -nEi -- "$forbidden" .github/scripts/gen-changelog.sh; then
+            echo '::error::.github/scripts/gen-changelog.sh must remain deterministic and AI/API-free'
+            exit 1
+          fi
+          sh -n .github/scripts/gen-changelog.sh
+
+      - name: Prepare external W6A scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$W6A_TMP"
+          mkdir -p "$W6A_TMP"
+          test -z "$(git status --porcelain)"
+
+      - name: GoReleaser snapshot pass 1
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify snapshot pass 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6a-verify-release-snapshot.py \
+            --dist dist \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence "$W6A_TMP/w6a-pass1.json"
+          python3 scripts/w6a-fingerprint-snapshot.py \
+            --dist dist \
+            --output "$W6A_TMP/w6a-pass1-fingerprint.json"
+          cp dist/ainovel-cli_checksums.txt "$W6A_TMP/w6a-pass1-checksums.txt"
+          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > "$W6A_TMP/w6a-pass1-manifest.sha256"
+          test -z "$(git status --porcelain)"
+
+      - name: GoReleaser snapshot pass 2
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify snapshot pass 2 and byte determinism
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6a-verify-release-snapshot.py \
+            --dist dist \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence "$W6A_TMP/w6a-pass2.json"
+          python3 scripts/w6a-fingerprint-snapshot.py \
+            --dist dist \
+            --output "$W6A_TMP/w6a-pass2-fingerprint.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['W6A_TMP'])
+          first = json.loads((root / 'w6a-pass1-fingerprint.json').read_text(encoding='utf-8'))
+          second = json.loads((root / 'w6a-pass2-fingerprint.json').read_text(encoding='utf-8'))
+
+          def hashes(doc, key, name_key):
+              return {item[name_key]: item['sha256'] for item in doc[key]}
+
+          binaries1 = hashes(first, 'binaries', 'path')
+          binaries2 = hashes(second, 'binaries', 'path')
+          archives1 = hashes(first, 'archives', 'name')
+          archives2 = hashes(second, 'archives', 'name')
+          changed_binaries = sorted(name for name in set(binaries1) | set(binaries2) if binaries1.get(name) != binaries2.get(name))
+          changed_archives = sorted(name for name in set(archives1) | set(archives2) if archives1.get(name) != archives2.get(name))
+
+          diagnostic = {
+              'schema': 'ainovel-w6a-determinism-diagnostic/2',
+              'binary_reproducible': not changed_binaries,
+              'archive_reproducible': not changed_archives,
+              'changed_binaries': changed_binaries,
+              'changed_archives': changed_archives,
+              'pass1_goreleaser_metadata': first.get('goreleaser_metadata', {}),
+              'pass2_goreleaser_metadata': second.get('goreleaser_metadata', {}),
+              'pass1': first,
+              'pass2': second,
+          }
+          (root / 'w6a-determinism-diagnostic.json').write_text(
+              json.dumps(diagnostic, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(
+              'W6A determinism classification: '
+              f"binary_reproducible={diagnostic['binary_reproducible']} "
+              f"archive_reproducible={diagnostic['archive_reproducible']}"
+          )
+          if changed_binaries:
+              print('changed raw binaries: ' + ', '.join(changed_binaries))
+          if changed_archives:
+              print('changed archives: ' + ', '.join(changed_archives))
+          PY
+          if ! cmp -s "$W6A_TMP/w6a-pass1-checksums.txt" dist/ainovel-cli_checksums.txt; then
+            echo '::error::two independent GoReleaser snapshots produced different checksum manifests'
+            diff -u "$W6A_TMP/w6a-pass1-checksums.txt" dist/ainovel-cli_checksums.txt || true
+            exit 1
+          fi
+          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > "$W6A_TMP/w6a-pass2-manifest.sha256"
+          cmp -s "$W6A_TMP/w6a-pass1-manifest.sha256" "$W6A_TMP/w6a-pass2-manifest.sha256"
+          test -z "$(git status --porcelain)"
+
+      - name: Upload sanitized determinism diagnostic on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6a-determinism-diagnostic-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: ignore
+          retention-days: 3
+          path: |
+            /tmp/ainovel-w6a/w6a-pass1.json
+            /tmp/ainovel-w6a/w6a-pass2.json
+            /tmp/ainovel-w6a/w6a-pass1-fingerprint.json
+            /tmp/ainovel-w6a/w6a-pass2-fingerprint.json
+            /tmp/ainovel-w6a/w6a-determinism-diagnostic.json
+            /tmp/ainovel-w6a/w6a-pass1-checksums.txt
+            dist/ainovel-cli_checksums.txt
+
+      - name: Generate deterministic release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh .github/scripts/gen-changelog.sh > dist/release-notes.md
+          test -s dist/release-notes.md
+
+      - name: Build sanitized W6A authority evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['W6A_TMP'])
+          first = json.loads((root / 'w6a-pass1.json').read_text(encoding='utf-8'))
+          second = json.loads((root / 'w6a-pass2.json').read_text(encoding='utf-8'))
+          if first != second:
+              raise SystemExit('W6A evidence differs between deterministic rebuilds')
+          manifest_sha = (root / 'w6a-pass2-manifest.sha256').read_text(encoding='utf-8').strip()
+          second['deterministic_rebuild'] = True
+          second['checksum_manifest_sha256'] = manifest_sha
+          second['release_notes_ai_api_free'] = True
+          second['w55_no_api'] = 'PASS'
+          second['toolchain'] = {'go': 'go.mod', 'goreleaser': 'v2.18.1'}
+          Path('dist/w6a-release-packaging-evidence.json').write_text(
+              json.dumps(second, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Ensure packaging did not modify source authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+
+      - name: Upload snapshot package and sanitized evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6a-release-snapshot-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/ainovel-cli_checksums.txt
+            dist/w6a-release-packaging-evidence.json
+            dist/release-notes.md

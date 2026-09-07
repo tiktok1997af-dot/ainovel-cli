@@ -1,0 +1,139 @@
+name: W6D First Fork Release Prepublication
+
+on:
+  push:
+    branches:
+      - w6d-first-fork-release-publication
+      - w6-production-release-distribution-authority
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_REPOSITORY: tiktok1997af-dot/ainovel-cli
+  RELEASE_TAG: v0.1.0
+  LOCKED_W6C_SHA: c3a08d1069345900e0fc5bbb39cfea5e732c3924
+
+jobs:
+  prepublication:
+    name: W6D fail-closed prepublication authority
+    if: ${{ github.repository == 'tiktok1997af-dot/ainovel-cli' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify authority chain and bounded W6D diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$LOCKED_W6C_SHA" HEAD
+          test -z "$(git status --porcelain)"
+          python3 - <<'PY'
+          import os,re,subprocess
+          allowed={
+            '.github/workflows/release.yml',
+            '.github/workflows/w6d-first-fork-release-publication.yml',
+            '.github/workflows/w6d-first-release-publish.yml',
+            'docs/w6d-first-fork-release-authority.md',
+            'scripts/w6d-published-windows-smoke.ps1',
+            'scripts/w6d-verify-published-release.py',
+          }
+          changed=set(subprocess.check_output(['git','diff','--name-only',f"{os.environ['LOCKED_W6C_SHA']}..HEAD"],text=True).splitlines())
+          extra=sorted(changed-allowed)
+          if not changed or extra: raise SystemExit(f'W6D bounded diff failed; changed={sorted(changed)} extra={extra}')
+          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',os.environ['RELEASE_TAG']): raise SystemExit('invalid strict SemVer authority')
+          print('W6D bounded authority diff PASS:', ', '.join(sorted(changed)))
+          PY
+
+      - name: Verify pristine first-release state or exact recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          refs="$(git ls-remote --tags origin)"
+          releases="$(gh api "repos/$PRODUCT_REPOSITORY/releases")"
+          python3 - "$GITHUB_SHA" "$RELEASE_TAG" "$refs" "$releases" <<'PY'
+          import json,sys
+          sha,tag,refs,raw=sys.argv[1:]
+          lines=[x for x in refs.splitlines() if x.strip()]
+          rels=json.loads(raw)
+          if not lines and not rels:
+            print('W6D pristine first-release state PASS')
+          elif lines==[f'{sha}\trefs/tags/{tag}'] and len(rels)<=1 and (not rels or rels[0].get('tag_name')==tag):
+            print('W6D exact recovery state PASS')
+          else:
+            raise SystemExit(f'unexpected tag/release state: tags={lines}, releases={[x.get("tag_name") for x in rels]}')
+          PY
+
+      - name: Verify hardened release workflow contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
+          grep -Fq "startsWith(github.ref, 'refs/tags/v')" .github/workflows/release.yml
+          grep -Fq 'scripts/w55-no-api-audit.sh' .github/workflows/release.yml
+          grep -Fq 'go test ./...' .github/workflows/release.yml
+          grep -Fq 'v2.18.1' .github/workflows/release.yml
+          grep -Fq '_checksums.txt' .goreleaser.yml
+          grep -Fq 'algorithm: sha256' .goreleaser.yml
+          grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
+          grep -Fq 'name: ainovel-cli' .goreleaser.yml
+
+      - name: Repository-wide W5.5 NO-API and Go regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/w55-no-api-audit.sh
+          go test ./...
+          go test ./internal/version
+
+      - name: Deterministic release notes gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh .github/scripts/gen-changelog.sh > /tmp/a.md
+          sh .github/scripts/gen-changelog.sh > /tmp/b.md
+          cmp /tmp/a.md /tmp/b.md
+          python3 - <<'PY'
+          import re
+          b=open('/tmp/a.md',encoding='utf-8').read()
+          pats=[r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',r'\bghp_[A-Za-z0-9]{20,}\b',r'\bgithub_pat_[A-Za-z0-9_]{20,}\b',r'\bAIza[0-9A-Za-z_-]{20,}\b',r'(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{8,}',r'(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}']
+          if any(re.search(p,b) for p in pats): raise SystemExit('release notes contain secret-like material')
+          print('W6D deterministic release notes PASS')
+          PY
+
+      - name: Exact-candidate non-publishing GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify W6A snapshot provenance and write sanitized evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/w6d-evidence
+          python3 scripts/w6a-verify-release-snapshot.py --dist dist --expected-sha "$GITHUB_SHA" --evidence dist/w6d-evidence/w6d-snapshot-evidence.json
+          python3 - <<'PY'
+          import json,os
+          ev={'schema':'ainovel-w6d-prepublication/1','repository':os.environ['PRODUCT_REPOSITORY'],'candidate_sha':os.environ['GITHUB_SHA'],'locked_w6c_ancestor':os.environ['LOCKED_W6C_SHA'],'release_tag':os.environ['RELEASE_TAG'],'bounded_authority_diff':True,'w55_no_api':'PASS','go_regression':'PASS','updater_integrity_regression':'PASS','release_notes_deterministic':True,'release_notes_secret_scan':'PASS','goreleaser_snapshot':'PASS','no_publish_snapshot':True}
+          open('dist/w6d-evidence/w6d-prepublication-evidence.json','w',encoding='utf-8').write(json.dumps(ev,indent=2,sort_keys=True)+'\n')
+          PY
+          test -z "$(git status --porcelain)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6d-prepublication-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: error
+          path: dist/w6d-evidence/*.json
