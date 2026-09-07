@@ -1,0 +1,150 @@
+name: W6B Install Update Integrity Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-update-integrity:
+    name: Install and updater integrity
+    runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify exact candidate and no-publish boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git tag --points-at HEAD | grep -q .
+          test -z "$(git status --porcelain)"
+
+      - name: Repository-wide W5.5 NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: Verify fork-locked install and updater surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'REPO="tiktok1997af-dot/ainovel-cli"' scripts/install.sh
+          grep -Fq 'const ProductRepository = "tiktok1997af-dot/ainovel-cli"' internal/version/repository.go
+          grep -Fq 'Repo:           buildversion.ProductRepository' cmd/ainovel-cli/main.go
+          grep -Fq 'opts.Repo != ProductRepository' internal/version/update.go
+          grep -Fq 'wantURL := "https://github.com/" + ProductRepository' internal/version/update.go
+          grep -Fq 'matches != 1' internal/version/update.go
+          grep -Fq 'hdr.Name != binaryName' internal/version/update.go
+          if grep -nE 'kentjuno|github\.com/voocel/ainovel-cli/releases' \
+            scripts/install.sh internal/version/update.go internal/version/repository.go cmd/ainovel-cli/main.go; then
+            echo '::error::active install/update surface references a non-product release repository'
+            exit 1
+          fi
+          sh -n scripts/install.sh
+          python3 -m py_compile scripts/w6b-test-install-integrity.py
+
+      - name: Run updater integrity regressions
+        shell: bash
+        env:
+          GOWORK: "off"
+        run: go test -buildvcs=false -count=1 ./internal/version
+
+      - name: Build exact-candidate GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify exact snapshot provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6a-verify-release-snapshot.py \
+            --dist dist \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence dist/w6b-snapshot-evidence.json
+
+      - name: Run installer integrity scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6b-test-install-integrity.py \
+            --dist dist \
+            --installer scripts/install.sh \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence dist/w6b-installer-integrity-evidence.json
+
+      - name: Build sanitized W6B authority evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          candidate = os.environ['CANDIDATE_SHA']
+          installer = json.loads(Path('dist/w6b-installer-integrity-evidence.json').read_text(encoding='utf-8'))
+          snapshot = json.loads(Path('dist/w6b-snapshot-evidence.json').read_text(encoding='utf-8'))
+          if installer.get('candidate_sha') != candidate or snapshot.get('candidate_sha') != candidate:
+              raise SystemExit('W6B evidence candidate mismatch')
+          if installer.get('scenario_count') != 10:
+              raise SystemExit('W6B installer scenario count mismatch')
+          if any(item.get('status') != 'PASS' for item in installer.get('scenarios', [])):
+              raise SystemExit('W6B installer scenario did not PASS')
+          evidence = {
+              'schema': 'ainovel-w6b-install-update-integrity/1',
+              'candidate_sha': candidate,
+              'product_repository': 'tiktok1997af-dot/ainovel-cli',
+              'archive_matrix': snapshot.get('archive_matrix'),
+              'snapshot_version': snapshot.get('version'),
+              'installer': installer,
+              'updater_integrity_regressions': 'PASS',
+              'updater_exact_fork_lock': 'PASS',
+              'updater_exact_asset_name': 'PASS',
+              'updater_checksum_unique_and_sha256': 'PASS',
+              'updater_root_binary_unique': 'PASS',
+              'platform_arch_mapping': 'PASS',
+              'w55_no_api': 'PASS',
+              'no_upstream_fallback': True,
+              'no_publish': True,
+          }
+          Path('dist/w6b-install-update-authority-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Ensure W6B verification did not modify source authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+
+      - name: Upload sanitized W6B authority evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w6b-install-update-integrity-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/w6b-install-update-authority-evidence.json
+            dist/w6b-installer-integrity-evidence.json
+            dist/w6b-snapshot-evidence.json
+            dist/ainovel-cli_checksums.txt
