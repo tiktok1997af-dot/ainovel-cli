@@ -5,25 +5,25 @@ import (
 	"testing"
 )
 
-func TestGeminiClickSeedsSanitizedCaptureStateBeforeSend(t *testing.T) {
-	seed := strings.Index(geminiClickSendExpression, "window.__ainovelWebCaptureState =")
-	click := strings.Index(geminiClickSendExpression, "sendButton.click()")
+func TestGeminiResolverSeedsSanitizedCaptureStateBeforeTrustedSend(t *testing.T) {
+	seed := strings.Index(geminiResolveSendExpression, "window.__ainovelWebCaptureState =")
+	result := strings.Index(geminiResolveSendExpression, "return {ok: true")
 	if seed < 0 {
-		t.Fatal("send expression does not seed capture state")
+		t.Fatal("send resolver does not seed capture state")
 	}
-	if click < 0 {
-		t.Fatal("send expression does not click the send control")
+	if result < 0 {
+		t.Fatal("send resolver does not return the trusted-click coordinates")
 	}
-	if seed > click {
-		t.Fatal("capture state must be seeded before the side-effecting send click")
+	if seed > result {
+		t.Fatal("capture state must be seeded before trusted-click coordinates are returned")
 	}
-	for _, want := range []string{"responseCount", "lastSignature", "currentSignature", "lastChangedAt", "observedChange"} {
-		if !strings.Contains(geminiClickSendExpression, want) {
+	for _, want := range []string{"responseCount", "lastSignature", "currentSignature", "lastChangedAt", "observedChange", "composerLengthBeforeClick", "submitAction"} {
+		if !strings.Contains(geminiResolveSendExpression, want) {
 			t.Fatalf("send capture state missing sanitized field %q", want)
 		}
 	}
-	if strings.Contains(geminiClickSendExpression, "responseText:") || strings.Contains(geminiClickSendExpression, "promptText:") {
-		t.Fatal("capture state must not persist raw prompt/response text")
+	if strings.Contains(geminiResolveSendExpression, ".click()") || strings.Contains(geminiResolveSendExpression, "responseText:") || strings.Contains(geminiResolveSendExpression, "promptText:") {
+		t.Fatal("send resolver must remain side-effect free and must not persist raw prompt/response text")
 	}
 }
 
