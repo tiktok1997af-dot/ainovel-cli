@@ -16,12 +16,14 @@ const (
 )
 
 type geminiPromptReadback struct {
-	OK             bool   `json:"ok"`
-	Reason         string `json:"reason"`
-	ComposerLength int    `json:"composer_length"`
-	ExpectedLength int    `json:"expected_length"`
-	ComposerKind   string `json:"composer_kind"`
-	Focused        bool   `json:"focused"`
+	OK                 bool   `json:"ok"`
+	Reason             string `json:"reason"`
+	ComposerLength     int    `json:"composer_length"`
+	ExpectedLength     int    `json:"expected_length"`
+	ComposerLineBreaks int    `json:"composer_line_breaks"`
+	ExpectedLineBreaks int    `json:"expected_line_breaks"`
+	ComposerKind       string `json:"composer_kind"`
+	Focused            bool   `json:"focused"`
 }
 
 func (Gemini) Conversation(ctx context.Context, evaluator Evaluator) (ConversationSnapshot, error) {
@@ -111,10 +113,12 @@ func (Gemini) Submit(ctx context.Context, evaluator Evaluator, prompt string) er
 			kind = "unknown"
 		}
 		return fmt.Errorf(
-			"gemini submit: %s after bounded settle (expected_length=%d actual_length=%d composer_kind=%s focused=%t)",
+			"gemini submit: %s after bounded settle (expected_length=%d actual_length=%d expected_line_breaks=%d actual_line_breaks=%d composer_kind=%s focused=%t)",
 			reason,
 			prepared.ExpectedLength,
 			prepared.ComposerLength,
+			prepared.ExpectedLineBreaks,
+			prepared.ComposerLineBreaks,
 			kind,
 			prepared.Focused,
 		)
@@ -425,6 +429,19 @@ const geminiVerifyPromptExpressionTemplate = `(() => {
     return 'other';
   };
   const normalize = (value) => String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  const lineBreakCount = (value) => (String(value || '').match(/\n/g) || []).length;
+  const readComposer = (composer) => {
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      return String(composer.value || '');
+    }
+    if (composer.classList && composer.classList.contains('ql-editor') && composer.children.length > 0) {
+      return Array.from(composer.children).map((block) => {
+        if (String(block.tagName || '').toLowerCase() === 'br') return '';
+        return String(block.textContent || '');
+      }).join('\n');
+    }
+    return String(composer.innerText || composer.textContent || '');
+  };
   const expected = normalize(prompt);
   const composer = firstVisible([
     'rich-textarea .ql-editor[contenteditable="true"]',
@@ -439,25 +456,26 @@ const geminiVerifyPromptExpressionTemplate = `(() => {
     reason: 'prompt composer disappeared after trusted input',
     composer_length: 0,
     expected_length: expected.length,
+    composer_line_breaks: 0,
+    expected_line_breaks: lineBreakCount(expected),
     composer_kind: 'missing',
     focused: false
   };
-  const actual = String(
-    (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement)
-      ? composer.value
-      : (composer.innerText || composer.textContent || '')
-  );
-  const normalizedActual = normalize(actual);
+  const normalizedActual = normalize(readComposer(composer));
   const active = document.activeElement;
   const focused = Boolean(active && (active === composer || composer.contains(active) || (active.shadowRoot && active.shadowRoot.activeElement === composer)));
   const composerKind = kindOf(composer);
   const composerLength = normalizedActual.length;
+  const composerLineBreaks = lineBreakCount(normalizedActual);
+  const expectedLineBreaks = lineBreakCount(expected);
   if (normalizedActual !== expected) {
     return {
       ok: false,
       reason: 'prompt composer did not retain trusted input',
       composer_length: composerLength,
       expected_length: expected.length,
+      composer_line_breaks: composerLineBreaks,
+      expected_line_breaks: expectedLineBreaks,
       composer_kind: composerKind,
       focused
     };
@@ -468,6 +486,8 @@ const geminiVerifyPromptExpressionTemplate = `(() => {
       reason: 'prompt composer is empty after trusted input',
       composer_length: 0,
       expected_length: expected.length,
+      composer_line_breaks: 0,
+      expected_line_breaks: expectedLineBreaks,
       composer_kind: composerKind,
       focused
     };
@@ -477,6 +497,8 @@ const geminiVerifyPromptExpressionTemplate = `(() => {
     reason: '',
     composer_length: composerLength,
     expected_length: expected.length,
+    composer_line_breaks: composerLineBreaks,
+    expected_line_breaks: expectedLineBreaks,
     composer_kind: composerKind,
     focused
   };
