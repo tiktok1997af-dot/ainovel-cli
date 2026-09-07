@@ -182,8 +182,24 @@ if (-not $resume.WaitForExit($ResumeTimeoutSeconds * 1000)) {
     Stop-SmokeChrome $profileDir
     Fail "resume process timed out"
 }
+try {
+    $resume.WaitForExit()
+    $resume.Refresh()
+} catch {
+    Stop-SmokeChrome $profileDir
+    Fail ("cannot finalize resume process state: " + $_.Exception.Message)
+}
+if (-not $resume.HasExited) {
+    Stop-SmokeChrome $profileDir
+    Fail "resume process reported completion but is still running after refresh"
+}
+$resumeExitCode = $resume.ExitCode
+if ($null -eq $resumeExitCode) {
+    Stop-SmokeChrome $profileDir
+    Fail "resume process exit code unavailable after WaitForExit/Refresh"
+}
 Stop-SmokeChrome $profileDir
-if ($resume.ExitCode -ne 0) { Fail ("resume production process failed; exit=" + $resume.ExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $resumeErr)) }
+if ($resumeExitCode -ne 0) { Fail ("resume production process failed; exit=" + $resumeExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $resumeErr)) }
 
 $finalProgress = Get-Progress $progressPath
 if ($null -eq $finalProgress) { Fail "progress.json missing after restart" }
