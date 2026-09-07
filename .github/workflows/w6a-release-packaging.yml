@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      W6A_TMP: ${{ runner.temp }}/ainovel-w6a
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -37,9 +38,11 @@ jobs:
           ! git tag --points-at HEAD | grep -q .
           grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
           grep -Fq 'name: ainovel-cli' .goreleaser.yml
+          grep -Fq 'go mod tidy -diff' .goreleaser.yml
           grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
           grep -Fq 'go-version-file: go.mod' .github/workflows/release.yml
           grep -Fq 'version: "v2.18.1"' .github/workflows/release.yml
+          test -z "$(git status --porcelain)"
 
       - name: Repository-wide W5.5 NO-API audit
         shell: bash
@@ -56,6 +59,14 @@ jobs:
           fi
           sh -n .github/scripts/gen-changelog.sh
 
+      - name: Prepare external W6A scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$W6A_TMP"
+          mkdir -p "$W6A_TMP"
+          test -z "$(git status --porcelain)"
+
       - name: GoReleaser snapshot pass 1
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -70,12 +81,13 @@ jobs:
           python3 scripts/w6a-verify-release-snapshot.py \
             --dist dist \
             --expected-sha "$CANDIDATE_SHA" \
-            --evidence w6a-pass1.json
+            --evidence "$W6A_TMP/w6a-pass1.json"
           python3 scripts/w6a-fingerprint-snapshot.py \
             --dist dist \
-            --output w6a-pass1-fingerprint.json
-          cp dist/ainovel-cli_checksums.txt w6a-pass1-checksums.txt
-          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > w6a-pass1-manifest.sha256
+            --output "$W6A_TMP/w6a-pass1-fingerprint.json"
+          cp dist/ainovel-cli_checksums.txt "$W6A_TMP/w6a-pass1-checksums.txt"
+          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > "$W6A_TMP/w6a-pass1-manifest.sha256"
+          test -z "$(git status --porcelain)"
 
       - name: GoReleaser snapshot pass 2
         uses: goreleaser/goreleaser-action@v7
@@ -91,16 +103,18 @@ jobs:
           python3 scripts/w6a-verify-release-snapshot.py \
             --dist dist \
             --expected-sha "$CANDIDATE_SHA" \
-            --evidence w6a-pass2.json
+            --evidence "$W6A_TMP/w6a-pass2.json"
           python3 scripts/w6a-fingerprint-snapshot.py \
             --dist dist \
-            --output w6a-pass2-fingerprint.json
+            --output "$W6A_TMP/w6a-pass2-fingerprint.json"
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          first = json.loads(Path('w6a-pass1-fingerprint.json').read_text(encoding='utf-8'))
-          second = json.loads(Path('w6a-pass2-fingerprint.json').read_text(encoding='utf-8'))
+          root = Path(os.environ['W6A_TMP'])
+          first = json.loads((root / 'w6a-pass1-fingerprint.json').read_text(encoding='utf-8'))
+          second = json.loads((root / 'w6a-pass2-fingerprint.json').read_text(encoding='utf-8'))
 
           def hashes(doc, key, name_key):
               return {item[name_key]: item['sha256'] for item in doc[key]}
@@ -113,7 +127,7 @@ jobs:
           changed_archives = sorted(name for name in set(archives1) | set(archives2) if archives1.get(name) != archives2.get(name))
 
           diagnostic = {
-              'schema': 'ainovel-w6a-determinism-diagnostic/1',
+              'schema': 'ainovel-w6a-determinism-diagnostic/2',
               'binary_reproducible': not changed_binaries,
               'archive_reproducible': not changed_archives,
               'changed_binaries': changed_binaries,
@@ -123,7 +137,7 @@ jobs:
               'pass1': first,
               'pass2': second,
           }
-          Path('w6a-determinism-diagnostic.json').write_text(
+          (root / 'w6a-determinism-diagnostic.json').write_text(
               json.dumps(diagnostic, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
           )
@@ -137,13 +151,14 @@ jobs:
           if changed_archives:
               print('changed archives: ' + ', '.join(changed_archives))
           PY
-          if ! cmp -s w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt; then
+          if ! cmp -s "$W6A_TMP/w6a-pass1-checksums.txt" dist/ainovel-cli_checksums.txt; then
             echo '::error::two independent GoReleaser snapshots produced different checksum manifests'
-            diff -u w6a-pass1-checksums.txt dist/ainovel-cli_checksums.txt || true
+            diff -u "$W6A_TMP/w6a-pass1-checksums.txt" dist/ainovel-cli_checksums.txt || true
             exit 1
           fi
-          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > w6a-pass2-manifest.sha256
-          cmp -s w6a-pass1-manifest.sha256 w6a-pass2-manifest.sha256
+          sha256sum dist/ainovel-cli_checksums.txt | awk '{print $1}' > "$W6A_TMP/w6a-pass2-manifest.sha256"
+          cmp -s "$W6A_TMP/w6a-pass1-manifest.sha256" "$W6A_TMP/w6a-pass2-manifest.sha256"
+          test -z "$(git status --porcelain)"
 
       - name: Upload sanitized determinism diagnostic on failure
         if: failure()
@@ -153,20 +168,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
           path: |
-            w6a-pass1.json
-            w6a-pass2.json
-            w6a-pass1-fingerprint.json
-            w6a-pass2-fingerprint.json
-            w6a-determinism-diagnostic.json
-            w6a-pass1-checksums.txt
+            ${{ runner.temp }}/ainovel-w6a/w6a-pass1.json
+            ${{ runner.temp }}/ainovel-w6a/w6a-pass2.json
+            ${{ runner.temp }}/ainovel-w6a/w6a-pass1-fingerprint.json
+            ${{ runner.temp }}/ainovel-w6a/w6a-pass2-fingerprint.json
+            ${{ runner.temp }}/ainovel-w6a/w6a-determinism-diagnostic.json
+            ${{ runner.temp }}/ainovel-w6a/w6a-pass1-checksums.txt
             dist/ainovel-cli_checksums.txt
 
       - name: Generate deterministic release notes
         shell: bash
         run: |
           set -euo pipefail
-          .github/scripts/gen-changelog.sh > release-notes.md
-          test -s release-notes.md
+          .github/scripts/gen-changelog.sh > dist/release-notes.md
+          test -s dist/release-notes.md
 
       - name: Build sanitized W6A authority evidence
         shell: bash
@@ -174,19 +189,21 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          first = json.loads(Path('w6a-pass1.json').read_text(encoding='utf-8'))
-          second = json.loads(Path('w6a-pass2.json').read_text(encoding='utf-8'))
+          root = Path(os.environ['W6A_TMP'])
+          first = json.loads((root / 'w6a-pass1.json').read_text(encoding='utf-8'))
+          second = json.loads((root / 'w6a-pass2.json').read_text(encoding='utf-8'))
           if first != second:
               raise SystemExit('W6A evidence differs between deterministic rebuilds')
-          manifest_sha = Path('w6a-pass2-manifest.sha256').read_text(encoding='utf-8').strip()
+          manifest_sha = (root / 'w6a-pass2-manifest.sha256').read_text(encoding='utf-8').strip()
           second['deterministic_rebuild'] = True
           second['checksum_manifest_sha256'] = manifest_sha
           second['release_notes_ai_api_free'] = True
           second['w55_no_api'] = 'PASS'
           second['toolchain'] = {'go': 'go.mod', 'goreleaser': 'v2.18.1'}
-          Path('w6a-release-packaging-evidence.json').write_text(
+          Path('dist/w6a-release-packaging-evidence.json').write_text(
               json.dumps(second, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
           )
@@ -196,7 +213,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git status --porcelain)"
 
       - name: Upload snapshot package and sanitized evidence
         uses: actions/upload-artifact@v4
@@ -208,5 +225,5 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/ainovel-cli_checksums.txt
-            w6a-release-packaging-evidence.json
-            release-notes.md
+            dist/w6a-release-packaging-evidence.json
+            dist/release-notes.md
