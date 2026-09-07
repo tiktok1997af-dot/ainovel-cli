@@ -33,6 +33,12 @@ func (s *scriptedEvaluator) Click(_ context.Context, x, y float64) error {
 	return s.clickErr
 }
 
+type evalOnlyEvaluator struct{}
+
+func (*evalOnlyEvaluator) Eval(context.Context, string) (json.RawMessage, error) {
+	return json.RawMessage(`null`), nil
+}
+
 func TestGeminiConversationDecodesSanitizedAckSnapshot(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{json.RawMessage(`{"busy":false,"response_count":2,"user_message_count":3,"composer_present":true,"composer_empty":false,"composer_length":17,"submit_action":" native-button ","last_response":" final ","truncated":false}`)}}
 	got, err := (Gemini{}).Conversation(context.Background(), e)
@@ -92,8 +98,7 @@ func TestGeminiSubmitJSONEscapesPrompt(t *testing.T) {
 }
 
 func TestGeminiSubmitRequiresTrustedPointerCapability(t *testing.T) {
-	type evalOnly struct{ scriptedEvaluator }
-	var evaluator Evaluator = &evalOnly{}
+	var evaluator Evaluator = &evalOnlyEvaluator{}
 	if _, ok := evaluator.(PointerEvaluator); ok {
 		t.Fatal("test evaluator unexpectedly implements PointerEvaluator")
 	}
