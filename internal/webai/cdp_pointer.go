@@ -32,14 +32,17 @@ func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
 		"y":          y,
 		"button":     "left",
 		"clickCount": 1,
+		"pointerType": "mouse",
 	}
 	pressed := clonePointerParams(common)
 	pressed["type"] = "mousePressed"
+	pressed["buttons"] = 1
 	if err := e.callCDPNoResult(ctx, "Input.dispatchMouseEvent", pressed); err != nil {
 		return fmt.Errorf("CDP pointer press: %w", err)
 	}
 	released := clonePointerParams(common)
 	released["type"] = "mouseReleased"
+	released["buttons"] = 0
 	if err := e.callCDPNoResult(ctx, "Input.dispatchMouseEvent", released); err != nil {
 		return fmt.Errorf("CDP pointer release: %w", err)
 	}
@@ -47,7 +50,7 @@ func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
 }
 
 func clonePointerParams(src map[string]any) map[string]any {
-	out := make(map[string]any, len(src)+1)
+	out := make(map[string]any, len(src)+2)
 	for key, value := range src {
 		out[key] = value
 	}
