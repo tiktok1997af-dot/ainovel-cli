@@ -51,6 +51,14 @@ jobs:
           $source = Get-Content scripts/w5e-production-smoke.ps1 -Raw -Encoding UTF8
           [void][scriptblock]::Create($source)
 
+          $resumeContract = '(?s)\$resume\.WaitForExit\(\$ResumeTimeoutSeconds \* 1000\).*?\$resume\.WaitForExit\(\).*?\$resume\.Refresh\(\).*?\$resumeExitCode = \$resume\.ExitCode'
+          if ($source -notmatch $resumeContract) {
+            throw 'Resume exit-code stabilization contract is missing: timed wait must be followed by WaitForExit(), Refresh(), then an ExitCode snapshot.'
+          }
+          if ($source -match 'if \(\$resume\.ExitCode -ne 0\)') {
+            throw 'Resume path must not evaluate a potentially stale ExitCode property directly.'
+          }
+
       - name: Assemble smoke pack
         shell: pwsh
         run: |
