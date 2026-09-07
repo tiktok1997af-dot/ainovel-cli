@@ -53,16 +53,27 @@ jobs:
 
           $requiredMarkers = @(
             '$resumeExitCodePath = Join-Path $EvidenceDir "resume.exitcode.txt"',
+            'w5e-resume-wrapper.cmd',
+            'W5E_RESUME_PRODUCTION_EXE',
             'W5E_RESUME_EXIT_CODE_PATH',
-            '& $env:W5E_RESUME_PRODUCTION_EXE --headless',
-            '$LASTEXITCODE',
-            'Start-Process -FilePath $powerShellExe',
+            '%ERRORLEVEL%',
+            'Start-Process -FilePath $cmdExe',
             '[int]::TryParse($resumeExitRaw, [ref]$resumeExitCode)',
-            'resume exit-code sidecar missing after process completion'
+            'resume exit-code sidecar missing after process completion',
+            'second production invocation did not report the real Resume path'
           )
           foreach ($marker in $requiredMarkers) {
             if (-not $source.Contains($marker)) {
-              throw "Resume exit-code sidecar contract is missing marker: $marker"
+              throw "Resume byte-preserving sidecar contract is missing marker: $marker"
+            }
+          }
+          foreach ($forbidden in @(
+            'w5e-resume-wrapper.ps1',
+            'Start-Process -FilePath $powerShellExe',
+            '& $env:W5E_RESUME_PRODUCTION_EXE --headless'
+          )) {
+            if ($source.Contains($forbidden)) {
+              throw "Resume path must not route native stdout/stderr through PowerShell: $forbidden"
             }
           }
           if ($source -match '\$resume\.ExitCode') {
