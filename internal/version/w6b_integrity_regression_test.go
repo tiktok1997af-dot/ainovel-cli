@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -17,14 +16,14 @@ func TestW6BRejectsTagPrefixedArchiveName(t *testing.T) {
 		t.Skipf("unsupported test platform: %v", err)
 	}
 	name := "ainovel-cli_v1.2.3" + suffix
-	rel := releaseInfo{
+	rel := release{
 		TagName: "v1.2.3",
 		Assets: []releaseAsset{{
 			Name:               name,
 			BrowserDownloadURL: "https://github.com/" + ProductRepository + "/releases/download/v1.2.3/" + name,
 		}},
 	}
-	if _, err := selectAsset(rel, "ainovel-cli"); err == nil {
+	if _, err := selectAsset(&rel, "ainovel-cli"); err == nil {
 		t.Fatal("expected tag-prefixed archive name to be rejected")
 	}
 }
@@ -35,45 +34,58 @@ func TestW6BRejectsOffForkArchiveURL(t *testing.T) {
 		t.Skipf("unsupported test platform: %v", err)
 	}
 	name := "ainovel-cli_1.2.3" + suffix
-	rel := releaseInfo{
+	rel := release{
 		TagName: "v1.2.3",
 		Assets: []releaseAsset{{
 			Name:               name,
 			BrowserDownloadURL: "https://github.com/kentjuno/ainovel-cli/releases/download/v1.2.3/" + name,
 		}},
 	}
-	if _, err := selectAsset(rel, "ainovel-cli"); err == nil {
+	if _, err := selectAsset(&rel, "ainovel-cli"); err == nil {
 		t.Fatal("expected off-fork archive URL to be rejected")
 	}
 }
 
 func TestW6BRejectsOffForkChecksumURL(t *testing.T) {
 	name := "ainovel-cli_checksums.txt"
-	rel := releaseInfo{
+	rel := release{
 		TagName: "v1.2.3",
 		Assets: []releaseAsset{{
 			Name:               name,
 			BrowserDownloadURL: "https://github.com/kentjuno/ainovel-cli/releases/download/v1.2.3/" + name,
 		}},
 	}
-	if _, err := selectChecksumAsset(rel, "ainovel-cli"); err == nil {
+	if _, err := selectChecksumAsset(&rel, "ainovel-cli"); err == nil {
 		t.Fatal("expected off-fork checksum URL to be rejected")
 	}
 }
 
 func TestW6BRejectsDuplicateChecksumEntries(t *testing.T) {
+	root := t.TempDir()
+	archivePath := root + "/asset.tar.gz"
+	checksumPath := root + "/checksums.txt"
 	archive := []byte("archive")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sum := sha256.Sum256(archive)
 	line := fmt.Sprintf("%x  asset.tar.gz\n", sum)
-	checksums := []byte(line + line)
-	if err := verifyChecksum(checksums, "asset.tar.gz", archive); err == nil {
+	if err := os.WriteFile(checksumPath, []byte(line+line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyChecksum(archivePath, checksumPath, "asset.tar.gz"); err == nil {
 		t.Fatal("expected duplicate checksum entries to fail closed")
 	}
 }
 
 func TestW6BRejectsNestedArchiveBinary(t *testing.T) {
+	root := t.TempDir()
+	archivePath := root + "/asset.tar.gz"
 	archive := makeW6BTarGz(t, "nested/ainovel-cli", []byte("binary"))
-	if _, err := extractBinary(archive, "ainovel-cli", t.TempDir()); err == nil {
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractBinary(archivePath, t.TempDir(), "ainovel-cli"); err == nil {
 		t.Fatal("expected nested binary entry to be rejected")
 	}
 }
@@ -100,17 +112,4 @@ func makeW6BTarGz(t *testing.T, name string, content []byte) []byte {
 		t.Fatalf("close gzip: %v", err)
 	}
 	return buf.Bytes()
-}
-
-func TestW6BRegressionHelperDoesNotTouchFilesystem(t *testing.T) {
-	// Keeps filepath/os imports exercised on every platform while asserting the
-	// regression fixture itself is isolated from the product install path.
-	root := t.TempDir()
-	path := filepath.Join(root, "sentinel")
-	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
-	}
 }
