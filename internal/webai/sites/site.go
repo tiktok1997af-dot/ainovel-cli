@@ -40,6 +40,16 @@ type PointerEvaluator interface {
 	Click(ctx context.Context, x, y float64) error
 }
 
+// TextInputEvaluator is the trusted controlled-editor capability used by WEB
+// interaction adapters. ReplaceText focuses the visible editor at x/y, selects
+// its current contents with native key events, clears them and inserts text via
+// Chrome's Input domain. It never submits the form and therefore can safely run
+// before the exactly-once submit action.
+type TextInputEvaluator interface {
+	PointerEvaluator
+	ReplaceText(ctx context.Context, x, y float64, text string) error
+}
+
 // Adapter contains site-specific target selection and readiness detection.
 // Prompt submission/capture is deliberately outside this W2 contract.
 type Adapter interface {
