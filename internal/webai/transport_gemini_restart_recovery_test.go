@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/webai/sites"
 )
@@ -27,6 +28,11 @@ func TestGeminiWebTransportCaptureReconnectRetriesTransientOpenFailure(t *testin
 	transport := testTransport(t, session, adapter)
 	transport.captureReconnects = 1
 	transport.preflightRetries = 1
+	// The shared fast-test helper uses a 100ms response timeout, but the bounded
+	// reconnect opener intentionally waits 200ms between attempts. Production
+	// uses a minutes-long response budget. Give this regression enough budget to
+	// exercise the retry rather than timing out before the second open attempt.
+	transport.responseTimeout = time.Second
 
 	opens := 0
 	transport.evaluatorFactory = func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
