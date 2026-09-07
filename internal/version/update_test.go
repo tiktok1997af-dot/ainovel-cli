@@ -32,37 +32,79 @@ func TestReleaseURL(t *testing.T) {
 	}
 }
 
+func TestUpdateRejectsUnauthorizedRepository(t *testing.T) {
+	_, err := Update(context.Background(), UpdateOptions{
+		Repo:       "kentjuno/ainovel-cli",
+		BinaryName: "ainovel-cli",
+	})
+	if err == nil {
+		t.Fatal("expected non-product repository to be rejected before any update transport")
+	}
+}
+
 func TestSelectAsset(t *testing.T) {
 	suffix, err := assetSuffix()
 	if err != nil {
 		t.Skip(err)
 	}
+	name := "ainovel-cli_1.2.3" + suffix
+	url := "https://github.com/" + ProductRepository + "/releases/download/v1.2.3/" + name
 	rel := &release{
 		TagName: "v1.2.3",
 		Assets: []releaseAsset{
-			{Name: "ainovel-cli_v1.2.3_Windows_x86_64.zip", BrowserDownloadURL: "wrong"},
-			{Name: "ainovel-cli_v1.2.3" + suffix, BrowserDownloadURL: "right"},
+			{Name: "ainovel-cli_v1.2.3" + suffix, BrowserDownloadURL: "https://github.com/" + ProductRepository + "/releases/download/v1.2.3/ainovel-cli_v1.2.3" + suffix},
+			{Name: name, BrowserDownloadURL: url},
 		},
 	}
 	asset, err := selectAsset(rel, "ainovel-cli")
 	if err != nil {
 		t.Fatalf("selectAsset: %v", err)
 	}
-	if asset.BrowserDownloadURL != "right" {
+	if asset.Name != name || asset.BrowserDownloadURL != url {
 		t.Fatalf("asset = %+v", asset)
 	}
 }
 
 func TestSelectChecksumAsset(t *testing.T) {
+	name := "ainovel-cli_checksums.txt"
+	url := "https://github.com/" + ProductRepository + "/releases/download/v1.2.3/" + name
 	rel := &release{TagName: "v1.2.3", Assets: []releaseAsset{
-		{Name: "ainovel-cli_checksums.txt", BrowserDownloadURL: "checksum"},
+		{Name: name, BrowserDownloadURL: url},
 	}}
 	asset, err := selectChecksumAsset(rel, "ainovel-cli")
 	if err != nil {
 		t.Fatalf("selectChecksumAsset: %v", err)
 	}
-	if asset.BrowserDownloadURL != "checksum" {
+	if asset.Name != name || asset.BrowserDownloadURL != url {
 		t.Fatalf("asset = %+v", asset)
+	}
+}
+
+func TestAssetSuffixForReleaseMatrix(t *testing.T) {
+	cases := []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{"linux", "amd64", "_Linux_x86_64.tar.gz"},
+		{"linux", "arm64", "_Linux_arm64.tar.gz"},
+		{"darwin", "amd64", "_Darwin_x86_64.tar.gz"},
+		{"darwin", "arm64", "_Darwin_arm64.tar.gz"},
+	}
+	for _, tc := range cases {
+		got, err := assetSuffixFor(tc.goos, tc.goarch)
+		if err != nil {
+			t.Fatalf("assetSuffixFor(%s,%s): %v", tc.goos, tc.goarch, err)
+		}
+		if got != tc.want {
+			t.Fatalf("assetSuffixFor(%s,%s) = %q, want %q", tc.goos, tc.goarch, got, tc.want)
+		}
+	}
+	if _, err := assetSuffixFor("linux", "mips64"); err == nil {
+		t.Fatal("expected unsupported architecture to fail closed")
+	}
+	if _, err := assetSuffixFor("freebsd", "amd64"); err == nil {
+		t.Fatal("expected unsupported operating system to fail closed")
 	}
 }
 
