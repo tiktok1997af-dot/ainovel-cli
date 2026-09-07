@@ -51,12 +51,22 @@ jobs:
           $source = Get-Content scripts/w5e-production-smoke.ps1 -Raw -Encoding UTF8
           [void][scriptblock]::Create($source)
 
-          $resumeContract = '(?s)\$resume\.WaitForExit\(\$ResumeTimeoutSeconds \* 1000\).*?\$resume\.WaitForExit\(\).*?\$resume\.Refresh\(\).*?\$resumeExitCode = \$resume\.ExitCode'
-          if ($source -notmatch $resumeContract) {
-            throw 'Resume exit-code stabilization contract is missing: timed wait must be followed by WaitForExit(), Refresh(), then an ExitCode snapshot.'
+          $requiredMarkers = @(
+            '$resumeExitCodePath = Join-Path $EvidenceDir "resume.exitcode.txt"',
+            'W5E_RESUME_EXIT_CODE_PATH',
+            '& $env:W5E_RESUME_PRODUCTION_EXE --headless',
+            '$LASTEXITCODE',
+            'Start-Process -FilePath $powerShellExe',
+            '[int]::TryParse($resumeExitRaw, [ref]$resumeExitCode)',
+            'resume exit-code sidecar missing after process completion'
+          )
+          foreach ($marker in $requiredMarkers) {
+            if (-not $source.Contains($marker)) {
+              throw "Resume exit-code sidecar contract is missing marker: $marker"
+            }
           }
-          if ($source -match 'if \(\$resume\.ExitCode -ne 0\)') {
-            throw 'Resume path must not evaluate a potentially stale ExitCode property directly.'
+          if ($source -match '\$resume\.ExitCode') {
+            throw 'Resume authority path must not depend on the Windows PowerShell Process.ExitCode property.'
           }
 
       - name: Assemble smoke pack
