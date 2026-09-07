@@ -1,0 +1,102 @@
+name: W5E smoke pack preflight
+
+on:
+  push:
+    branches:
+      - w5e-real-production-app-smoke
+  pull_request:
+    branches:
+      - w5-web-only-integration-api-removal
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-smoke-pack:
+    name: Windows smoke pack (preflight only)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build exact production binary
+        shell: pwsh
+        env:
+          GOWORK: "off"
+        run: |
+          New-Item -ItemType Directory -Force dist/w5e | Out-Null
+          go build -trimpath -buildvcs=true -o dist/w5e/ainovel-cli.exe ./cmd/ainovel-cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash dist/w5e/ainovel-cli.exe -Algorithm SHA256 | Format-List
+
+      - name: Build read-only readiness verifier
+        shell: pwsh
+        env:
+          GOWORK: "off"
+        run: |
+          go build -trimpath -buildvcs=true -o dist/w5e/ainovel-w5e-readiness.exe ./cmd/ainovel-w5e-readiness
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash dist/w5e/ainovel-w5e-readiness.exe -Algorithm SHA256 | Format-List
+
+      - name: Parse desktop smoke runner
+        shell: pwsh
+        run: |
+          $source = Get-Content scripts/w5e-production-smoke.ps1 -Raw -Encoding UTF8
+          [void][scriptblock]::Create($source)
+
+      - name: Assemble smoke pack
+        shell: pwsh
+        run: |
+          Copy-Item scripts/w5e-production-smoke.ps1 dist/w5e/
+          Copy-Item docs/w5e-real-production-app-smoke.md dist/w5e/
+          @"
+          W5E REAL PRODUCTION APP SMOKE PACK
+          ==================================
+          This hosted artifact is PRE-FLIGHT ONLY and is NOT W5E PASS evidence.
+          A real Windows desktop with visible Chrome and an already logged-in persistent Gemini profile is mandatory.
+
+          Candidate commit: $env:GITHUB_SHA
+          Run the repository script from the exact checked-out candidate so its static gate and Git SHA are authoritative.
+          "@ | Set-Content dist/w5e/PREFLIGHT_ONLY.txt -Encoding UTF8
+
+      - name: Upload Windows smoke pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-w5e-smoke-windows
+          path: dist/w5e/*
+          if-no-files-found: error
+          retention-days: 7
+
+  repository-preflight:
+    name: Repository WEB-only preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: W5.5 repository-wide NO-API gate
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: W5E verifier tests/build
+        env:
+          GOWORK: "off"
+        run: |
+          go test -buildvcs=false -count=1 ./internal/webai ./internal/bootstrap ./internal/entry/headless ./internal/host
+          go build -trimpath -buildvcs=false ./cmd/ainovel-w5e-readiness
+
+      - name: Confirm hosted runner is not treated as real smoke
+        run: |
+          printf '%s\n' 'W5E hosted preflight PASS. Real desktop Gemini READY + production restart evidence is still mandatory.'

@@ -3,13 +3,21 @@ package sites
 import "context"
 
 // ConversationSnapshot is the minimal DOM state W3 needs to distinguish an
-// in-flight generation from a stable final model response. It intentionally
-// contains no cookies, auth tokens, localStorage values or account identity.
+// in-flight generation from a stable final model response and to confirm that a
+// submitted prompt actually became a Gemini user turn. It intentionally
+// contains no prompt text, cookies, auth tokens, localStorage values or account
+// identity. SubmitAction/ComposerLength are sanitized structural diagnostics;
+// they never contain composer text.
 type ConversationSnapshot struct {
-	Busy          bool   `json:"busy"`
-	ResponseCount int    `json:"response_count"`
-	LastResponse  string `json:"last_response"`
-	Truncated     bool   `json:"truncated"`
+	Busy             bool   `json:"busy"`
+	ResponseCount    int    `json:"response_count"`
+	UserMessageCount int    `json:"user_message_count"`
+	ComposerPresent  bool   `json:"composer_present"`
+	ComposerEmpty    bool   `json:"composer_empty"`
+	ComposerLength   int    `json:"composer_length"`
+	SubmitAction     string `json:"submit_action"`
+	LastResponse     string `json:"last_response"`
+	Truncated        bool   `json:"truncated"`
 }
 
 // InteractionAdapter extends the W2 read-only adapter with the minimum W3

@@ -24,10 +24,30 @@ type Result struct {
 	Reason string
 }
 
-// Evaluator evaluates a read-only JavaScript expression in the selected page
-// and returns the JSON value produced by Runtime.evaluate.
+// Evaluator evaluates a JavaScript expression in the selected visible page and
+// returns the JSON value produced by Runtime.evaluate. Readiness adapters use it
+// read-only; interaction adapters may use narrowly scoped DOM preparation.
 type Evaluator interface {
 	Eval(ctx context.Context, expression string) (json.RawMessage, error)
+}
+
+// PointerEvaluator is an optional trusted-input capability exposed by the local
+// Chrome DevTools evaluator. Coordinates are CSS viewport pixels previously
+// resolved from the same visible page. Interaction adapters use it to perform
+// one real browser pointer action instead of relying on synthetic element.click.
+type PointerEvaluator interface {
+	Evaluator
+	Click(ctx context.Context, x, y float64) error
+}
+
+// TextInputEvaluator is the trusted controlled-editor capability used by WEB
+// interaction adapters. ReplaceText focuses the visible editor at x/y, selects
+// its current contents with native key events, clears them and inserts text via
+// Chrome's Input domain. It never submits the form and therefore can safely run
+// before the exactly-once submit action.
+type TextInputEvaluator interface {
+	PointerEvaluator
+	ReplaceText(ctx context.Context, x, y float64, text string) error
 }
 
 // Adapter contains site-specific target selection and readiness detection.
