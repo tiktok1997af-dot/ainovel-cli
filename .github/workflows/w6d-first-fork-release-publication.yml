@@ -12,8 +12,8 @@ permissions:
 env:
   PRODUCT_REPOSITORY: tiktok1997af-dot/ainovel-cli
   RELEASE_TAG: v0.1.0
+  RELEASE_VERSION: 0.1.0
   LOCKED_W6C_SHA: c3a08d1069345900e0fc5bbb39cfea5e732c3924
-  AUTHORIZATION_COMMIT_MESSAGE: "release(w6d): authorize first fork v0.1.0 publication"
 
 jobs:
   prepublication:
@@ -22,287 +22,200 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout exact W6D candidate
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify exact authority chain and bounded W6D diff
+      - name: Verify authority chain, bounded diff and first-release state
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$LOCKED_W6C_SHA" HEAD
           test -z "$(git status --porcelain)"
           python3 - <<'PY'
-          import os, re, subprocess
-          locked = os.environ['LOCKED_W6C_SHA']
-          allowed = {
-              '.github/workflows/release.yml',
-              '.github/workflows/w6d-first-fork-release-publication.yml',
-              'docs/w6d-first-fork-release-authority.md',
-              'scripts/w6d-published-windows-smoke.ps1',
-              'scripts/w6d-verify-published-release.py',
+          import os,re,subprocess
+          allowed={
+            '.github/workflows/release.yml',
+            '.github/workflows/w6d-first-fork-release-publication.yml',
+            'docs/w6d-first-fork-release-authority.md',
+            'scripts/w6d-published-windows-smoke.ps1',
+            'scripts/w6d-verify-published-release.py',
           }
-          changed = set(subprocess.check_output(['git','diff','--name-only',f'{locked}..HEAD'], text=True).splitlines())
-          if not changed:
-              raise SystemExit('W6D candidate contains no authority changes')
-          extra = sorted(changed - allowed)
-          if extra:
-              raise SystemExit(f'W6D product/runtime drift detected: {extra}')
-          tag = os.environ['RELEASE_TAG']
-          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
-              raise SystemExit(f'invalid W6D SemVer authority: {tag}')
+          changed=set(subprocess.check_output(['git','diff','--name-only',f"{os.environ['LOCKED_W6C_SHA']}..HEAD"],text=True).splitlines())
+          extra=sorted(changed-allowed)
+          if not changed or extra: raise SystemExit(f'W6D bounded diff failed; changed={sorted(changed)} extra={extra}')
+          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',os.environ['RELEASE_TAG']):
+            raise SystemExit('invalid strict SemVer authority')
           print('W6D bounded authority diff PASS:', ', '.join(sorted(changed)))
           PY
-
-      - name: Verify first-release or exact recovery state
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          remote_tags="$(git ls-remote --tags origin)"
+          refs="$(git ls-remote --tags origin)"
           releases="$(gh api "repos/$PRODUCT_REPOSITORY/releases")"
-          python3 - "$GITHUB_SHA" "$RELEASE_TAG" "$remote_tags" "$releases" <<'PY'
-          import json, sys
-          sha, tag, refs, raw = sys.argv[1:]
-          ref_lines = [x for x in refs.splitlines() if x.strip()]
-          release_list = json.loads(raw)
-          if not ref_lines and not release_list:
-              print('W6D first publication state PASS: pristine fork (0 tags / 0 releases)')
-              raise SystemExit(0)
-          allowed_ref = f'{sha}\trefs/tags/{tag}'
-          if ref_lines != [allowed_ref]:
-              raise SystemExit(f'unexpected remote tag state: {ref_lines}')
-          if len(release_list) > 1 or (release_list and release_list[0].get('tag_name') != tag):
-              raise SystemExit('unexpected release state; only exact W6D recovery is permitted')
-          print('W6D exact recovery state PASS')
+          python3 - "$GITHUB_SHA" "$RELEASE_TAG" "$refs" "$releases" <<'PY'
+          import json,sys
+          sha,tag,refs,raw=sys.argv[1:]
+          lines=[x for x in refs.splitlines() if x.strip()]
+          rels=json.loads(raw)
+          if not lines and not rels:
+            print('W6D pristine first-release state PASS')
+          elif lines==[f'{sha}\trefs/tags/{tag}'] and len(rels)<=1 and (not rels or rels[0].get('tag_name')==tag):
+            print('W6D exact recovery state PASS')
+          else:
+            raise SystemExit(f'unexpected tag/release state: tags={lines}, releases={[x.get("tag_name") for x in rels]}')
           PY
 
-      - name: Verify hardened release workflow contract
+      - name: Verify hardened release contract
         shell: bash
         run: |
           set -euo pipefail
-          workflow=.github/workflows/release.yml
-          grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" "$workflow"
-          grep -Fq "refs/tags/v" "$workflow"
-          grep -Fq 'W5.5 NO-API' "$workflow"
-          grep -Fq 'scripts/w55-no-api-audit.sh' "$workflow"
-          grep -Fq 'v2.18.1' "$workflow"
-          grep -Fq 'release-notes.md' "$workflow"
-          grep -Fq 'ainovel-cli_checksums.txt' .goreleaser.yml
+          grep -Fq "github.repository == 'tiktok1997af-dot/ainovel-cli'" .github/workflows/release.yml
+          grep -Fq "startsWith(github.ref, 'refs/tags/v')" .github/workflows/release.yml
+          grep -Fq 'scripts/w55-no-api-audit.sh' .github/workflows/release.yml
+          grep -Fq 'go test ./...' .github/workflows/release.yml
+          grep -Fq 'v2.18.1' .github/workflows/release.yml
+          grep -Fq '_checksums.txt' .goreleaser.yml
           grep -Fq 'algorithm: sha256' .goreleaser.yml
           grep -Fq 'owner: tiktok1997af-dot' .goreleaser.yml
           grep -Fq 'name: ainovel-cli' .goreleaser.yml
 
-      - name: Repository-wide W5.5 NO-API audit
-        shell: bash
-        run: bash scripts/w55-no-api-audit.sh
-
-      - name: Go regression suite
+      - name: W5.5 NO-API and Go regressions
         shell: bash
         run: |
           set -euo pipefail
+          bash scripts/w55-no-api-audit.sh
           go test ./...
           go test ./internal/version
 
-      - name: Deterministic release-notes gate
+      - name: Deterministic release notes
         shell: bash
         run: |
           set -euo pipefail
-          sh .github/scripts/gen-changelog.sh > /tmp/release-notes-a.md
-          sh .github/scripts/gen-changelog.sh > /tmp/release-notes-b.md
-          cmp /tmp/release-notes-a.md /tmp/release-notes-b.md
+          sh .github/scripts/gen-changelog.sh > /tmp/a.md
+          sh .github/scripts/gen-changelog.sh > /tmp/b.md
+          cmp /tmp/a.md /tmp/b.md
           python3 - <<'PY'
           import re
-          body = open('/tmp/release-notes-a.md', encoding='utf-8').read()
-          patterns = [
-            r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
-            r'\bghp_[A-Za-z0-9]{20,}\b', r'\bgithub_pat_[A-Za-z0-9_]{20,}\b',
-            r'\bAIza[0-9A-Za-z_-]{20,}\b',
-            r'(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{8,}',
-            r'(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}',
-          ]
-          if any(re.search(p, body) for p in patterns):
-              raise SystemExit('release notes contain secret-like material')
-          print('W6D deterministic release notes PASS')
+          b=open('/tmp/a.md',encoding='utf-8').read()
+          pats=[r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',r'\bghp_[A-Za-z0-9]{20,}\b',r'\bgithub_pat_[A-Za-z0-9_]{20,}\b',r'\bAIza[0-9A-Za-z_-]{20,}\b',r'(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{8,}',r'(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}']
+          if any(re.search(p,b) for p in pats): raise SystemExit('secret-like release-note material')
           PY
 
-      - name: Exact-candidate non-publishing GoReleaser snapshot
+      - name: Non-publishing GoReleaser snapshot
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "v2.18.1"
           args: release --snapshot --clean
 
-      - name: Verify W6A packaging provenance still passes
+      - name: Verify snapshot provenance and emit sanitized evidence
         shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/w6a-verify-release-snapshot.py --dist dist --expected-sha "$GITHUB_SHA" --evidence dist/w6d-prepublication-snapshot.json
-          test -z "$(git status --porcelain)"
-
-      - name: Write sanitized prepublication evidence
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p dist/w6d-evidence
+          python3 scripts/w6a-verify-release-snapshot.py --dist dist --expected-sha "$GITHUB_SHA" --evidence dist/w6d-evidence/w6d-snapshot-evidence.json
           python3 - <<'PY'
-          import json, os, subprocess
-          refs = subprocess.check_output(['git','ls-remote','--tags','origin'], text=True).strip().splitlines()
-          ev = {
-            'schema': 'ainovel-w6d-prepublication/1',
-            'repository': os.environ['PRODUCT_REPOSITORY'],
-            'candidate_sha': os.environ['GITHUB_SHA'],
-            'locked_w6c_ancestor': os.environ['LOCKED_W6C_SHA'],
-            'release_tag': os.environ['RELEASE_TAG'],
-            'tag_state_before_publication': 'pristine' if not refs else 'exact-recovery',
-            'bounded_authority_diff': True,
-            'w55_no_api': 'PASS',
-            'go_regression': 'PASS',
-            'updater_integrity_regression': 'PASS',
-            'release_notes_deterministic': True,
-            'release_notes_secret_scan': 'PASS',
-            'goreleaser_snapshot': 'PASS',
-            'no_publish_snapshot': True,
-          }
+          import json,os
+          ev={'schema':'ainovel-w6d-prepublication/1','repository':os.environ['PRODUCT_REPOSITORY'],'candidate_sha':os.environ['GITHUB_SHA'],'locked_w6c_ancestor':os.environ['LOCKED_W6C_SHA'],'release_tag':os.environ['RELEASE_TAG'],'bounded_authority_diff':True,'w55_no_api':'PASS','go_regression':'PASS','updater_integrity_regression':'PASS','release_notes_deterministic':True,'release_notes_secret_scan':'PASS','goreleaser_snapshot':'PASS','no_publish_snapshot':True}
           open('dist/w6d-evidence/w6d-prepublication-evidence.json','w',encoding='utf-8').write(json.dumps(ev,indent=2,sort_keys=True)+'\n')
           PY
+          test -z "$(git status --porcelain)"
 
-      - name: Upload W6D prepublication evidence
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ainovel-w6d-prepublication-${{ github.sha }}
-          if-no-files-found: error
           retention-days: 30
-          path: |
-            dist/w6d-evidence/w6d-prepublication-evidence.json
-            dist/w6d-prepublication-snapshot.json
+          if-no-files-found: error
+          path: dist/w6d-evidence/*.json
 
   publish-first-release:
     name: Publish exact first fork release v0.1.0
     needs: prepublication
-    if: >-
-      ${{ github.ref == 'refs/heads/w6-production-release-distribution-authority' &&
-          github.event.head_commit.message == 'release(w6d): authorize first fork v0.1.0 publication' }}
+    if: ${{ github.ref == 'refs/heads/w6-production-release-distribution-authority' && github.event.head_commit.message == 'release(w6d): authorize first fork v0.1.0 publication' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      helper_sha256: ${{ steps.helper.outputs.sha256 }}
     steps:
-      - name: Checkout exact publication SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Create exact lightweight release tag if absent
+      - name: Create exact lightweight tag or verify exact recovery
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          refs="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"
-          if [ -z "$refs" ]; then
-            existing="$(gh api "repos/$PRODUCT_REPOSITORY/releases" --jq 'length')"
-            test "$existing" = "0"
+          ref="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"
+          if [ -z "$ref" ]; then
+            test "$(gh api "repos/$PRODUCT_REPOSITORY/releases" --jq 'length')" = 0
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
             git tag "$RELEASE_TAG" "$GITHUB_SHA"
             git push origin "refs/tags/$RELEASE_TAG"
           else
-            test "$refs" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
+            test "$ref" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
             git tag "$RELEASE_TAG" "$GITHUB_SHA" 2>/dev/null || true
           fi
-          remote="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"
-          test "$remote" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
-          echo "W6D exact lightweight tag PASS: $RELEASE_TAG -> $GITHUB_SHA"
+          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
 
-      - name: Generate deterministic official release notes
+      - name: Generate official deterministic notes
         shell: bash
         run: sh .github/scripts/gen-changelog.sh > release-notes.md
 
-      - name: Publish with fork-owned GoReleaser workflow
+      - name: Detect exact recovery release state
+        id: state
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" >/dev/null 2>&1; then
-            echo 'Exact release already exists; entering verification-only recovery.'
-          else
-            docker run --rm \
-              -e GITHUB_TOKEN \
-              -v "$PWD:/go/src/github.com/tiktok1997af-dot/ainovel-cli" \
-              -w /go/src/github.com/tiktok1997af-dot/ainovel-cli \
-              goreleaser/goreleaser:v2.18.1 \
-              release --clean --release-notes=release-notes.md
-          fi
+          if gh release view "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" >/dev/null 2>&1; then echo 'exists=true' >> "$GITHUB_OUTPUT"; else echo 'exists=false' >> "$GITHUB_OUTPUT"; fi
 
-      - name: Download and verify live published assets
+      - name: Publish fork-owned GoReleaser release
+        if: ${{ steps.state.outputs.exists != 'true' }}
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --clean --release-notes=release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify live assets and release ownership
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p published dist/w6d-evidence
-          gh api "repos/$PRODUCT_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/w6d-release.json
+          gh api "repos/$PRODUCT_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
           gh release download "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" --dir published
-          remote="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"
-          test "$remote" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
-          python3 scripts/w6d-verify-published-release.py \
-            --release-json /tmp/w6d-release.json \
-            --assets-dir published \
-            --expected-tag "$RELEASE_TAG" \
-            --expected-sha "$GITHUB_SHA" \
-            --output dist/w6d-evidence/w6d-published-release-evidence.json
+          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
+          python3 scripts/w6d-verify-published-release.py --release-json /tmp/release.json --assets-dir published --expected-tag "$RELEASE_TAG" --expected-sha "$GITHUB_SHA" --output dist/w6d-evidence/w6d-published-release-evidence.json
 
-      - name: Fresh supported installer checks against live release
+      - name: Fresh pinned and latest installer checks
         shell: bash
         run: |
           set -euo pipefail
-          pinned="$RUNNER_TEMP/w6d-install-pinned"
-          latest="$RUNNER_TEMP/w6d-install-latest"
-          mkdir -p "$pinned" "$latest"
-          AINOVEL_INSTALL_DIR="$pinned" AINOVEL_VERSION="$RELEASE_TAG" sh scripts/install.sh
-          AINOVEL_INSTALL_DIR="$latest" AINOVEL_VERSION=latest sh scripts/install.sh
-          pinned_version="$($pinned/ainovel-cli --version)"
-          latest_version="$($latest/ainovel-cli --version)"
-          printf '%s\n' "$pinned_version" | grep -Fq "ainovel-cli v0.1.0"
-          printf '%s\n' "$pinned_version" | grep -Fq "commit: $GITHUB_SHA"
-          printf '%s\n' "$latest_version" | grep -Fq "ainovel-cli v0.1.0"
-          printf '%s\n' "$latest_version" | grep -Fq "commit: $GITHUB_SHA"
+          p="$RUNNER_TEMP/pinned"; l="$RUNNER_TEMP/latest"; mkdir -p "$p" "$l"
+          AINOVEL_INSTALL_DIR="$p" AINOVEL_VERSION="$RELEASE_TAG" sh scripts/install.sh
+          AINOVEL_INSTALL_DIR="$l" AINOVEL_VERSION=latest sh scripts/install.sh
+          for exe in "$p/ainovel-cli" "$l/ainovel-cli"; do
+            out="$($exe --version)"; printf '%s\n' "$out" | grep -Fq 'ainovel-cli v0.1.0'; printf '%s\n' "$out" | grep -Fq "commit: $GITHUB_SHA"
+          done
           python3 - <<'PY'
-          import json, os
-          p='dist/w6d-evidence/w6d-live-install-evidence.json'
-          ev={
-            'schema':'ainovel-w6d-live-install/1',
-            'repository':os.environ['PRODUCT_REPOSITORY'],
-            'tag':os.environ['RELEASE_TAG'],
-            'release_commit':os.environ['GITHUB_SHA'],
-            'pinned_install':'PASS',
-            'latest_install':'PASS',
-            'sha256_enforced':True,
-            'exact_fork':True,
-            'updater_integrity_regression':'PASS',
-            'no_upstream_fallback':True,
-          }
-          open(p,'w',encoding='utf-8').write(json.dumps(ev,indent=2,sort_keys=True)+'\n')
+          import json,os
+          ev={'schema':'ainovel-w6d-live-install/1','repository':os.environ['PRODUCT_REPOSITORY'],'tag':os.environ['RELEASE_TAG'],'release_commit':os.environ['GITHUB_SHA'],'pinned_install':'PASS','latest_install':'PASS','sha256_enforced':True,'exact_fork':True,'updater_integrity_regression':'PASS','no_upstream_fallback':True}
+          open('dist/w6d-evidence/w6d-live-install-evidence.json','w',encoding='utf-8').write(json.dumps(ev,indent=2,sort_keys=True)+'\n')
           PY
 
       - name: Build Windows readiness helper outside release assets
@@ -314,29 +227,23 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: "0"
         run: |
-          set -euo pipefail
           mkdir -p dist/w6d-helper
           go build -trimpath -buildvcs=true -o dist/w6d-helper/ainovel-w5e-readiness.exe ./cmd/ainovel-w5e-readiness
-          hash="$(sha256sum dist/w6d-helper/ainovel-w5e-readiness.exe | awk '{print $1}')"
-          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum dist/w6d-helper/ainovel-w5e-readiness.exe | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Upload W6D publication evidence
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ainovel-w6d-published-release-${{ github.sha }}
-          if-no-files-found: error
           retention-days: 30
+          if-no-files-found: error
           path: |
-            dist/w6d-evidence/w6d-published-release-evidence.json
-            dist/w6d-evidence/w6d-live-install-evidence.json
+            dist/w6d-evidence/*.json
             release-notes.md
-
-      - name: Upload Windows readiness helper transport
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ainovel-w6d-readiness-helper-${{ github.sha }}
-          if-no-files-found: error
           retention-days: 7
+          if-no-files-found: error
           path: dist/w6d-helper/ainovel-w5e-readiness.exe
 
   published-windows-desktop:
@@ -345,144 +252,62 @@ jobs:
     runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
     timeout-minutes: 60
     steps:
-      - name: Checkout exact publication authority
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-
-      - name: Download hosted readiness helper only
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: ainovel-w6d-readiness-helper-${{ github.sha }}
-          path: ${{ runner.temp }}/ainovel-w6d-helper-${{ github.run_id }}
+          path: ${{ runner.temp }}/w6d-helper-${{ github.run_id }}
 
-      - name: Prepare live published release input and transient dirs
+      - name: Download live published Windows release and prepare transient config
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $base = Join-Path $env:RUNNER_TEMP ("ainovel-w6d-" + $env:GITHUB_RUN_ID)
-          $input = Join-Path $base 'input'
-          $evidence = Join-Path $base 'evidence'
-          $runtime = Join-Path $base 'runtime'
-          foreach ($p in @($base,$input,$evidence,$runtime)) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
-          $archiveName = 'ainovel-cli_0.1.0_Windows_x86_64.zip'
-          $archive = Join-Path $input $archiveName
-          $checksums = Join-Path $input 'ainovel-cli_checksums.txt'
-          $baseUrl = 'https://github.com/tiktok1997af-dot/ainovel-cli/releases/download/v0.1.0'
-          & curl.exe -fL --proto '=https' --proto-redir '=https' --tlsv1.2 -o $archive "$baseUrl/$archiveName"
-          if ($LASTEXITCODE -ne 0) { throw 'Failed downloading live published Windows archive.' }
-          & curl.exe -fL --proto '=https' --proto-redir '=https' --tlsv1.2 -o $checksums "$baseUrl/ainovel-cli_checksums.txt"
-          if ($LASTEXITCODE -ne 0) { throw 'Failed downloading live checksum manifest.' }
-          $helper = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP ("ainovel-w6d-helper-" + $env:GITHUB_RUN_ID)) -Filter 'ainovel-w5e-readiness.exe' -File -Recurse)
-          if ($helper.Count -ne 1) { throw 'Expected exactly one readiness helper.' }
-          $helperHash = (Get-FileHash -LiteralPath $helper[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $lines = @(
-            "W6D_BASE_DIR=$base",
-            "W6D_ARCHIVE=$archive",
-            "W6D_CHECKSUMS=$checksums",
-            "W6D_EVIDENCE_DIR=$evidence",
-            "W6D_RUNTIME_DIR=$runtime",
-            "W6D_HELPER=$($helper[0].FullName)",
-            "W6D_HELPER_SHA256=$helperHash"
-          ) -join "`r`n"
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $lines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          $ErrorActionPreference='Stop'
+          $base=Join-Path $env:RUNNER_TEMP ("w6d-"+$env:GITHUB_RUN_ID); $input=Join-Path $base 'input'; $evidence=Join-Path $base 'evidence'; $runtime=Join-Path $base 'runtime'
+          foreach($p in @($base,$input,$evidence,$runtime)){New-Item -ItemType Directory -Force -Path $p|Out-Null}
+          $archive=Join-Path $input 'ainovel-cli_0.1.0_Windows_x86_64.zip'; $checksums=Join-Path $input 'ainovel-cli_checksums.txt'; $url='https://github.com/tiktok1997af-dot/ainovel-cli/releases/download/v0.1.0'
+          & curl.exe -fL --proto '=https' --proto-redir '=https' --tlsv1.2 -o $archive "$url/ainovel-cli_0.1.0_Windows_x86_64.zip"; if($LASTEXITCODE-ne 0){throw 'live archive download failed'}
+          & curl.exe -fL --proto '=https' --proto-redir '=https' --tlsv1.2 -o $checksums "$url/ainovel-cli_checksums.txt"; if($LASTEXITCODE-ne 0){throw 'live checksum download failed'}
+          $helper=@(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP ("w6d-helper-"+$env:GITHUB_RUN_ID)) -Filter 'ainovel-w5e-readiness.exe' -File -Recurse); if($helper.Count-ne 1){throw 'readiness helper ambiguity'}
+          $helperHash=(Get-FileHash $helper[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $session=(Get-Process -Id $PID).SessionId; if($null-eq (Get-Process explorer -ErrorAction SilentlyContinue|Where-Object{$_.SessionId-eq $session}|Select-Object -First 1)){throw 'non-interactive desktop'}
+          $home=[Environment]::GetFolderPath('UserProfile'); $cfgDir=Join-Path $home '.ainovel'; $cfg=Join-Path $cfgDir 'config.json'; $bak=Join-Path $env:RUNNER_TEMP ("w6d-config-"+$env:GITHUB_RUN_ID+'.bak'); New-Item -ItemType Directory -Force -Path $cfgDir|Out-Null
+          $had=Test-Path $cfg; $profile='default'; $browser=''; $start=''; if($had){Copy-Item $cfg $bak -Force; try{$old=Get-Content $cfg -Raw -Encoding UTF8|ConvertFrom-Json; if($old.web){if($old.web.profile_name){$profile=[string]$old.web.profile_name};if($old.web.browser_path){$browser=[string]$old.web.browser_path};if($old.web.start_url){$start=[string]$old.web.start_url}}}catch{}}
+          $web=[ordered]@{enabled=$true;site='gemini-web';profile_name=$profile};if($browser){$web.browser_path=$browser};if($start){$web.start_url=$start};[IO.File]::WriteAllText($cfg,(([ordered]@{web=$web;language='vi'}|ConvertTo-Json -Depth 6)+"`r`n"),(New-Object Text.UTF8Encoding($false)))
+          @("W6D_BASE=$base","W6D_ARCHIVE=$archive","W6D_CHECKSUMS=$checksums","W6D_EVIDENCE=$evidence","W6D_RUNTIME=$runtime","W6D_HELPER=$($helper[0].FullName)","W6D_HELPER_HASH=$helperHash","W6D_CFG=$cfg","W6D_BAK=$bak","W6D_HAD=$had")|ForEach-Object{[IO.File]::AppendAllText($env:GITHUB_ENV,$_+"`r`n",(New-Object Text.UTF8Encoding($false)))}
 
-      - name: Verify exact interactive desktop and stage transient WEB-only config
+      - name: Run live published Windows smoke
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:GITHUB_SHA) { throw 'W6D desktop candidate drift.' }
-          $runnerSession = (Get-Process -Id $PID).SessionId
-          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $runnerSession } | Select-Object -First 1
-          if ($null -eq $explorer) { throw 'Runner is not in an interactive Windows desktop session.' }
-          $userHome = [Environment]::GetFolderPath('UserProfile')
-          $configDir = Join-Path $userHome '.ainovel'
-          $configPath = Join-Path $configDir 'config.json'
-          $backupPath = Join-Path $env:RUNNER_TEMP ("w6d-config-backup-" + $env:GITHUB_RUN_ID + '.json')
-          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-          $hadOriginal = Test-Path -LiteralPath $configPath
-          $profileName = 'default'; $browserPath = ''; $startUrl = ''
-          if ($hadOriginal) {
-            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
-            try {
-              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-              if ($null -ne $existing.web) {
-                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
-                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
-                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
-              }
-            } catch { }
-          }
-          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
-          if ($browserPath) { $web.browser_path = $browserPath }
-          if ($startUrl) { $web.start_url = $startUrl }
-          [System.IO.File]::WriteAllText($configPath, (([ordered]@{web=$web;language='vi'} | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-          $lines = @("W6D_CONFIG_PATH=$configPath","W6D_CONFIG_BACKUP=$backupPath","W6D_CONFIG_HAD_ORIGINAL=$hadOriginal") -join "`r`n"
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $lines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          $ErrorActionPreference='Stop'
+          if((git rev-parse HEAD).Trim().ToLowerInvariant()-ne $env:GITHUB_SHA){throw 'candidate drift'}
+          & ./scripts/w6d-published-windows-smoke.ps1 -RepoRoot $env:GITHUB_WORKSPACE -PackageArchivePath $env:W6D_ARCHIVE -ChecksumManifestPath $env:W6D_CHECKSUMS -ReadinessExe $env:W6D_HELPER -ExpectedReadinessSha256 $env:W6D_HELPER_HASH -ExpectedGitSha $env:GITHUB_SHA -ReleaseTag 'v0.1.0' -EvidenceDir $env:W6D_EVIDENCE -RuntimeDir $env:W6D_RUNTIME
 
-      - name: Run live published Windows WEB-only smoke
+      - name: Validate W6D desktop evidence
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          & ./scripts/w6d-published-windows-smoke.ps1 `
-            -RepoRoot $env:GITHUB_WORKSPACE `
-            -PackageArchivePath $env:W6D_ARCHIVE `
-            -ChecksumManifestPath $env:W6D_CHECKSUMS `
-            -ReadinessExe $env:W6D_HELPER `
-            -ExpectedReadinessSha256 $env:W6D_HELPER_SHA256 `
-            -ExpectedGitSha $env:GITHUB_SHA `
-            -ReleaseTag 'v0.1.0' `
-            -EvidenceDir $env:W6D_EVIDENCE_DIR `
-            -RuntimeDir $env:W6D_RUNTIME_DIR
-
-      - name: Validate sanitized W6D desktop evidence
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:W6D_EVIDENCE_DIR 'w6d-published-windows-evidence.json'
-          $ev = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-          if ([string]$ev.schema -ne 'ainovel-w6d-published-windows/1') { throw 'Unexpected W6D desktop evidence schema.' }
-          if ([string]$ev.release_commit -ne $env:GITHUB_SHA -or [string]$ev.tag -ne 'v0.1.0') { throw 'W6D desktop release provenance mismatch.' }
-          if ([string]$ev.binary_source -ne 'github-release-live-asset') { throw 'W6D desktop binary was not a live release asset.' }
-          if ([bool]$ev.desktop_build_performed) { throw 'Desktop production build occurred.' }
-          if (-not [bool]$ev.first_ready -or -not [bool]$ev.restart_ready -or -not [bool]$ev.restart_resume_detected) { throw 'W6D READY/restart/Resume evidence incomplete.' }
-          if ([string]$ev.runtime_no_api_marker_scan -ne 'PASS' -or [string]$ev.w55_static_no_api_gate -ne 'PASS' -or -not [bool]$ev.no_upstream_fallback) { throw 'W6D NO-API authority failed.' }
+          $ev=Get-Content (Join-Path $env:W6D_EVIDENCE 'w6d-published-windows-evidence.json') -Raw -Encoding UTF8|ConvertFrom-Json
+          if($ev.schema-ne 'ainovel-w6d-published-windows/1' -or $ev.release_commit-ne $env:GITHUB_SHA -or $ev.binary_source-ne 'github-release-live-asset' -or $ev.desktop_build_performed -or -not $ev.first_ready -or -not $ev.restart_ready -or -not $ev.restart_resume_detected -or $ev.runtime_no_api_marker_scan-ne 'PASS' -or $ev.w55_static_no_api_gate-ne 'PASS' -or -not $ev.no_upstream_fallback){throw 'W6D desktop evidence failed'}
           Write-Host 'W6D FIRST FORK RELEASE REAL DESKTOP AUTHORITY: PASS'
 
-      - name: Upload sanitized W6D desktop authority evidence only
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ainovel-w6d-published-windows-authority-${{ github.sha }}
-          if-no-files-found: error
           retention-days: 30
+          if-no-files-found: error
           path: |
-            ${{ env.W6D_EVIDENCE_DIR }}/w6d-published-windows-evidence.json
-            ${{ env.W6D_EVIDENCE_DIR }}/w6c-readiness-evidence.json
+            ${{ env.W6D_EVIDENCE }}/w6d-published-windows-evidence.json
+            ${{ env.W6D_EVIDENCE }}/w6c-readiness-evidence.json
 
-      - name: Clean transient W6D runtime and published package
+      - name: Clean transient W6D data
         if: always()
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Continue'
-          foreach ($p in @($env:W6D_BASE_DIR, (Join-Path $env:RUNNER_TEMP ("ainovel-w6d-helper-" + $env:GITHUB_RUN_ID)))) {
-            if ($p -and (Test-Path -LiteralPath $p)) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
-          }
-          Write-Host 'Transient W6D package/runtime/evidence removed from desktop runner.'
-
+          $ErrorActionPreference='Continue'; foreach($p in @($env:W6D_BASE,(Join-Path $env:RUNNER_TEMP ("w6d-helper-"+$env:GITHUB_RUN_ID)))){if($p -and (Test-Path $p)){Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue}}
       - name: Restore local config exactly
         if: always()
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Continue'
-          if (-not $env:W6D_CONFIG_PATH) { exit 0 }
-          if ($env:W6D_CONFIG_HAD_ORIGINAL -eq 'True') {
-            if (Test-Path -LiteralPath $env:W6D_CONFIG_BACKUP) {
-              Copy-Item -LiteralPath $env:W6D_CONFIG_BACKUP -Destination $env:W6D_CONFIG_PATH -Force
-              Remove-Item -LiteralPath $env:W6D_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
-              Write-Host 'Original local config restored exactly.'
-            } else { throw 'Expected W6D local config backup missing.' }
-          } else {
-            Remove-Item -LiteralPath $env:W6D_CONFIG_PATH -Force -ErrorAction SilentlyContinue
-            Write-Host 'Transient local config removed; original state restored.'
-          }
+          $ErrorActionPreference='Continue'; if(-not $env:W6D_CFG){exit 0}; if($env:W6D_HAD-eq 'True'){if(Test-Path $env:W6D_BAK){Copy-Item $env:W6D_BAK $env:W6D_CFG -Force;Remove-Item $env:W6D_BAK -Force -ErrorAction SilentlyContinue}else{throw 'config backup missing'}}else{Remove-Item $env:W6D_CFG -Force -ErrorAction SilentlyContinue}; Write-Host 'W6D local config state restored.'
