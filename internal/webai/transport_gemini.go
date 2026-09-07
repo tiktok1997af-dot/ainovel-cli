@@ -55,6 +55,8 @@ type interactionEvaluator interface {
 
 var _ Transport = (*GeminiWebTransport)(nil)
 
+const degradedRecoveryGrace = 15 * time.Second
+
 func NewGeminiWebTransport(cfg GeminiWebTransportConfig) (*GeminiWebTransport, error) {
 	if cfg.Session == nil {
 		return nil, fmt.Errorf("webai: Gemini web transport requires a browser session")
@@ -319,12 +321,18 @@ func (t *GeminiWebTransport) ensureReady(ctx context.Context) (SessionSnapshot, 
 		if snap.State == SessionAuthRequired {
 			return t.waitAuthRequiredGrace(ctx, snap)
 		}
+		if snap.State == SessionDegraded {
+			return t.waitDegradedRecovery(ctx, snap)
+		}
 		refreshed, err := t.session.Refresh(ctx)
 		if err == nil && refreshed.State == SessionReady {
 			return refreshed, nil
 		}
 		if refreshed.State == SessionAuthRequired {
 			return t.waitAuthRequiredGrace(ctx, refreshed)
+		}
+		if refreshed.State == SessionDegraded {
+			return t.waitDegradedRecovery(ctx, refreshed)
 		}
 		lastErr = err
 		if attempt < t.preflightRetries {
@@ -337,6 +345,48 @@ func (t *GeminiWebTransport) ensureReady(ctx context.Context) (SessionSnapshot, 
 		lastErr = fmt.Errorf("Gemini web session is not READY (%s)", t.session.Snapshot().State)
 	}
 	return t.session.Snapshot(), &Error{Kind: ErrorTransport, Op: "prepare Gemini web session", Cause: lastErr, Retry: true, RetryDelay: 500 * time.Millisecond}
+}
+
+// waitDegradedRecovery keeps prompt submission fail-closed while a live Chrome
+// renderer/DevTools connection settles after a transport interruption. Recovery
+// is read-only and bounded; it never replays or resubmits the prior prompt.
+func (t *GeminiWebTransport) waitDegradedRecovery(ctx context.Context, initial SessionSnapshot) (SessionSnapshot, error) {
+	deadline := time.Now().Add(degradedRecoveryGrace)
+	last := initial
+	var lastErr error
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return last, err
+		}
+		if last.State == SessionReady {
+			return last, nil
+		}
+		if last.State == SessionAuthRequired {
+			return t.waitAuthRequiredGrace(ctx, last)
+		}
+		if last.State == SessionFailed || last.State == SessionStopped {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("Gemini web session entered %s during DEGRADED recovery", last.State)
+			}
+			return last, &Error{Kind: ErrorTransport, Op: "recover Gemini web session", Cause: lastErr, Retry: true, RetryDelay: 500 * time.Millisecond}
+		}
+		if time.Now().After(deadline) {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("Gemini web session remained %s after bounded DEGRADED recovery", last.State)
+			}
+			return last, &Error{Kind: ErrorTransport, Op: "recover Gemini web session", Cause: lastErr, Retry: true, RetryDelay: 500 * time.Millisecond}
+		}
+
+		if err := waitContext(ctx, t.readinessPollInterval); err != nil {
+			return last, err
+		}
+		refreshed, err := t.session.Refresh(ctx)
+		last = refreshed
+		if err != nil {
+			lastErr = err
+		}
+	}
 }
 
 func (t *GeminiWebTransport) waitAuthRequiredGrace(ctx context.Context, initial SessionSnapshot) (SessionSnapshot, error) {
@@ -436,10 +486,11 @@ func (t *GeminiWebTransport) captureFinal(
 			if err != nil {
 				if reconnects < t.captureReconnects {
 					_ = (*evaluator).Close()
-					next, openErr := t.evaluatorFactory(opCtx, t.session.Snapshot(), t.adapter)
+					*evaluator = nil
+					reconnects++
+					next, openErr := t.openWithRetry(opCtx, t.session.Snapshot())
 					if openErr == nil {
 						*evaluator = next
-						reconnects++
 						continue
 					}
 					err = errors.Join(err, openErr)
