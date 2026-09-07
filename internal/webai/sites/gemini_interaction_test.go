@@ -10,6 +10,7 @@ import (
 
 type scriptedEvaluator struct {
 	responses    []json.RawMessage
+	repeatLast   json.RawMessage
 	exprs        []string
 	clicks       int
 	clickX       float64
@@ -25,6 +26,9 @@ type scriptedEvaluator struct {
 func (s *scriptedEvaluator) Eval(_ context.Context, expression string) (json.RawMessage, error) {
 	s.exprs = append(s.exprs, expression)
 	if len(s.responses) == 0 {
+		if len(s.repeatLast) > 0 {
+			return s.repeatLast, nil
+		}
 		return nil, nil
 	}
 	out := s.responses[0]
@@ -89,8 +93,8 @@ func TestGeminiConversationRejectsNegativeComposerLength(t *testing.T) {
 
 func successfulSubmitEvaluator() *scriptedEvaluator {
 	return &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"found":true,"x":40,"y":50}`),
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"ql-editor"}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6,"expected_length":6,"composer_kind":"ql-editor","focused":true}`),
 		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":100,"y":200}`),
 	}}
 }
@@ -116,6 +120,24 @@ func TestGeminiSubmitUsesTrustedComposerReplacementThenOneTrustedSendClick(t *te
 	}
 }
 
+func TestGeminiSubmitSettlesReadbackWithoutReplacingOrClickingTwice(t *testing.T) {
+	e := &scriptedEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"ql-editor"}`),
+		json.RawMessage(`{"ok":false,"reason":"prompt composer did not retain trusted input","composer_length":3,"expected_length":6,"composer_kind":"ql-editor","focused":true}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6,"expected_length":6,"composer_kind":"ql-editor","focused":true}`),
+		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":100,"y":200}`),
+	}}
+	if err := (Gemini{}).Submit(context.Background(), e, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	if e.replacements != 1 || e.clicks != 1 || len(e.exprs) != 4 {
+		t.Fatalf("replacement=%d clicks=%d expressions=%d, want one input, two readbacks, one send probe", e.replacements, e.clicks, len(e.exprs))
+	}
+	if e.exprs[1] != e.exprs[2] {
+		t.Fatal("settle loop must repeat the same read-only verification expression")
+	}
+}
+
 func TestGeminiSubmitRequiresTrustedTextInputCapability(t *testing.T) {
 	var evaluator Evaluator = &evalOnlyEvaluator{}
 	if _, ok := evaluator.(TextInputEvaluator); ok {
@@ -128,7 +150,7 @@ func TestGeminiSubmitRequiresTrustedTextInputCapability(t *testing.T) {
 
 func TestGeminiSubmitTrustedReplacementFailureNeverAttemptsSend(t *testing.T) {
 	e := &scriptedEvaluator{
-		responses:  []json.RawMessage{json.RawMessage(`{"found":true,"x":40,"y":50}`)},
+		responses:  []json.RawMessage{json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"ql-editor"}`)},
 		replaceErr: errors.New("input failed"),
 	}
 	err := (Gemini{}).Submit(context.Background(), e, "prompt")
@@ -141,16 +163,25 @@ func TestGeminiSubmitTrustedReplacementFailureNeverAttemptsSend(t *testing.T) {
 }
 
 func TestGeminiSubmitReadbackFailureNeverAttemptsSend(t *testing.T) {
-	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"found":true,"x":40,"y":50}`),
-		json.RawMessage(`{"ok":false,"reason":"prompt composer did not retain trusted input","composer_length":3}`),
-	}}
-	err := (Gemini{}).Submit(context.Background(), e, "prompt")
-	if err == nil || !strings.Contains(err.Error(), "did not retain trusted input") {
-		t.Fatalf("err = %v, want readback failure", err)
+	mismatch := json.RawMessage(`{"ok":false,"reason":"prompt composer did not retain trusted input","composer_length":3,"expected_length":6,"composer_kind":"ql-editor","focused":false}`)
+	e := &scriptedEvaluator{
+		responses: []json.RawMessage{
+			json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"ql-editor"}`),
+			mismatch,
+		},
+		repeatLast: mismatch,
 	}
-	if e.replacements != 1 || e.clicks != 0 || len(e.exprs) != 2 {
-		t.Fatalf("replacement=%d clicks=%d expressions=%d, send must not run", e.replacements, e.clicks, len(e.exprs))
+	err := (Gemini{}).Submit(context.Background(), e, "prompt")
+	if err == nil || !strings.Contains(err.Error(), "did not retain trusted input after bounded settle") {
+		t.Fatalf("err = %v, want bounded readback failure", err)
+	}
+	for _, want := range []string{"expected_length=6", "actual_length=3", "composer_kind=ql-editor", "focused=false"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("sanitized readback diagnostic missing %q: %v", want, err)
+		}
+	}
+	if e.replacements != 1 || e.clicks != 0 {
+		t.Fatalf("replacement=%d clicks=%d, send must not run", e.replacements, e.clicks)
 	}
 }
 
@@ -165,8 +196,10 @@ func TestGeminiComposerDOMPathsAreReadOnly(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(geminiResolveComposerExpression, "getBoundingClientRect") || !strings.Contains(geminiVerifyPromptExpressionTemplate, "composer_length") {
-		t.Fatal("composer resolver/readback structural invariants are missing")
+	for _, want := range []string{"getBoundingClientRect", "kindOf", "composer_kind", "expected_length", "focused"} {
+		if !strings.Contains(geminiResolveComposerExpression+geminiVerifyPromptExpressionTemplate, want) {
+			t.Fatalf("composer resolver/readback structural invariant missing %q", want)
+		}
 	}
 }
 
@@ -204,8 +237,8 @@ func TestGeminiSubmitCanonicalizesCustomHostsToNativeButtonsFirst(t *testing.T) 
 
 func TestGeminiSubmitPollsDisabledSendWithoutReplacingAgainOrClickingEarly(t *testing.T) {
 	e := &scriptedEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"found":true,"x":40,"y":50}`),
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6}`),
+		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"ql-editor"}`),
+		json.RawMessage(`{"ok":true,"reason":"","composer_length":6,"expected_length":6,"composer_kind":"ql-editor","focused":true}`),
 		json.RawMessage(`{"ok":false,"retry":true,"reason":"actionable send control is disabled"}`),
 		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"native-button","x":10,"y":20}`),
 	}}
