@@ -57,7 +57,7 @@ jobs:
             exit 1
           fi
           sh -n scripts/install.sh
-          python3 -m py_compile scripts/w6b-test-install-integrity.py
+          python3 -c "from pathlib import Path; compile(Path('scripts/w6b-test-install-integrity.py').read_text(encoding='utf-8'), 'scripts/w6b-test-install-integrity.py', 'exec')"
 
       - name: Run updater integrity regressions
         shell: bash
