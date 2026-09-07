@@ -1,0 +1,185 @@
+name: W5E R1 candidate 2c1c resume diagnostic
+
+on:
+  push:
+    branches:
+      - w5e-r1-candidate-2c1c-resume-diagnostic
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 2c1c24b8f23c4781960c2a1a1b002e5552bdaa9e
+
+concurrency:
+  group: w5e-r1-candidate-2c1c-resume-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  resume-diagnostic:
+    name: Real Windows desktop / sanitized resume diagnostic
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify exact candidate and interactive desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $gitBin 'bash.exe'))) { throw 'Git Bash is required.' }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:CANDIDATE_SHA) { throw "Candidate drift: $actual" }
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          if ($null -eq (Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $runnerSession } | Select-Object -First 1)) {
+            throw 'Runner is not interactive.'
+          }
+
+      - name: Stage transient WEB-only config
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("w5e-2c1c-resume-diag-config-" + $env:GITHUB_RUN_ID + ".json")
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
+              }
+            } catch { }
+          }
+          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
+          if ($browserPath) { $web.browser_path = $browserPath }
+          if ($startUrl) { $web.start_url = $startUrl }
+          $cfg = [ordered]@{ web = $web; language = 'vi' }
+          [System.IO.File]::WriteAllText($configPath, (($cfg | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, ("W5E_LOCAL_CONFIG_PATH=$configPath`r`nW5E_LOCAL_CONFIG_BACKUP=$backupPath`r`nW5E_LOCAL_CONFIG_HAD_ORIGINAL=$hadOriginal`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Reproduce smoke and write sanitized diagnostic only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($null -eq (Get-Variable IsWindows -Scope Global -ErrorAction SilentlyContinue)) { $global:IsWindows = $true }
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("ainovel-w5e-2c1c-resume-diag-" + $env:GITHUB_RUN_ID)
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          $smokePass = $false
+          $smokeError = ''
+          try {
+            & ./scripts/w5e-production-smoke.ps1 -RepoRoot $env:GITHUB_WORKSPACE -EvidenceDir $evidenceDir -ReadinessTimeoutSeconds 60 -FirstChapterTimeoutSeconds 1200 -ResumeTimeoutSeconds 1200
+            $smokePass = $true
+          } catch {
+            $smokeError = [string]$_.Exception.Message
+          }
+
+          function Read-All([string[]]$paths) {
+            $parts = New-Object System.Collections.Generic.List[string]
+            foreach ($p in $paths) {
+              if (Test-Path -LiteralPath $p) { $parts.Add((Get-Content -LiteralPath $p -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)) }
+            }
+            return ($parts -join "`n")
+          }
+          function Safe-Tail([string[]]$paths) {
+            $safe = New-Object System.Collections.Generic.List[string]
+            $userHome = [Environment]::GetFolderPath('UserProfile')
+            foreach ($p in $paths) {
+              if (-not (Test-Path -LiteralPath $p)) { continue }
+              foreach ($raw in @(Get-Content -LiteralPath $p -Encoding UTF8 -Tail 120 -ErrorAction SilentlyContinue)) {
+                $line = [string]$raw
+                if ($line -notmatch '(?i)(webai|error|fail|fatal|panic|invalid|timeout|StopGuard|deadlock|DISPATCH|TOOL|SYSTEM|错误|失败|暂停|chapter|draft_chapter|commit_chapter)') { continue }
+                if ($userHome) { $line = $line.Replace($userHome, '<USERPROFILE>') }
+                $line = [regex]::Replace($line, '（[^）]*）', '（<redacted-task>）')
+                $line = [regex]::Replace($line, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+                $line = [regex]::Replace($line, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+                $line = [regex]::Replace($line, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
+                if ($line.Length -gt 500) { $line = $line.Substring(0,500) + '<truncated>' }
+                $safe.Add($line)
+              }
+            }
+            return @($safe | Select-Object -Last 16)
+          }
+
+          $resumeOut = Join-Path $evidenceDir 'resume.stdout.log'
+          $resumeErr = Join-Path $evidenceDir 'resume.stderr.log'
+          $firstErr = Join-Path $evidenceDir 'first.stderr.log'
+          $resumeText = Read-All @($resumeOut,$resumeErr)
+          $allText = Read-All @($firstErr,$resumeOut,$resumeErr)
+          $errorSafe = $smokeError
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          if ($userHome) { $errorSafe = $errorSafe.Replace($userHome,'<USERPROFILE>') }
+          if ($errorSafe.Length -gt 1000) { $errorSafe = $errorSafe.Substring(0,1000) + '<truncated>' }
+
+          $diag = [ordered]@{
+            schema = 'ainovel-w5e-resume-diagnostic/1'
+            candidate_sha = $env:CANDIDATE_SHA
+            run_id = [string]$env:GITHUB_RUN_ID
+            smoke_pass = $smokePass
+            smoke_error = $errorSafe
+            resume_marker_detected = [bool]($resumeText -match 'headless\s+恢復|headless\s+恢复')
+            signatures = [ordered]@{
+              protocol = [bool]($allText -match '\[protocol\]')
+              transport = [bool]($allText -match '\[transport\]')
+              timeout = [bool]($allText -match '\[timeout\]|context deadline exceeded')
+              json_syntax = [bool]($allText -match 'invalid character .* after|json_shape')
+              raw_string_empty = [bool]($allText -match 'raw string argument is empty')
+              stopguard = [bool]($allText -match 'StopGuard')
+              deadlock = [bool]($allText -match 'deadlock|僵局')
+              draft_chapter = [bool]($allText -match 'draft_chapter')
+              commit_chapter = [bool]($allText -match 'commit_chapter')
+              writer_error = [bool]($allText -match '\[DISPATCH\]\s+writer.*(错误|error|fail)')
+              editor_error = [bool]($allText -match '\[DISPATCH\]\s+editor.*(错误|error|fail)')
+              system_retry = [bool]($allText -match '\[SYSTEM\].*(重试|retry)')
+            }
+            first_error_tail = @(Safe-Tail @($firstErr))
+            resume_error_tail = @(Safe-Tail @($resumeOut,$resumeErr))
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $diagPath = Join-Path $env:RUNNER_TEMP ("w5e-r1-2c1c-resume-diagnostic-" + $env:GITHUB_RUN_ID + '.json')
+          $diag | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $diagPath -Encoding UTF8
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "W5E_RESUME_DIAG_PATH=$diagPath`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host 'Sanitized resume diagnostic captured.'
+
+      - name: Upload sanitized resume diagnostic only
+        uses: actions/upload-artifact@v4
+        with:
+          name: w5e-r1-candidate-2c1c-resume-diagnostic
+          path: ${{ env.W5E_RESUME_DIAG_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Restore local config exactly
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:W5E_LOCAL_CONFIG_PATH)) { exit 0 }
+          if ($env:W5E_LOCAL_CONFIG_HAD_ORIGINAL -eq 'True') {
+            if (Test-Path -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP) {
+              Copy-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Destination $env:W5E_LOCAL_CONFIG_PATH -Force
+              Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+            } else { exit 1 }
+          } else {
+            Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+          }
