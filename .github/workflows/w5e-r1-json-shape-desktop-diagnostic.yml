@@ -1,0 +1,137 @@
+name: W5E R1 JSON shape desktop diagnostic
+
+on:
+  push:
+    branches:
+      - w5e-r1-json-shape-desktop-diagnostic
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 59ca752b079f8ba33d58de265a52c7cd159b953a
+
+concurrency:
+  group: w5e-r1-json-shape-desktop-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  json-shape-diagnostic:
+    name: Real Windows desktop / sanitized JSON shape diagnostic
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact diagnostic candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Force Git Bash and verify interactive desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $gitBin 'bash.exe'))) { throw 'Git Bash is required.' }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:CANDIDATE_SHA) { throw "Candidate drift: expected $env:CANDIDATE_SHA but got $actual" }
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $runnerSession } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not in an interactive Windows desktop session.' }
+
+      - name: Stage transient WEB-only config
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("w5e-json-shape-config-backup-" + $env:GITHUB_RUN_ID + ".json")
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
+              }
+            } catch { }
+          }
+          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
+          if (-not [string]::IsNullOrWhiteSpace($browserPath)) { $web.browser_path = $browserPath }
+          if (-not [string]::IsNullOrWhiteSpace($startUrl)) { $web.start_url = $startUrl }
+          [System.IO.File]::WriteAllText($configPath, (([ordered]@{ web = $web; language = 'vi' } | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("ainovel-w5e-json-shape-" + $env:GITHUB_RUN_ID)
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          @(
+            "W5E_LOCAL_CONFIG_PATH=$configPath",
+            "W5E_LOCAL_CONFIG_BACKUP=$backupPath",
+            "W5E_LOCAL_CONFIG_HAD_ORIGINAL=$hadOriginal",
+            "W5E_EVIDENCE_DIR=$evidenceDir"
+          ) | ForEach-Object { [System.IO.File]::AppendAllText($env:GITHUB_ENV, $_ + "`r`n", (New-Object System.Text.UTF8Encoding($false))) }
+
+      - name: Reproduce production smoke and capture shape-only failure
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($null -eq (Get-Variable IsWindows -Scope Global -ErrorAction SilentlyContinue)) { $global:IsWindows = $true }
+          try {
+            & ./scripts/w5e-production-smoke.ps1 `
+              -RepoRoot $env:GITHUB_WORKSPACE `
+              -EvidenceDir $env:W5E_EVIDENCE_DIR `
+              -ReadinessTimeoutSeconds 60 `
+              -FirstChapterTimeoutSeconds 1200 `
+              -ResumeTimeoutSeconds 1200
+            $result = [ordered]@{ schema='ainovel-w5e-json-shape-diagnostic/1'; candidate_sha=$env:CANDIDATE_SHA; run_id=[string]$env:GITHUB_RUN_ID; outcome='SMOKE_PASS_NO_SHAPE'; captured_at=(Get-Date).ToUniversalTime().ToString('o') }
+            $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:W5E_EVIDENCE_DIR 'w5e-json-shape-diagnostic.json') -Encoding UTF8
+          } catch {
+            $message = [string]$_.Exception.Message
+            $userHome = [Environment]::GetFolderPath('UserProfile')
+            if (-not [string]::IsNullOrWhiteSpace($userHome)) { $message = $message.Replace($userHome, '<USERPROFILE>') }
+            $message = [regex]::Replace($message, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+            $message = [regex]::Replace($message, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
+            $message = [regex]::Replace($message, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+            if ($message.Length -gt 4000) { $message = $message.Substring(0, 4000) + '<truncated>' }
+            $shape = ''
+            $m = [regex]::Match($message, 'json_shape\s+length=\d+\s+offset=\d+\s+prev=[a-z_]+\s+at=[a-z_]+\s+next=[a-z_]+\s+expected=[a-z_]+\s+stack=[a-z_>]+\s+sha256=[0-9a-f]+')
+            if ($m.Success) { $shape = $m.Value }
+            $result = [ordered]@{ schema='ainovel-w5e-json-shape-diagnostic/1'; candidate_sha=$env:CANDIDATE_SHA; run_id=[string]$env:GITHUB_RUN_ID; outcome='SMOKE_FAIL'; shape=$shape; sanitized_error=$message; captured_at=(Get-Date).ToUniversalTime().ToString('o') }
+            $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:W5E_EVIDENCE_DIR 'w5e-json-shape-diagnostic.json') -Encoding UTF8
+          }
+
+      - name: Upload sanitized JSON shape diagnostic only
+        uses: actions/upload-artifact@v4
+        with:
+          name: w5e-r1-json-shape-diagnostic
+          path: ${{ env.W5E_EVIDENCE_DIR }}/w5e-json-shape-diagnostic.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Restore local config exactly
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:W5E_LOCAL_CONFIG_PATH)) { exit 0 }
+          if ($env:W5E_LOCAL_CONFIG_HAD_ORIGINAL -eq 'True') {
+            if (Test-Path -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP) {
+              Copy-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Destination $env:W5E_LOCAL_CONFIG_PATH -Force
+              Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+            } else { exit 1 }
+          } else {
+            Remove-Item -LiteralPath $env:W5E_LOCAL_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+          }
