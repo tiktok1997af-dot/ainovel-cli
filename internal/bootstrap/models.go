@@ -141,9 +141,16 @@ func NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error
 	if session == nil {
 		return nil, fmt.Errorf("WEB-only model set requires a browser session: %w", errs.ErrConfig)
 	}
-	transport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})
+	baseTransport, err := webai.NewGeminiWebTransport(webai.GeminiWebTransportConfig{Session: session})
 	if err != nil {
 		return nil, fmt.Errorf("create Gemini Web transport: %w", err)
+	}
+	transport, err := webai.NewAutoRecoveryTransport(webai.AutoRecoveryConfig{
+		Inner:   baseTransport,
+		Session: session,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create Gemini Web auto-recovery watchdog: %w", err)
 	}
 	model, err := webai.NewModel(webai.ModelConfig{Site: WebModelName, Model: WebModelName, Transport: transport})
 	if err != nil {
