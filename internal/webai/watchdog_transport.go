@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	defaultWatchdogStallTimeout       = 90 * time.Second
-	defaultWatchdogSoftRetryLimit     = 2
+	defaultWatchdogStallTimeout        = 90 * time.Second
+	defaultWatchdogSoftRetryLimit      = 2
 	defaultWatchdogBrowserRestartLimit = 2
-	defaultWatchdogRetryDelay         = 3 * time.Second
-	defaultWatchdogRestartDelay       = 750 * time.Millisecond
+	defaultWatchdogRetryDelay          = 3 * time.Second
+	defaultWatchdogRestartDelay        = 750 * time.Millisecond
 )
 
 // AutoRecoveryConfig controls bounded recovery around one browser-backed model
