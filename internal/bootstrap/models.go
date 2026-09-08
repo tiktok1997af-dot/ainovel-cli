@@ -91,6 +91,16 @@ func (ms *ModelSet) Summary() string {
 	return fmt.Sprintf("default=%s/%s", provider, name)
 }
 
+// NormalizedLanguage exposes the configured content language to runtime layers
+// without leaking the rest of the model configuration. Co-create uses this to
+// select a language-matched system prompt instead of hard-coding Chinese.
+func (ms *ModelSet) NormalizedLanguage() string {
+	if ms == nil {
+		return "vi"
+	}
+	return ms.config.NormalizedLanguage()
+}
+
 func (ms *ModelSet) CurrentSelection(_ string) (provider, model string, explicit bool) {
 	if ms == nil || ms.Default == nil {
 		return "", "", false
