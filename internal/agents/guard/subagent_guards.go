@@ -13,9 +13,9 @@ import (
 // subagentMaxConsecutiveBlocks 连续阻拦 N 次后升级为终止，避免弱模型死循环。
 const subagentMaxConsecutiveBlocks = 3
 
-// localToolRequiredMarker is a transport-neutral machine marker embedded only
-// in writer recovery messages. The WEB model recognizes it as a hard signal
-// that a TEXT-only response cannot satisfy the current blocked worker turn.
+// localToolRequiredMarker is a transport-neutral machine marker embedded in
+// recovery messages that require the WEB model to call a local tool instead
+// of returning TEXT only.
 const localToolRequiredMarker = "AINOVEL_LOCAL_TOOL_REQUIRED"
 
 // BlockHook 是 StopGuard 的审计回调：每次拦截/升级时同步调用。Host 用它把拦截
@@ -133,8 +133,12 @@ func NewWriterStopGuard(st *store.Store, onBlock BlockHook) agentcore.StopGuard 
 	return newCheckpointDeltaGuard(st, "writer", []string{"commit"}, writerBlockMsg, onBlock)
 }
 
-func writerToolRequired(msg string) string {
+func localToolRequired(msg string) string {
 	return localToolRequiredMarker + "\n" + msg + "\n不要回复 TEXT、解释或承诺；下一条响应必须直接调用一个能推进当前阶段的本地工具。"
+}
+
+func writerToolRequired(msg string) string {
+	return localToolRequired(msg)
 }
 
 // writerBlockMsg 按本轮已出现的 checkpoint step 判断 writer 卡在哪一步。
@@ -177,10 +181,10 @@ func NewEditorStopGuard(st *store.Store, task string, onBlock BlockHook) agentco
 	switch {
 	case strings.Contains(task, "save_volume_summary") || strings.Contains(task, "卷摘要"):
 		return newCheckpointDeltaGuard(st, "editor", []string{"volume_summary"},
-			staticBlockMsg("本次任务是生成卷摘要：你必须调用 save_volume_summary 落盘后才能结束，save_review 复核不算完成。"), onBlock)
+			staticBlockMsg(localToolRequired("本次任务是生成卷摘要：你必须调用 save_volume_summary 落盘后才能结束，save_review 复核不算完成。")), onBlock)
 	case strings.Contains(task, "save_arc_summary") || strings.Contains(task, "弧摘要"):
 		return newCheckpointDeltaGuard(st, "editor", []string{"arc_summary"},
-			staticBlockMsg("本次任务是生成弧摘要：你必须调用 save_arc_summary 落盘后才能结束，save_review 复核不算完成。"), onBlock)
+			staticBlockMsg(localToolRequired("本次任务是生成弧摘要：你必须调用 save_arc_summary 落盘后才能结束，save_review 复核不算完成。")), onBlock)
 	default:
 		// 评审或临时任务：任一审阅/摘要落盘即可（保持既有宽松行为）。
 		return newCheckpointDeltaGuard(st, "editor",
