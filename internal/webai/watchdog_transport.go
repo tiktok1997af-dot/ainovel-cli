@@ -35,8 +35,8 @@ type AutoRecoveryConfig struct {
 }
 
 // AutoRecoveryTransport adds explicit Gemini UI-error detection, a bounded
-// no-final-response watchdog, same-session retries, managed Chrome restart, and
-// safe prompt replay. It never restarts the ainovel-cli process itself.
+// progress-aware stall watchdog, same-session retries, managed Chrome restart,
+// and safe prompt replay. It never restarts the ainovel-cli process itself.
 type AutoRecoveryTransport struct {
 	inner               Transport
 	session             *SessionManager
@@ -183,9 +183,6 @@ func (w *AutoRecoveryTransport) RoundTrip(ctx context.Context, prompt string) (s
 				}
 				break
 			}
-			// Each successful browser restart starts a fresh bounded soft-retry
-			// budget. This keeps recovery useful without permitting an infinite loop.
-			softUsed = 0
 			continue
 		}
 		break
@@ -203,14 +200,20 @@ func (w *AutoRecoveryTransport) roundTripAttempt(parent context.Context, prompt 
 	if w.stallTimeout <= 0 {
 		return w.inner.RoundTrip(parent, prompt)
 	}
+	if gemini, ok := w.inner.(*GeminiWebTransport); ok {
+		return gemini.roundTripWithIdleWatchdog(parent, prompt, w.stallTimeout)
+	}
+
+	// Generic transports cannot expose browser DOM progress. Tests and future
+	// non-Gemini adapters therefore fall back to a bounded whole-attempt timeout.
 	attemptCtx, cancel := context.WithTimeout(parent, w.stallTimeout)
 	defer cancel()
 
 	raw, err := w.inner.RoundTrip(attemptCtx, prompt)
 	if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
 		return "", &recoverySignal{
-			reason: "no final Gemini response before watchdog deadline",
-			cause:  fmt.Errorf("no completed browser response for %s", w.stallTimeout),
+			reason: "no final response before watchdog deadline",
+			cause:  fmt.Errorf("no completed transport response for %s", w.stallTimeout),
 		}
 	}
 	return raw, err
