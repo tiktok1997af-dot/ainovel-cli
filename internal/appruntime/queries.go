@@ -179,7 +179,11 @@ func validateLimit(limit int) error {
 }
 
 func invalidQuery(_ string) error {
-	// Do not embed the raw client payload or path in the returned error. G02.6
-	// normalizes this sentinel to the stable validation AppError message.
-	return ErrInvalidQuery
+	// Never echo raw client payloads, paths, or selectors into the desktop error.
+	return &AppError{
+		Code:     ErrorCodeInvalidArgument,
+		Category: ErrorCategoryValidation,
+		Message:  safeErrorMessage(ErrorCodeInvalidArgument),
+		Cause:    ErrInvalidQuery,
+	}
 }
