@@ -1,6 +1,6 @@
 # AINOVEL Desktop — G02.1 AppRuntime Contract & Core-Bridge Boundary v1
 
-Status: `G02.1 — APP RUNTIME CONTRACT & CORE-BRIDGE BOUNDARY`
+Status: `G02 — APP RUNTIME — IN PROGRESS`
 
 Parent authority: `docs/desktop-g01-foundation-authority-v1.md`
 
@@ -179,6 +179,17 @@ Rules:
 5. Subscription backpressure must not block Engine/Host execution. A slow GUI is not allowed to stall writing.
 6. The frontend receives desktop DTOs, not raw Go channels owned by Host.
 
+G02.4 implementation additionally locks these details:
+
+- exactly one AppRuntime event hub consumes the Host event/stream channels and fans out to desktop subscribers;
+- each subscriber has its own bounded non-blocking buffer using drop-oldest behavior under backpressure;
+- durable replay uses the existing `RuntimeStore` sequence and `EventCursor.AfterSeq`;
+- the hub tails the canonical runtime queue for newly persisted durable events, so no second event database exists;
+- `host.StreamClearSentinel` is projected as `stream_clear` and never crosses the desktop boundary raw;
+- `utils.ThinkingSep` is projected as explicit `stream_mode` transitions and never crosses the desktop boundary raw;
+- prose/thinking deltas are emitted as `stream_delta` JSON payloads with an explicit `mode`;
+- closing AppRuntime stops the event hub before closing Host, and subscription cancellation removes only that subscriber.
+
 ## 4. Dependency direction
 
 Allowed dependency direction:
@@ -228,119 +239,73 @@ internal/appruntime/
 └── errors.go         # stable desktop error projection
 ```
 
-This is a logical authority, not a requirement to create all files in G02.2 at once.
-
 Desktop entry code may import `internal/appruntime`. Desktop frontend bindings must be generated/wrapped from AppRuntime DTOs rather than importing other internal core packages.
 
 ## 6. Ownership and source-of-truth rules
 
-### Project/story facts
+1. Host/Store remain authoritative for project/runtime facts.
+2. AppRuntime owns desktop-facing orchestration and projection only.
+3. Browser state is execution state, never canonical project state.
+4. Browser conversations are not persistent novel memory.
+5. Checkpoint/recovery remains based on local canonical project facts.
+6. AppRuntime must not create a second project database.
+7. Desktop UI state such as selected tab/panel may live in the frontend, but any fact that affects story/runtime correctness must come through AppRuntime.
 
-Owner: Store/domain artifacts.
+## 7. Concurrency boundary
 
-AppRuntime may project or command changes but never keeps a competing canonical copy.
+G02 freezes the boundary needed by later multi-run work without implementing G05 concurrency early:
 
-### Runtime lifecycle
+- frontend may submit multiple commands but cannot directly run Host methods concurrently;
+- AppRuntime is the future serialization/orchestration point;
+- run/task/resource IDs are part of command/event DTO design;
+- resource locks, worker pools and Browser Lane Pool remain later-gate responsibilities;
+- G02 must not introduce fake parallelism over the current single Host/browser assumptions.
 
-Owner: Host today; later Run Orchestrator extends this authority.
+## 8. Lifecycle boundary
 
-AppRuntime translates desktop commands to the owner and projects status back.
+The user-visible target remains:
 
-### Browser session
+`Start / Pause / Resume / Stop / Cancel / Retry`
 
-Owner: WebAI SessionManager / later browser-lane owner.
+G02.1 locks only their route:
 
-AppRuntime exposes status/commands only.
+```text
+Desktop control
+  -> AppRuntime.Dispatch(command)
+  -> core lifecycle adapter
+  -> Host/Engine/Store/WebAI as required
+  -> DesktopEvent(s)
+  -> updated DesktopSnapshot
+```
 
-### CoCreate state
+Exact semantics and illegal-state behavior are implemented/frozen in G02.5. The frontend is never allowed to infer lifecycle transitions and mutate local state optimistically as if the core already accepted them.
 
-Owner: existing Host/Store CoCreate path.
+## 9. Error boundary
 
-Desktop workspace keeps only presentation state (selection, scroll position, unsent local draft).
+Core errors must not be serialized ad hoc as Go implementation strings throughout the UI.
 
-### GUI presentation state
+G02.6 finalizes a stable projected error shape with categories such as validation/runtime/browser/store/recovery/internal while preserving diagnostic detail for logs. Until then, the facade must keep errors behind the AppRuntime call boundary.
 
-Owner: frontend.
+## 10. Compatibility invariants inherited from G01
 
-Examples: selected tab, panel width, filters, sort order. Such state is not canonical novel/runtime state unless explicitly persisted through a future settings command.
+AppRuntime MUST preserve all of these:
 
-## 7. Concurrency contract
+- `ainovel-cli v0.1.3` remains the core source baseline.
+- Existing TUI and headless entrypoints are not deleted by G02.
+- Existing project directories remain readable.
+- Store remains canonical.
+- WEB-only Gemini execution remains in force; no paid/direct AI API runtime may be reintroduced.
+- Browser credentials/session secrets are not copied into project files or desktop DTOs.
+- Existing resume/checkpoint/watchdog behavior is wrapped or extended, not replaced by a competing implementation.
 
-G02.1 freezes these concurrency rules:
+## 11. G02 progress authority
 
-- Snapshot and Query may execute concurrently when the underlying core read is safe.
-- Dispatch is the only mutation entrance.
-- AppRuntime must be safe when UI threads issue overlapping calls.
-- AppRuntime must not expose Host mutexes/channels to the frontend.
-- `context.Context` cancellation means the caller no longer waits; it does not automatically mean "Cancel Run" unless the command semantics explicitly say so.
-- Multi-run/resource-lock scheduling belongs to G05, but the G02 contract must not prevent it: command and event DTOs therefore carry optional `RunID`, `TaskID` and `Resource` identity fields additively.
-
-## 8. Serialization / transport neutrality
-
-AppRuntime is not tied to a specific desktop IPC implementation.
-
-Contract DTOs must be representable in JSON-compatible form so the same facade can be bound through a desktop bridge without leaking Go implementation details.
-
-Rules:
-
-- explicit string enums rather than frontend-visible Go pointer identity;
-- timestamps serialized deterministically;
-- durations represented with a stable unit/format;
-- no `any`/opaque internal payload exposed to the frontend contract without a typed envelope;
-- no secrets, cookies, browser credentials or filesystem handles in desktop DTOs.
-
-Exact status/error serialization is completed in G02.6.
-
-## 9. Compatibility rules inherited from G01
-
-AppRuntime implementation MUST preserve:
-
-- WEB-only Gemini execution; no AI API fallback;
-- visible Chrome + persistent user-owned login profile;
-- Store as canonical source of truth;
-- readable existing `meta/progress.json`, `meta/run.json`, checkpoints and project files;
-- TUI and headless compatibility;
-- existing Host/Engine regression tests;
-- browser conversation is not project memory;
-- no credential/cookie extraction.
-
-The desktop GUI is additive. It is not permitted to make existing v0.1.3 projects desktop-only.
-
-## 10. Migration rule for the existing TUI
-
-The existing TUI may continue to call `host.Host` during G02 implementation. G02 does not require an immediate TUI rewrite.
-
-However:
-
-- new desktop code MUST use AppRuntime from its first implementation;
-- no new desktop-only capability may be implemented by bypassing AppRuntime;
-- shared behavior should progressively move behind AppRuntime/core services rather than duplicate logic in desktop entry code.
-
-This preserves production compatibility while avoiding a risky all-at-once TUI migration.
-
-## 11. G02.1 acceptance checklist
-
-- [x] Host ownership seam audited.
-- [x] `UISnapshot` projection authority audited.
-- [x] observer/event seam audited.
-- [x] Store/runtime queue seam audited.
-- [x] WebAI SessionManager ownership audited.
-- [x] CoCreate ownership audited.
-- [x] single AppRuntime facade selected.
-- [x] Snapshot / Query / Dispatch / Subscribe / Close facade shape frozen.
-- [x] direct GUI -> core package access prohibited.
-- [x] source-of-truth and concurrency rules frozen.
-- [x] transport-neutral serialization boundary frozen.
-- [x] G01 compatibility invariants preserved.
-
-## 12. G02 implementation progress
-
-- [x] G02.1 — AppRuntime contract/core-bridge boundary authority.
-- [x] G02.2 — AppRuntime package/facade skeleton; Linux + Windows CI PASS.
-- [x] G02.3 — `host.UISnapshot` + read-only WebAI session projection into typed `DesktopSnapshot`; Linux + Windows CI PASS.
-- [ ] G02.4 — Host Observer/Event Stream -> Desktop event bridge.
-- [ ] G02.5 — Start / Pause / Resume / Stop / Cancel / Retry command contract.
-- [ ] G02.6 — Error + Status + serialization contracts.
-- [ ] G02.7 — Full contract tests + regression + final G02 gate.
+- `G02.1 — AppRuntime Contract & Core-Bridge Boundary`: PASS.
+- `G02.2 — AppRuntime Facade / Package Skeleton`: PASS.
+- `G02.3 — UISnapshot -> Desktop View Model Projection`: PASS.
+- `G02.4 — Host Observer/Event Stream -> Desktop Event Bridge`: PASS.
+- `G02.5 — Lifecycle Command Contract`: CLOSED until G02.4 PASS.
+- `G02.6 — Error/Status/Serialization Contracts`: CLOSED.
+- `G02.7 — Contract Tests + Regression + G02 Gate`: CLOSED.
 
 G03 remains CLOSED until all G02 steps pass.
