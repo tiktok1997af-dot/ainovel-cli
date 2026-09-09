@@ -1,6 +1,6 @@
 # AINOVEL Desktop — G03.4 Store-backed Document Catalog / Document Get Authority v1
 
-Status: `G03.4 — PASS CANDIDATE / FINAL EXACT-HEAD CI REQUIRED`
+Status: `G03.4 — PASS / READ HANDLERS LOCKED`
 
 Parent authorities:
 
@@ -10,7 +10,7 @@ Parent authorities:
 
 Branch: `feat/desktop-roadmap-v2-g03-project-knowledge`
 
-Implementation validation before this authority commit: `de5eb0e48e1234d8e6adcdebbaf6b422cc194a0b`, CI run #393 — SUCCESS (WEB-only/NO-API audit, Ubuntu format/vet/test/race, Windows format/vet/test).
+Implementation validation: `de5eb0e48e1234d8e6adcdebbaf6b422cc194a0b`, CI run #393 — SUCCESS (WEB-only/NO-API audit, Ubuntu format/vet/test/race, Windows format/vet/test). Authority-containing commit `ceb3631d5839208e4aacbcdc5dedaedd47691f02` also passed exact-head CI run #394 before this final status lock.
 
 ## 1. Scope
 
@@ -240,6 +240,6 @@ Store/domain remain the source of truth. Browser conversation data is not part o
 
 ## 14. Gate rule
 
-This authority becomes `G03.4 — PASS / READ HANDLERS LOCKED` only when CI succeeds on the exact commit containing this file and the G03.4 implementation/tests.
+G03.4 is locked only when CI succeeds on the exact final commit containing this authority status plus the implementation/tests. Any later code or authority change reopens exact-head validation.
 
 PR #19 remains Draft after G03.4. It MUST NOT be merged until the final G03 gate is completed.
