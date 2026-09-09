@@ -6,6 +6,8 @@ Parent authority: `docs/desktop-g03-project-knowledge-authority-v1.md`
 
 Baseline: G03 branch based on `main@443368d3f1cb2400984de28e4919e7fb505d96aa`.
 
+Validated implementation head: `b66f26bf5d10d58113ee267182a9c1aa41d2b5a9` (CI run 375: WEB-only/NO-API audit, Ubuntu format/vet/test/race, Windows format/vet/test PASS).
+
 ## 1. Scope
 
 G03.2 freezes the desktop read-plane catalog and serialization-safe DTO skeleton. It does not add GUI workspaces, Store mutations, a second persistence layer, or final Store-backed query handlers.
