@@ -3,7 +3,6 @@ package appruntime
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/voocel/agentcore"
 	apperrs "github.com/voocel/ainovel-cli/internal/errs"
@@ -71,11 +70,11 @@ func (e *AppError) Unwrap() error {
 	return e.Cause
 }
 
-func contractError(got string) *AppError {
+func contractError() *AppError {
 	return &AppError{
 		Code:     ErrorCodeContractMismatch,
 		Category: ErrorCategoryValidation,
-		Message:  fmt.Sprintf("Desktop contract mismatch: got %q, want %q", got, ContractVersion),
+		Message:  safeErrorMessage(ErrorCodeContractMismatch),
 	}
 }
 
@@ -83,7 +82,7 @@ func validateContractVersion(version string) error {
 	if version == "" || version == ContractVersion {
 		return nil
 	}
-	return contractError(version)
+	return contractError()
 }
 
 func recoveryError(err error) *AppError {
@@ -143,7 +142,22 @@ func normalizeAppError(err error) *AppError {
 	}
 	var existing *AppError
 	if errors.As(err, &existing) {
-		return existing
+		clone := *existing
+		if clone.Code == "" {
+			clone.Code = ErrorCodeInternal
+		}
+		if clone.Category == "" {
+			clone.Category = ErrorCategoryInternal
+		}
+		clone.Message = safeErrorMessage(clone.Code)
+		// Preserve the Go error chain without ever serializing it. If the input is
+		// the AppError itself, keep its original cause to avoid a self-cycle.
+		if err == existing {
+			clone.Cause = existing.Cause
+		} else {
+			clone.Cause = err
+		}
+		return &clone
 	}
 
 	app := &AppError{Code: ErrorCodeInternal, Category: ErrorCategoryInternal, Cause: err}
