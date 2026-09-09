@@ -11,6 +11,7 @@ func TestLifecycleFromCore(t *testing.T) {
 		"":          LifecycleReady,
 		"idle":      LifecycleReady,
 		"running":   LifecycleRunning,
+		"pausing":   LifecyclePausing,
 		"paused":    LifecyclePaused,
 		"completed": LifecycleCompleted,
 		"unknown":   LifecycleReady,
