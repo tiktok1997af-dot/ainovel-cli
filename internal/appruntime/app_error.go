@@ -75,13 +75,11 @@ func contractError(got string) *AppError {
 	return &AppError{
 		Code:     ErrorCodeContractMismatch,
 		Category: ErrorCategoryValidation,
-		Message:  fmt.Sprintf("desktop contract mismatch: got %q, want %q", got, ContractVersion),
+		Message:  fmt.Sprintf("Desktop contract mismatch: got %q, want %q", got, ContractVersion),
 	}
 }
 
 func validateContractVersion(version string) error {
-	// Empty is accepted during G02 migration; every result advertises the current
-	// version so the desktop shell can start sending it on subsequent requests.
 	if version == "" || version == ContractVersion {
 		return nil
 	}
@@ -97,8 +95,46 @@ func recoveryError(err error) *AppError {
 		app.Code = ErrorCodeRecoveryFailed
 		app.Category = ErrorCategoryRecovery
 		app.Retryable = true
+		app.Message = safeErrorMessage(app.Code)
 	}
 	return app
+}
+
+func safeErrorMessage(code ErrorCode) string {
+	switch code {
+	case ErrorCodeInvalidArgument:
+		return "The request is invalid."
+	case ErrorCodeContractMismatch:
+		return "The desktop and core contract versions are incompatible."
+	case ErrorCodeRuntimeUnavailable:
+		return "The application runtime is unavailable."
+	case ErrorCodeRuntimeClosed:
+		return "The application runtime is closed."
+	case ErrorCodeRequestCancelled:
+		return "The request was cancelled."
+	case ErrorCodeCommandNotAllowed:
+		return "This action is not allowed in the current state."
+	case ErrorCodeCommandRejected:
+		return "The runtime rejected this action."
+	case ErrorCodeBrowserAuth:
+		return "Browser login is required."
+	case ErrorCodeBrowserTransport:
+		return "The browser connection failed."
+	case ErrorCodeBrowserTimeout:
+		return "The browser operation timed out."
+	case ErrorCodeBrowserProtocol:
+		return "The browser page or protocol is not supported."
+	case ErrorCodeAIProvider:
+		return "The AI execution failed."
+	case ErrorCodeStoreRead:
+		return "Project data could not be read."
+	case ErrorCodeStoreWrite:
+		return "Project data could not be saved."
+	case ErrorCodeRecoveryFailed:
+		return "The run could not be recovered from durable state."
+	default:
+		return "An internal runtime error occurred."
+	}
 }
 
 func normalizeAppError(err error) *AppError {
@@ -110,7 +146,7 @@ func normalizeAppError(err error) *AppError {
 		return existing
 	}
 
-	app := &AppError{Code: ErrorCodeInternal, Category: ErrorCategoryInternal, Message: err.Error(), Cause: err}
+	app := &AppError{Code: ErrorCodeInternal, Category: ErrorCategoryInternal, Cause: err}
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		app.Code, app.Category = ErrorCodeRequestCancelled, ErrorCategoryRuntime
@@ -125,11 +161,9 @@ func normalizeAppError(err error) *AppError {
 	case errors.Is(err, ErrCommandRejected):
 		app.Code, app.Category = ErrorCodeCommandRejected, ErrorCategoryRuntime
 	case errors.Is(err, apperrs.ErrStoreRead):
-		app.Code, app.Category = ErrorCodeStoreRead, ErrorCategoryStore
-		app.Retryable = true
+		app.Code, app.Category, app.Retryable = ErrorCodeStoreRead, ErrorCategoryStore, true
 	case errors.Is(err, apperrs.ErrStoreWrite):
-		app.Code, app.Category = ErrorCodeStoreWrite, ErrorCategoryStore
-		app.Retryable = true
+		app.Code, app.Category, app.Retryable = ErrorCodeStoreWrite, ErrorCategoryStore, true
 	case errors.Is(err, apperrs.ErrConfig), errors.Is(err, apperrs.ErrToolArgs):
 		app.Code, app.Category = ErrorCodeInvalidArgument, ErrorCategoryValidation
 	case errors.Is(err, apperrs.ErrToolConflict), errors.Is(err, apperrs.ErrToolPrecondition), errors.Is(err, apperrs.ErrPhaseTransition), errors.Is(err, apperrs.ErrFlowTransition):
@@ -154,5 +188,6 @@ func normalizeAppError(err error) *AppError {
 			app.Code = ErrorCodeBrowserTransport
 		}
 	}
+	app.Message = safeErrorMessage(app.Code)
 	return app
 }
