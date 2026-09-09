@@ -68,9 +68,14 @@ func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, err
 		result.Error = appErr
 		return result, appErr
 	}
-	appErr := normalizeAppError(ErrNotImplemented)
-	result.Error = appErr
-	return result, appErr
+	data, err := r.routeQuery(ctx, req)
+	if err != nil {
+		appErr := normalizeAppError(err)
+		result.Error = appErr
+		return result, appErr
+	}
+	result.Data = data
+	return result, nil
 }
 
 func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResult, error) {
