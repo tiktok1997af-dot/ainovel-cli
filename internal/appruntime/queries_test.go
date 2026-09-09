@@ -68,6 +68,9 @@ func TestQueryValidationRejectsInvalidAndUnknownPayloads(t *testing.T) {
 		{Kind: QueryChaptersGet, Payload: json.RawMessage(`{"chapter":0}`)},
 		{Kind: QueryChaptersList, Payload: json.RawMessage(`{"limit":501}`)},
 		{Kind: QueryDocumentsGet, Payload: json.RawMessage(`{"id":"   "}`)},
+		{Kind: QueryDocumentsGet, Payload: json.RawMessage(`{"id":"../meta/book.json"}`)},
+		{Kind: QueryDocumentsList, Payload: json.RawMessage(`{"prefix":"../meta/"}`)},
+		{Kind: QueryDocumentsList, Payload: json.RawMessage(`{"kind":"filesystem"}`)},
 		{Kind: QueryKnowledgeCharacters, Payload: json.RawMessage(`{"scope":"secret"}`)},
 		{Kind: QueryKnowledgeTimeline, Payload: json.RawMessage(`{"from_chapter":9,"to_chapter":3}`)},
 		{Kind: QueryProjectOverview, Payload: json.RawMessage(`{"unknown":true}`)},
@@ -88,11 +91,9 @@ func TestQueryValidationRejectsInvalidAndUnknownPayloads(t *testing.T) {
 	}
 }
 
-func TestQueryRouterKeepsLaterDomainsStagedWithoutCoreMutation(t *testing.T) {
+func TestQueryRouterKeepsKnowledgeDomainsStagedWithoutCoreMutation(t *testing.T) {
 	var runtime Runtime
 	staged := []QueryKind{
-		QueryDocumentsList,
-		QueryDocumentsGet,
 		QueryKnowledgeContext,
 		QueryKnowledgeCanon,
 		QueryKnowledgeCharacters,
@@ -100,11 +101,7 @@ func TestQueryRouterKeepsLaterDomainsStagedWithoutCoreMutation(t *testing.T) {
 		QueryKnowledgeTimeline,
 	}
 	for _, kind := range staged {
-		payload := json.RawMessage(`{}`)
-		if kind == QueryDocumentsGet {
-			payload = json.RawMessage(`{"id":"book"}`)
-		}
-		_, err := runtime.routeQuery(context.Background(), QueryRequest{Kind: kind, Payload: payload})
+		_, err := runtime.routeQuery(context.Background(), QueryRequest{Kind: kind, Payload: json.RawMessage(`{}`)})
 		if !errors.Is(err, ErrNotImplemented) {
 			t.Fatalf("route %q = %v, want staged ErrNotImplemented", kind, err)
 		}
@@ -117,8 +114,8 @@ func TestProjectKnowledgeDTOsAreJSONSafe(t *testing.T) {
 		ChaptersListResultDTO{Items: []ChapterListItemDTO{{Chapter: 1, Status: "completed", HasFinal: true}}, Total: 1},
 		ChaptersGetResultDTO{Chapter: 1, Status: "completed", Final: &ChapterTextViewDTO{Present: true, Content: "text", WordCount: 4}},
 		OutlineGetResultDTO{Layered: true, Volumes: []VolumeOutlineViewDTO{{Index: 1, Title: "V1"}}},
-		DocumentsListResultDTO{Items: []DocumentSummaryDTO{{ID: "book", Kind: "book", Path: "meta/book.json", ReadOnly: true}}, Total: 1},
-		DocumentsGetResultDTO{Document: DocumentSummaryDTO{ID: "book", Kind: "book", Path: "meta/book.json", ReadOnly: true}, Content: "{}"},
+		DocumentsListResultDTO{Items: []DocumentSummaryDTO{{ID: "project.book", Kind: DocumentKindProject, Path: "meta/book.json", ReadOnly: true}}, Total: 1},
+		DocumentsGetResultDTO{Document: DocumentSummaryDTO{ID: "project.book", Kind: DocumentKindProject, Path: "meta/book.json", ReadOnly: true}, Content: "{}"},
 		KnowledgeContextResultDTO{Sections: []KnowledgeSectionDTO{{Name: "canon", Items: []KnowledgeItemDTO{{Kind: "fact", Summary: "stable", Provenance: []ProvenanceDTO{{ArtifactID: "chapter:1", Kind: "chapter"}}}}}}},
 		KnowledgeCanonResultDTO{Facts: []CanonFactDTO{{Kind: "state", Subject: "hero", Field: "status", Value: "alive", Provenance: []ProvenanceDTO{{ArtifactID: "chapter:1", Kind: "chapter"}}}}, Total: 1},
 		KnowledgeCharactersResultDTO{Items: []CharacterViewDTO{{Name: "Hero", Origin: "core"}}, Total: 1},
