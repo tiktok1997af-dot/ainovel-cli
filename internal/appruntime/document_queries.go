@@ -8,6 +8,14 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
+const (
+	DocumentKindProject   = "project"
+	DocumentKindOutline   = "outline"
+	DocumentKindKnowledge = "knowledge"
+	DocumentKindChapter   = "chapter"
+	DocumentKindSummary   = "summary"
+)
+
 func (r *Runtime) queryDocumentsList(req DocumentsListQuery) (json.RawMessage, error) {
 	artifacts, err := r.core.DesktopDocumentCatalog()
 	if err != nil {
