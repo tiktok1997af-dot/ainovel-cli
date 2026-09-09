@@ -49,6 +49,7 @@ func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, 
 	}
 
 	return DesktopSnapshot{
+		Contract:    CurrentContract(),
 		Revision:    revision,
 		GeneratedAt: utcTime(generatedAt),
 		Product: ProductViewSnapshot{
@@ -73,7 +74,7 @@ func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, 
 			CompassScale:     src.CompassScale,
 		},
 		Runtime: RuntimeViewSnapshot{
-			State:                src.RuntimeState,
+			State:                lifecycleFromCore(src.RuntimeState),
 			Status:               src.StatusLabel,
 			Phase:                src.Phase,
 			Flow:                 src.Flow,
@@ -98,7 +99,7 @@ func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, 
 		},
 		Agents: agents,
 		Browser: BrowserViewSnapshot{
-			State:       string(browser.State),
+			State:       normalizeBrowserStatus(browser.State),
 			Site:        browser.Site,
 			BrowserPath: browser.BrowserPath,
 			ProfileDir:  browser.ProfileDir,
@@ -119,6 +120,27 @@ func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, 
 			RewriteReason:     src.RewriteReason,
 			RecentSummaries:   append([]string(nil), src.RecentSummaries...),
 		},
+	}
+}
+
+func normalizeBrowserStatus(state webai.SessionState) BrowserStatus {
+	switch state {
+	case webai.SessionStarting:
+		return BrowserStarting
+	case webai.SessionAuthRequired:
+		return BrowserAuthRequired
+	case webai.SessionReady:
+		return BrowserReady
+	case webai.SessionBusy:
+		return BrowserBusy
+	case webai.SessionDegraded:
+		return BrowserDegraded
+	case webai.SessionFailed:
+		return BrowserFailed
+	case webai.SessionStopped, "":
+		return BrowserStopped
+	default:
+		return BrowserUnknown
 	}
 }
 
