@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	productName       = "AINOVEL"
-	coreBaseline      = "ainovel-cli v0.1.3"
-	executionModeWeb  = "web-only"
+	productName      = "AINOVEL"
+	coreBaseline     = "ainovel-cli v0.1.3"
+	executionModeWeb = "web-only"
 )
 
 func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, outputDir string, revision uint64, generatedAt time.Time) DesktopSnapshot {
@@ -86,7 +86,7 @@ func projectDesktopSnapshot(src host.UISnapshot, browser webai.SessionSnapshot, 
 			AdvanceMode:          src.AdvanceMode,
 			AdvancePermitChapter: src.AdvancePermitChapter,
 			HasAdvanceHold:       src.HasAdvanceHold,
-			AdvanceHoldReason:     src.AdvanceHoldReason,
+			AdvanceHoldReason:    src.AdvanceHoldReason,
 			AITelemetryStatus:    src.AITelemetryStatus,
 		},
 		CurrentChapter: ChapterViewSnapshot{
