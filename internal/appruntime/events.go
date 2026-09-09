@@ -85,7 +85,7 @@ func (s *desktopSubscription) offer(ev DesktopEvent) {
 	if ev.ContractVersion == "" {
 		ev.ContractVersion = ContractVersion
 	}
-	if ev.Level == "error" {
+	if ev.Level == "error" || ev.Category == "ERROR" {
 		if ev.Error == nil {
 			ev.Error = &AppError{
 				Code:     ErrorCodeInternal,
