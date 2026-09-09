@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/host"
 )
@@ -11,9 +12,10 @@ import (
 // Runtime is the desktop-facing facade over the existing Host. The core Host
 // remains private so desktop callers cannot bypass the AppRuntime boundary.
 type Runtime struct {
-	core      *host.Host
-	closeOnce sync.Once
-	closed    atomic.Bool
+	core             *host.Host
+	closeOnce        sync.Once
+	closed           atomic.Bool
+	snapshotRevision atomic.Uint64
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -31,7 +33,14 @@ func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 	if err := r.ready(ctx); err != nil {
 		return DesktopSnapshot{}, err
 	}
-	return DesktopSnapshot{}, ErrNotImplemented
+	revision := r.snapshotRevision.Add(1)
+	return projectDesktopSnapshot(
+		r.core.Snapshot(),
+		r.core.WebSessionSnapshot(),
+		r.core.Dir(),
+		revision,
+		time.Now().UTC(),
+	), nil
 }
 
 func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, error) {
