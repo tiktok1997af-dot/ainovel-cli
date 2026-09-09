@@ -304,7 +304,7 @@ AppRuntime MUST preserve all of these:
 - `G02.2 — AppRuntime Facade / Package Skeleton`: PASS.
 - `G02.3 — UISnapshot -> Desktop View Model Projection`: PASS.
 - `G02.4 — Host Observer/Event Stream -> Desktop Event Bridge`: PASS.
-- `G02.5 — Lifecycle Command Contract`: CLOSED until G02.4 PASS.
+- `G02.5 — Lifecycle Command Contract`: OPEN / AUTHORIZED NEXT STEP.
 - `G02.6 — Error/Status/Serialization Contracts`: CLOSED.
 - `G02.7 — Contract Tests + Regression + G02 Gate`: CLOSED.
 
