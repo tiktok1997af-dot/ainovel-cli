@@ -17,6 +17,12 @@ type Runtime struct {
 	closed           atomic.Bool
 	snapshotRevision atomic.Uint64
 
+	commandMu       sync.Mutex
+	lifecycleMu     sync.Mutex
+	lifecycleState  DesktopLifecycleState
+	nextCommandID   atomic.Uint64
+	commandWG       sync.WaitGroup
+
 	eventHubOnce     sync.Once
 	eventMu          sync.Mutex
 	eventHubCancel   context.CancelFunc
@@ -34,8 +40,9 @@ func New(core *host.Host) (*Runtime, error) {
 		return nil, ErrNilHost
 	}
 	return &Runtime{
-		core:        core,
-		subscribers: make(map[uint64]*desktopSubscription),
+		core:           core,
+		lifecycleState: lifecycleFromCore(core.Snapshot().RuntimeState),
+		subscribers:    make(map[uint64]*desktopSubscription),
 	}, nil
 }
 
@@ -43,14 +50,18 @@ func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 	if err := r.ready(ctx); err != nil {
 		return DesktopSnapshot{}, err
 	}
+	coreSnapshot := r.core.Snapshot()
+	r.reconcileLifecycle(coreSnapshot)
 	revision := r.snapshotRevision.Add(1)
-	return projectDesktopSnapshot(
-		r.core.Snapshot(),
+	snapshot := projectDesktopSnapshot(
+		coreSnapshot,
 		r.core.WebSessionSnapshot(),
 		r.core.Dir(),
 		revision,
 		time.Now().UTC(),
-	), nil
+	)
+	r.applyLifecycleProjection(&snapshot)
+	return snapshot, nil
 }
 
 func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, error) {
@@ -64,7 +75,7 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	if err := r.ready(ctx); err != nil {
 		return CommandResult{}, err
 	}
-	return CommandResult{CommandID: cmd.ID}, ErrNotImplemented
+	return r.dispatchLifecycle(ctx, cmd)
 }
 
 func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubscription, error) {
@@ -128,6 +139,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.closed.Store(true)
 		r.stopEventHub()
 		r.core.Close()
+		r.commandWG.Wait()
 	})
 	return nil
 }
