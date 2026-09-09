@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
+	"regexp"
 	"strings"
 )
 
@@ -12,6 +14,8 @@ type queryRoute struct {
 	Kind    QueryKind
 	Request any
 }
+
+var documentIDRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,127}$`)
 
 func (r *Runtime) routeQuery(ctx context.Context, req QueryRequest) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
@@ -31,9 +35,13 @@ func (r *Runtime) routeQuery(ctx context.Context, req QueryRequest) (json.RawMes
 		return r.queryChaptersGet(route.Request.(ChaptersGetQuery))
 	case QueryOutlineGet:
 		return r.queryOutlineGet(route.Request.(OutlineGetQuery))
+	case QueryDocumentsList:
+		return r.queryDocumentsList(route.Request.(DocumentsListQuery))
+	case QueryDocumentsGet:
+		return r.queryDocumentsGet(route.Request.(DocumentsGetQuery))
 	default:
-		// Documents and Knowledge handlers remain deliberately staged for later
-		// G03 steps. Never return a fake empty success for an unread Store domain.
+		// Knowledge handlers remain deliberately staged for later G03 steps.
+		// Never return a fake empty success for an unread Store domain.
 		return nil, ErrNotImplemented
 	}
 }
@@ -84,6 +92,14 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 		if err := validatePage(payload.PageQuery); err != nil {
 			return queryRoute{}, err
 		}
+		payload.Kind = strings.TrimSpace(payload.Kind)
+		payload.Prefix = strings.TrimSpace(payload.Prefix)
+		if err := validateDocumentKind(payload.Kind); err != nil {
+			return queryRoute{}, err
+		}
+		if err := validateDocumentPrefix(payload.Prefix); err != nil {
+			return queryRoute{}, err
+		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
 	case QueryDocumentsGet:
 		var payload DocumentsGetQuery
@@ -91,8 +107,8 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 			return queryRoute{}, err
 		}
 		payload.ID = strings.TrimSpace(payload.ID)
-		if payload.ID == "" {
-			return queryRoute{}, invalidQuery("document id is required")
+		if !validDocumentID(payload.ID) {
+			return queryRoute{}, invalidQuery("document id is invalid")
 		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
 	case QueryKnowledgeContext:
@@ -191,6 +207,42 @@ func validateLimit(limit int) error {
 		return invalidQuery(fmt.Sprintf("limit exceeds maximum %d", MaxQueryPageSize))
 	}
 	return nil
+}
+
+func validateDocumentKind(kind string) error {
+	switch kind {
+	case "", DocumentKindProject, DocumentKindOutline, DocumentKindKnowledge, DocumentKindChapter, DocumentKindSummary:
+		return nil
+	default:
+		return invalidQuery("document kind is not supported")
+	}
+}
+
+func validateDocumentPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if strings.ContainsRune(prefix, '\x00') || strings.Contains(prefix, "\\") || strings.Contains(prefix, ":") || path.IsAbs(prefix) {
+		return invalidQuery("document prefix is invalid")
+	}
+	trimmed := strings.TrimSuffix(prefix, "/")
+	if trimmed == "" {
+		return invalidQuery("document prefix is invalid")
+	}
+	clean := path.Clean(trimmed)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != trimmed {
+		return invalidQuery("document prefix is invalid")
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return invalidQuery("document prefix is invalid")
+		}
+	}
+	return nil
+}
+
+func validDocumentID(id string) bool {
+	return id != "" && !strings.Contains(id, "..") && documentIDRE.MatchString(id)
 }
 
 func invalidQuery(_ string) error {
