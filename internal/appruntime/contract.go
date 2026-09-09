@@ -17,10 +17,123 @@ type AppRuntime interface {
 }
 
 // DesktopSnapshot is the transport-neutral root projection consumed by the
-// desktop shell. G02.3 extends it with typed product/project/runtime sections.
+// desktop shell. It deliberately contains only desktop DTOs, never host/webai
+// implementation structs or pointers.
 type DesktopSnapshot struct {
-	Revision    uint64    `json:"revision"`
-	GeneratedAt time.Time `json:"generated_at"`
+	Revision       uint64                     `json:"revision"`
+	GeneratedAt    time.Time                  `json:"generated_at"`
+	Product        ProductViewSnapshot        `json:"product"`
+	Project        ProjectViewSnapshot        `json:"project"`
+	Runtime        RuntimeViewSnapshot        `json:"runtime"`
+	CurrentChapter ChapterViewSnapshot        `json:"current_chapter"`
+	Agents         []AgentViewSnapshot        `json:"agents"`
+	Browser        BrowserViewSnapshot        `json:"browser"`
+	Recovery       RecoveryViewSnapshot       `json:"recovery"`
+	QualitySummary QualitySummaryViewSnapshot `json:"quality_summary"`
+}
+
+type ProductViewSnapshot struct {
+	Name          string `json:"name"`
+	CoreBaseline  string `json:"core_baseline"`
+	ExecutionMode string `json:"execution_mode"`
+}
+
+type ProjectViewSnapshot struct {
+	Title            string                `json:"title,omitempty"`
+	OutputDir        string                `json:"output_dir,omitempty"`
+	Synopsis         string                `json:"synopsis,omitempty"`
+	Premise          string                `json:"premise,omitempty"`
+	Style            string                `json:"style,omitempty"`
+	Layered          bool                  `json:"layered"`
+	Outline          []OutlineItemSnapshot `json:"outline,omitempty"`
+	Characters       []string              `json:"characters,omitempty"`
+	SupportingCount  int                   `json:"supporting_count"`
+	RecentSupporting []string              `json:"recent_supporting,omitempty"`
+	CurrentVolumeArc string                `json:"current_volume_arc,omitempty"`
+	NextVolumeTitle  string                `json:"next_volume_title,omitempty"`
+	CompassDirection string                `json:"compass_direction,omitempty"`
+	CompassScale     string                `json:"compass_scale,omitempty"`
+}
+
+type OutlineItemSnapshot struct {
+	Chapter   int    `json:"chapter"`
+	Title     string `json:"title,omitempty"`
+	CoreEvent string `json:"core_event,omitempty"`
+}
+
+type RuntimeViewSnapshot struct {
+	State                string `json:"state"`
+	Status               string `json:"status,omitempty"`
+	Phase                string `json:"phase,omitempty"`
+	Flow                 string `json:"flow,omitempty"`
+	IsRunning            bool   `json:"is_running"`
+	Provider             string `json:"provider,omitempty"`
+	Model                string `json:"model,omitempty"`
+	ModelContextWindow   int    `json:"model_context_window,omitempty"`
+	ThinkingLevel        string `json:"thinking_level,omitempty"`
+	PendingSteer         string `json:"pending_steer,omitempty"`
+	AdvanceMode          string `json:"advance_mode,omitempty"`
+	AdvancePermitChapter int    `json:"advance_permit_chapter,omitempty"`
+	HasAdvanceHold       bool   `json:"has_advance_hold"`
+	AdvanceHoldReason    string `json:"advance_hold_reason,omitempty"`
+	AITelemetryStatus    string `json:"ai_telemetry_status,omitempty"`
+}
+
+type ChapterViewSnapshot struct {
+	Current        int `json:"current"`
+	InProgress     int `json:"in_progress"`
+	Total          int `json:"total"`
+	Completed      int `json:"completed"`
+	TotalWordCount int `json:"total_word_count"`
+}
+
+type AgentViewSnapshot struct {
+	Name      string                   `json:"name"`
+	State     string                   `json:"state"`
+	TaskID    string                   `json:"task_id,omitempty"`
+	TaskKind  string                   `json:"task_kind,omitempty"`
+	Summary   string                   `json:"summary,omitempty"`
+	Tool      string                   `json:"tool,omitempty"`
+	Turn      int                      `json:"turn"`
+	Context   AgentContextViewSnapshot `json:"context"`
+	UpdatedAt time.Time                `json:"updated_at"`
+}
+
+type AgentContextViewSnapshot struct {
+	Tokens          int     `json:"tokens"`
+	ContextWindow   int     `json:"context_window"`
+	Percent         float64 `json:"percent"`
+	Scope           string  `json:"scope,omitempty"`
+	Strategy        string  `json:"strategy,omitempty"`
+	ActiveMessages  int     `json:"active_messages"`
+	SummaryMessages int     `json:"summary_messages"`
+	CompactedCount  int     `json:"compacted_count"`
+	KeptCount       int     `json:"kept_count"`
+}
+
+type BrowserViewSnapshot struct {
+	State       string    `json:"state"`
+	Site        string    `json:"site,omitempty"`
+	BrowserPath string    `json:"browser_path,omitempty"`
+	ProfileDir  string    `json:"profile_dir,omitempty"`
+	PID         int       `json:"pid,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	ChangedAt   time.Time `json:"changed_at,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+}
+
+type RecoveryViewSnapshot struct {
+	Label          string `json:"label,omitempty"`
+	CanResume      bool   `json:"can_resume"`
+	LastCheckpoint string `json:"last_checkpoint,omitempty"`
+}
+
+type QualitySummaryViewSnapshot struct {
+	LastCommitSummary string   `json:"last_commit_summary,omitempty"`
+	LastReviewSummary string   `json:"last_review_summary,omitempty"`
+	PendingRewrites   []int    `json:"pending_rewrites,omitempty"`
+	RewriteReason     string   `json:"rewrite_reason,omitempty"`
+	RecentSummaries   []string `json:"recent_summaries,omitempty"`
 }
 
 // QueryKind identifies a read-only AppRuntime query.
