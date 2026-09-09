@@ -17,13 +17,25 @@ func (r *Runtime) routeQuery(ctx context.Context, req QueryRequest) (json.RawMes
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := decodeQueryRoute(req); err != nil {
+	route, err := decodeQueryRoute(req)
+	if err != nil {
 		return nil, err
 	}
 
-	// G03.2 freezes the typed read catalog and routing boundary only. Store-backed
-	// handlers are added incrementally after this contract skeleton is locked.
-	return nil, ErrNotImplemented
+	switch route.Kind {
+	case QueryProjectOverview:
+		return r.queryProjectOverview()
+	case QueryChaptersList:
+		return r.queryChaptersList(route.Request.(ChaptersListQuery))
+	case QueryChaptersGet:
+		return r.queryChaptersGet(route.Request.(ChaptersGetQuery))
+	case QueryOutlineGet:
+		return r.queryOutlineGet(route.Request.(OutlineGetQuery))
+	default:
+		// Documents and Knowledge handlers remain deliberately staged for later
+		// G03 steps. Never return a fake empty success for an unread Store domain.
+		return nil, ErrNotImplemented
+	}
 }
 
 func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
