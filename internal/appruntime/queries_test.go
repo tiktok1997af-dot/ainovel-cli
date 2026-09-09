@@ -88,14 +88,20 @@ func TestQueryValidationRejectsInvalidAndUnknownPayloads(t *testing.T) {
 	}
 }
 
-func TestQueryRouterSkeletonRecognizesCatalogWithoutCoreMutation(t *testing.T) {
+func TestQueryRouterKeepsLaterDomainsStagedWithoutCoreMutation(t *testing.T) {
 	var runtime Runtime
-	for _, kind := range SupportedQueryKinds() {
+	staged := []QueryKind{
+		QueryDocumentsList,
+		QueryDocumentsGet,
+		QueryKnowledgeContext,
+		QueryKnowledgeCanon,
+		QueryKnowledgeCharacters,
+		QueryKnowledgeWorld,
+		QueryKnowledgeTimeline,
+	}
+	for _, kind := range staged {
 		payload := json.RawMessage(`{}`)
-		switch kind {
-		case QueryChaptersGet:
-			payload = json.RawMessage(`{"chapter":1}`)
-		case QueryDocumentsGet:
+		if kind == QueryDocumentsGet {
 			payload = json.RawMessage(`{"id":"book"}`)
 		}
 		_, err := runtime.routeQuery(context.Background(), QueryRequest{Kind: kind, Payload: payload})
