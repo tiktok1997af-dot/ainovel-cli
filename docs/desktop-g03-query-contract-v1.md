@@ -1,6 +1,6 @@
 # AINOVEL Desktop — G03.2 Project / Knowledge Query Contract v1
 
-Status: `G03.2 — CONTRACT LOCK CANDIDATE`
+Status: `G03.2 — PASS / CONTRACT LOCKED`
 
 Parent authority: `docs/desktop-g03-project-knowledge-authority-v1.md`
 
@@ -80,4 +80,4 @@ G03.2 introduces no mutation path. Query routing must remain side-effect-free. P
 - JSON safety of all project/knowledge result DTO families;
 - QueryRequest typed-payload round-trip compatibility.
 
-G03.2 may be marked PASS only after exact-head CI passes WEB-only/NO-API audit, gofmt, vet, tests and required platform regression.
+G03.2 is locked only after exact-head CI passes WEB-only/NO-API audit, gofmt, vet, tests and required platform regression.
