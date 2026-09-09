@@ -333,12 +333,14 @@ This preserves production compatibility while avoiding a risky all-at-once TUI m
 - [x] transport-neutral serialization boundary frozen.
 - [x] G01 compatibility invariants preserved.
 
-## 12. Gate state
+## 12. G02 implementation progress
 
-`G02.1 — PASS` when this authority file is committed on `feat/desktop-roadmap-v2-g02-appruntime` and the branch still descends from the G01 merge head.
-
-Next authorized step after G02.1 PASS:
-
-`G02.2 — CREATE APPRUNTIME FACADE / PACKAGE SKELETON`
+- [x] G02.1 — AppRuntime contract/core-bridge boundary authority.
+- [x] G02.2 — AppRuntime package/facade skeleton; Linux + Windows CI PASS.
+- [x] G02.3 — `host.UISnapshot` + read-only WebAI session projection into typed `DesktopSnapshot`; Linux + Windows CI PASS.
+- [ ] G02.4 — Host Observer/Event Stream -> Desktop event bridge.
+- [ ] G02.5 — Start / Pause / Resume / Stop / Cancel / Retry command contract.
+- [ ] G02.6 — Error + Status + serialization contracts.
+- [ ] G02.7 — Full contract tests + regression + final G02 gate.
 
 G03 remains CLOSED until all G02 steps pass.
