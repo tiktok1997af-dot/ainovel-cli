@@ -102,10 +102,15 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 		}
 	}
 
-	go func() {
-		<-ctx.Done()
-		_ = sub.Close()
-	}()
+	// Background contexts have a nil Done channel; avoid creating a goroutine
+	// that could never wake up. Explicit subscription contexts still own the
+	// subscription lifetime.
+	if done := ctx.Done(); done != nil {
+		go func() {
+			<-done
+			_ = sub.Close()
+		}()
+	}
 	return sub, nil
 }
 
