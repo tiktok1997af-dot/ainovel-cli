@@ -37,7 +37,7 @@ var _ AppRuntime = (*Runtime)(nil)
 // Store, WebAI session, or project database.
 func New(core *host.Host) (*Runtime, error) {
 	if core == nil {
-		return nil, ErrNilHost
+		return nil, normalizeAppError(ErrNilHost)
 	}
 	return &Runtime{
 		core:           core,
@@ -48,7 +48,7 @@ func New(core *host.Host) (*Runtime, error) {
 
 func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 	if err := r.ready(ctx); err != nil {
-		return DesktopSnapshot{}, err
+		return DesktopSnapshot{}, normalizeAppError(err)
 	}
 	coreSnapshot := r.core.Snapshot()
 	r.reconcileLifecycle(coreSnapshot)
@@ -65,22 +65,50 @@ func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 }
 
 func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, error) {
+	result := QueryResult{ContractVersion: ContractVersion, Kind: req.Kind}
 	if err := r.ready(ctx); err != nil {
-		return QueryResult{}, err
+		appErr := normalizeAppError(err)
+		result.Error = appErr
+		return result, appErr
 	}
-	return QueryResult{Kind: req.Kind}, ErrNotImplemented
+	if err := validateContractVersion(req.ContractVersion); err != nil {
+		appErr := normalizeAppError(err)
+		result.Error = appErr
+		return result, appErr
+	}
+	appErr := normalizeAppError(ErrNotImplemented)
+	result.Error = appErr
+	return result, appErr
 }
 
 func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResult, error) {
+	result := CommandResult{ContractVersion: ContractVersion, CommandID: cmd.ID, RunID: cmd.RunID, TaskID: cmd.TaskID}
 	if err := r.ready(ctx); err != nil {
-		return CommandResult{}, err
+		appErr := normalizeAppError(err)
+		result.Error = appErr
+		return result, appErr
 	}
-	return r.dispatchLifecycle(ctx, cmd)
+	if err := validateContractVersion(cmd.ContractVersion); err != nil {
+		appErr := normalizeAppError(err)
+		result.Error = appErr
+		return result, appErr
+	}
+	out, err := r.dispatchLifecycle(ctx, cmd)
+	out.ContractVersion = ContractVersion
+	if err != nil {
+		appErr := normalizeAppError(err)
+		out.Error = appErr
+		return out, appErr
+	}
+	return out, nil
 }
 
 func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubscription, error) {
 	if err := r.ready(ctx); err != nil {
-		return nil, err
+		return nil, normalizeAppError(err)
+	}
+	if err := validateContractVersion(cursor.ContractVersion); err != nil {
+		return nil, normalizeAppError(err)
 	}
 	if cursor.AfterSeq < 0 {
 		cursor.AfterSeq = 0
@@ -89,7 +117,7 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 	r.startEventHub()
 	replay, err := r.core.DesktopRuntimeQueueAfter(cursor.AfterSeq)
 	if err != nil {
-		return nil, err
+		return nil, normalizeAppError(err)
 	}
 
 	var subID uint64
@@ -130,10 +158,10 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 // accidentally running desktop-side cleanup more than once.
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil || r.core == nil {
-		return ErrRuntimeUnavailable
+		return normalizeAppError(ErrRuntimeUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return normalizeAppError(err)
 	}
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
