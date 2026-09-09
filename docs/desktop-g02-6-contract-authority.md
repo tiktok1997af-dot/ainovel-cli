@@ -25,6 +25,8 @@ Only AppRuntime DTOs may cross the desktop boundary:
 
 Raw `error`, `host.*`, `webai.*`, Store/Engine pointers and implementation ownership objects are not transport types.
 
+Explicit local configuration fields intentionally modeled by a desktop DTO (for example `BrowserViewSnapshot.browser_path` and `profile_dir`) are allowed because Settings must be able to display/manage those local values. This does not permit arbitrary internal paths to leak through errors, logs or diagnostic payloads.
+
 ## 3. Structured AppError
 
 `AppError` carries only:
@@ -61,9 +63,11 @@ Unknown future browser states project to `UNKNOWN` instead of leaking an impleme
 
 ## 5. Error privacy boundary
 
-Raw error causes, filesystem/profile paths and raw diagnostic payloads are not emitted to the desktop transport.
+Raw error causes, error-derived filesystem/profile paths and raw diagnostic payloads are not emitted to the desktop transport.
 
 Host events are projected through a bounded desktop payload instead of serializing the complete `host.Event`. `ERROR` category / error-level events are sanitized to a structured `AppError`, safe summary and no raw payload before delivery to subscribers, including durable queue replay.
+
+Explicit configuration fields declared in desktop DTOs are not considered diagnostic leakage and remain available to Settings/diagnostic UX under the AppRuntime contract.
 
 ## 6. Serialization guarantees
 
