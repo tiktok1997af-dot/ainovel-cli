@@ -46,9 +46,9 @@ func TestAppErrorJSONDoesNotLeakCause(t *testing.T) {
 
 func TestStructuredErrorMappings(t *testing.T) {
 	cases := []struct {
-		name string
-		err error
-		code ErrorCode
+		name     string
+		err      error
+		code     ErrorCode
 		category ErrorCategory
 	}{
 		{"validation", ErrInvalidCommand, ErrorCodeInvalidArgument, ErrorCategoryValidation},
@@ -99,6 +99,23 @@ func TestTransportEnvelopesRoundTrip(t *testing.T) {
 		if _, err := json.Marshal(value); err != nil {
 			t.Fatalf("marshal %T: %v", value, err)
 		}
+	}
+}
+
+func TestDesktopErrorEventDropsRawPayload(t *testing.T) {
+	sub := newDesktopSubscription(1, nil)
+	sub.offer(DesktopEvent{
+		Level:    "error",
+		Category: "ERROR",
+		Summary:  "C:/private/profile/token leaked",
+		Payload:  json.RawMessage(`{"detail":"secret"}`),
+	})
+	ev := <-sub.Events()
+	if ev.ContractVersion != ContractVersion || ev.Error == nil {
+		t.Fatalf("missing structured error/version: %+v", ev)
+	}
+	if ev.Payload != nil || strings.Contains(ev.Summary, "private/profile") {
+		t.Fatalf("raw error data leaked: %+v", ev)
 	}
 }
 
