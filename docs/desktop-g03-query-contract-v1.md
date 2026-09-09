@@ -6,7 +6,7 @@ Parent authority: `docs/desktop-g03-project-knowledge-authority-v1.md`
 
 Baseline: G03 branch based on `main@443368d3f1cb2400984de28e4919e7fb505d96aa`.
 
-Validated implementation head: `b66f26bf5d10d58113ee267182a9c1aa41d2b5a9` (CI run 375: WEB-only/NO-API audit, Ubuntu format/vet/test/race, Windows format/vet/test PASS).
+Validation authority: G03.2 code and contract were validated by exact-head CI, including WEB-only/NO-API audit, Ubuntu format/vet/test/race and Windows format/vet/test.
 
 ## 1. Scope
 
