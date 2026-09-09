@@ -10,7 +10,13 @@ Parent authorities:
 
 Branch: `feat/desktop-roadmap-v2-g03-project-knowledge`
 
-Implementation validation: `de5eb0e48e1234d8e6adcdebbaf6b422cc194a0b`, CI run #393 — SUCCESS (WEB-only/NO-API audit, Ubuntu format/vet/test/race, Windows format/vet/test). Authority-containing commit `ceb3631d5839208e4aacbcdc5dedaedd47691f02` also passed exact-head CI run #394 before this final status lock.
+Validation chain:
+
+- implementation head `de5eb0e48e1234d8e6adcdebbaf6b422cc194a0b` — CI run #393 SUCCESS;
+- authority-containing head `ceb3631d5839208e4aacbcdc5dedaedd47691f02` — CI run #394 SUCCESS;
+- final status-lock predecessor `8c457e249b8a303a1b035261d12e24b36945b689` — CI run #395 SUCCESS.
+
+Each successful CI covered WEB-only/NO-API audit, Ubuntu format/vet/test/race and Windows format/vet/test. The exact current head remains subject to the standard rule below: any later code or authority change must pass its own exact-head CI before G03.4 may be relied on.
 
 ## 1. Scope
 
