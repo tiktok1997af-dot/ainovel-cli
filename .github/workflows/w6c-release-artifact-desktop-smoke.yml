@@ -221,10 +221,14 @@ jobs:
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
             New-Item -ItemType Directory -Force -Path $path | Out-Null
           }
+          $safeDirectory = $env:GITHUB_WORKSPACE.Replace('\', '/')
           $envLines = @(
             "W6C_INPUT_DIR=$inputDir",
             "W6C_EVIDENCE_DIR=$evidenceDir",
-            "W6C_RUNTIME_DIR=$runtimeDir"
+            "W6C_RUNTIME_DIR=$runtimeDir",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=$safeDirectory"
           ) -join "`r`n"
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
