@@ -18,3 +18,13 @@ func (h *Host) WebSessionSnapshot() webai.SessionSnapshot {
 	}
 	return session.Snapshot()
 }
+
+// DesktopEngineRunning exposes only the physical Engine goroutine state needed
+// by AppRuntime to finish PAUSING / STOPPING / CANCELLING transitions. It does
+// not expose the engine pointer or any mutation surface to desktop callers.
+func (h *Host) DesktopEngineRunning() bool {
+	if h == nil || h.engine == nil {
+		return false
+	}
+	return h.engine.isRunning()
+}
