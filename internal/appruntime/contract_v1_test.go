@@ -17,10 +17,14 @@ func TestContractVersionValidation(t *testing.T) {
 	if err := validateContractVersion(ContractVersion); err != nil {
 		t.Fatalf("current version rejected: %v", err)
 	}
-	err := validateContractVersion("desktop.v999")
+	clientVersion := `desktop.v999-C:/private/profile/token`
+	err := validateContractVersion(clientVersion)
 	app := normalizeAppError(err)
 	if app.Code != ErrorCodeContractMismatch || app.Category != ErrorCategoryValidation {
 		t.Fatalf("mismatch mapping = %+v", app)
+	}
+	if strings.Contains(app.Message, clientVersion) || app.Message != safeErrorMessage(ErrorCodeContractMismatch) {
+		t.Fatalf("contract mismatch echoed unsafe client version: %q", app.Message)
 	}
 }
 
@@ -41,6 +45,29 @@ func TestAppErrorJSONDoesNotLeakCause(t *testing.T) {
 	}
 	if roundTrip.Code != app.Code || roundTrip.Category != app.Category || roundTrip.Message != app.Message {
 		t.Fatalf("round trip mismatch: got %+v want %+v", roundTrip, app)
+	}
+}
+
+func TestExistingAppErrorIsClonedAndResanitized(t *testing.T) {
+	raw := &AppError{
+		Code:      ErrorCodeCommandNotAllowed,
+		Category:  ErrorCategoryConflict,
+		Message:   "unsafe internal path C:/private/profile/token",
+		Retryable: true,
+		Cause:     ErrCommandNotAllowed,
+	}
+	got := normalizeAppError(raw)
+	if got == raw {
+		t.Fatal("boundary normalization must clone an existing AppError")
+	}
+	if got.Message != safeErrorMessage(ErrorCodeCommandNotAllowed) || strings.Contains(got.Message, "private/profile") {
+		t.Fatalf("existing AppError was not re-sanitized: %+v", got)
+	}
+	if !errors.Is(got, ErrCommandNotAllowed) {
+		t.Fatal("re-sanitized AppError must preserve the Go cause chain")
+	}
+	if raw.Message != "unsafe internal path C:/private/profile/token" {
+		t.Fatal("normalization must not mutate the source AppError")
 	}
 }
 
