@@ -392,6 +392,8 @@ func lifecycleFromCore(state string) DesktopLifecycleState {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
 		return LifecycleRunning
+	case "pausing":
+		return LifecyclePausing
 	case "paused":
 		return LifecyclePaused
 	case "completed":
@@ -415,11 +417,11 @@ func (r *Runtime) reconcileLifecycle(src host.UISnapshot) {
 	coreState := lifecycleFromCore(src.RuntimeState)
 	switch current {
 	case LifecycleRunning:
-		if coreState == LifecycleCompleted || coreState == LifecyclePaused || coreState == LifecycleReady {
+		if coreState == LifecyclePausing || coreState == LifecycleCompleted || coreState == LifecyclePaused || coreState == LifecycleReady {
 			r.setLifecycleState(coreState)
 		}
 	case LifecycleReady:
-		if coreState == LifecycleRunning || coreState == LifecyclePaused || coreState == LifecycleCompleted {
+		if coreState == LifecycleRunning || coreState == LifecyclePausing || coreState == LifecyclePaused || coreState == LifecycleCompleted {
 			r.setLifecycleState(coreState)
 		}
 	case LifecyclePaused:
