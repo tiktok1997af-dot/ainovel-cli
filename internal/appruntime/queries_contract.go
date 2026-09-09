@@ -5,17 +5,17 @@ import "time"
 const MaxQueryPageSize = 500
 
 const (
-	QueryProjectOverview    QueryKind = "project.overview"
-	QueryChaptersList       QueryKind = "chapters.list"
-	QueryChaptersGet        QueryKind = "chapters.get"
-	QueryOutlineGet         QueryKind = "outline.get"
-	QueryDocumentsList      QueryKind = "documents.list"
-	QueryDocumentsGet       QueryKind = "documents.get"
-	QueryKnowledgeContext   QueryKind = "knowledge.context"
-	QueryKnowledgeCanon     QueryKind = "knowledge.canon"
+	QueryProjectOverview     QueryKind = "project.overview"
+	QueryChaptersList        QueryKind = "chapters.list"
+	QueryChaptersGet         QueryKind = "chapters.get"
+	QueryOutlineGet          QueryKind = "outline.get"
+	QueryDocumentsList       QueryKind = "documents.list"
+	QueryDocumentsGet        QueryKind = "documents.get"
+	QueryKnowledgeContext    QueryKind = "knowledge.context"
+	QueryKnowledgeCanon      QueryKind = "knowledge.canon"
 	QueryKnowledgeCharacters QueryKind = "knowledge.characters"
-	QueryKnowledgeWorld     QueryKind = "knowledge.world"
-	QueryKnowledgeTimeline  QueryKind = "knowledge.timeline"
+	QueryKnowledgeWorld      QueryKind = "knowledge.world"
+	QueryKnowledgeTimeline   QueryKind = "knowledge.timeline"
 )
 
 // SupportedQueryKinds returns the stable G03 Project / Knowledge read catalog.
@@ -317,10 +317,10 @@ type StateChangeViewDTO struct {
 }
 
 type KnowledgeWorldResultDTO struct {
-	Rules         []WorldRuleViewDTO     `json:"rules"`
-	Foreshadow    []ForeshadowViewDTO    `json:"foreshadow"`
-	Relationships []RelationshipViewDTO  `json:"relationships"`
-	StateChanges  []StateChangeViewDTO   `json:"state_changes"`
+	Rules         []WorldRuleViewDTO    `json:"rules"`
+	Foreshadow    []ForeshadowViewDTO   `json:"foreshadow"`
+	Relationships []RelationshipViewDTO `json:"relationships"`
+	StateChanges  []StateChangeViewDTO  `json:"state_changes"`
 }
 
 type KnowledgeTimelineQuery struct {
