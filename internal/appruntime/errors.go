@@ -12,4 +12,11 @@ var (
 	// ErrNotImplemented is used only by G02 skeleton planes whose behavior is
 	// deliberately implemented in later G02 steps.
 	ErrNotImplemented = errors.New("appruntime: not implemented")
+	// ErrInvalidCommand reports an unknown lifecycle command or malformed payload.
+	ErrInvalidCommand = errors.New("appruntime: invalid command")
+	// ErrCommandNotAllowed reports a valid command used from an invalid state.
+	ErrCommandNotAllowed = errors.New("appruntime: command not allowed")
+	// ErrCommandRejected reports a command that passed AppRuntime validation but
+	// could not be accepted by the underlying Host/runtime facts.
+	ErrCommandRejected = errors.New("appruntime: command rejected")
 )
