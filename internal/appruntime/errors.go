@@ -9,9 +9,11 @@ var (
 	ErrRuntimeUnavailable = errors.New("appruntime: runtime unavailable")
 	// ErrClosed reports calls made after AppRuntime has been closed.
 	ErrClosed = errors.New("appruntime: runtime closed")
-	// ErrNotImplemented is used only by G02 skeleton planes whose behavior is
-	// deliberately implemented in later G02 steps.
+	// ErrNotImplemented is used only by staged desktop planes whose behavior is
+	// deliberately implemented in a later locked roadmap step.
 	ErrNotImplemented = errors.New("appruntime: not implemented")
+	// ErrInvalidQuery reports an unknown read query or malformed typed payload.
+	ErrInvalidQuery = errors.New("appruntime: invalid query")
 	// ErrInvalidCommand reports an unknown lifecycle command or malformed payload.
 	ErrInvalidCommand = errors.New("appruntime: invalid command")
 	// ErrCommandNotAllowed reports a valid command used from an invalid state.
