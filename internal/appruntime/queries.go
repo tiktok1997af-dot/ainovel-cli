@@ -1,6 +1,7 @@
 package appruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -155,7 +156,9 @@ func decodeQueryPayload(payload json.RawMessage, dst any) error {
 	if !json.Valid(payload) {
 		return invalidQuery("query payload is not valid JSON")
 	}
-	if err := json.Unmarshal(payload, dst); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
 		return invalidQuery("query payload does not match the typed contract")
 	}
 	return nil
