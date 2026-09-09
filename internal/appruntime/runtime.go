@@ -33,8 +33,6 @@ type Runtime struct {
 
 var _ AppRuntime = (*Runtime)(nil)
 
-// New wraps exactly one existing Host. It does not create a second Engine,
-// Store, WebAI session, or project database.
 func New(core *host.Host) (*Runtime, error) {
 	if core == nil {
 		return nil, normalizeAppError(ErrNilHost)
@@ -53,13 +51,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 	coreSnapshot := r.core.Snapshot()
 	r.reconcileLifecycle(coreSnapshot)
 	revision := r.snapshotRevision.Add(1)
-	snapshot := projectDesktopSnapshot(
-		coreSnapshot,
-		r.core.WebSessionSnapshot(),
-		r.core.Dir(),
-		revision,
-		time.Now().UTC(),
-	)
+	snapshot := projectDesktopSnapshot(coreSnapshot, r.core.WebSessionSnapshot(), r.core.Dir(), revision, time.Now().UTC())
 	r.applyLifecycleProjection(&snapshot)
 	return snapshot, nil
 }
@@ -97,6 +89,9 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	out.ContractVersion = ContractVersion
 	if err != nil {
 		appErr := normalizeAppError(err)
+		if cmd.Kind == CommandResume || cmd.Kind == CommandRetry {
+			appErr = recoveryError(err)
+		}
 		out.Error = appErr
 		return out, appErr
 	}
@@ -129,8 +124,6 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 	}
 	subID = r.registerSubscription(sub)
 
-	// Cover durable events appended between the initial replay load and
-	// registration. Duplicates are harmless because durable Seq is stable.
 	lastSeq := cursor.AfterSeq
 	if len(replay) > 0 {
 		lastSeq = replay[len(replay)-1].Seq
@@ -141,9 +134,6 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 		}
 	}
 
-	// Background contexts have a nil Done channel; avoid creating a goroutine
-	// that could never wake up. Explicit subscription contexts still own the
-	// subscription lifetime.
 	if done := ctx.Done(); done != nil {
 		go func() {
 			<-done
@@ -153,9 +143,6 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 	return sub, nil
 }
 
-// Close owns disposal of the wrapped Host for the desktop facade. Host.Close
-// is already idempotent; closeOnce also prevents future facade behavior from
-// accidentally running desktop-side cleanup more than once.
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil || r.core == nil {
 		return normalizeAppError(ErrRuntimeUnavailable)
