@@ -159,6 +159,27 @@ func (w *AutoRecoveryTransport) RoundTrip(ctx context.Context, prompt string) (s
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
+
+		// A missing SEND ACK with the exact prompt still present in the composer
+		// is the one submit failure that can be recovered without replaying the
+		// prompt. The Gemini transport performs two read-only stability checks,
+		// verifies the exact composer text, and permits at most one extra trusted
+		// Send click. Ambiguous submit errors never satisfy this strict predicate.
+		if gemini, ok := w.inner.(*GeminiWebTransport); ok && pendingComposerSubmitFailure(err) {
+			recovered, handled, recoveryErr := gemini.recoverPendingComposerSubmit(ctx, prompt, w.stallTimeout)
+			if handled {
+				if recoveryErr == nil {
+					slog.Info("Gemini Web pending-submit recovery succeeded", "module", "webai", "attempt", attempt)
+					return recovered, nil
+				}
+				return "", recoveryErr
+			}
+			if recoveryErr != nil {
+				return "", errors.Join(err, recoveryErr)
+			}
+			return "", err
+		}
+
 		if !watchdogReplaySafe(err) {
 			return "", err
 		}

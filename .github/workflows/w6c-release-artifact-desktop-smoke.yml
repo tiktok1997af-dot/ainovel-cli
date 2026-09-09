@@ -201,7 +201,7 @@ jobs:
           path: ${{ runner.temp }}/ainovel-w6c-input-${{ github.run_id }}
 
       - name: Force Git Bash
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
@@ -210,7 +210,7 @@ jobs:
           [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Prepare transient authority directories
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $inputDir = Join-Path $env:RUNNER_TEMP ("ainovel-w6c-input-" + $env:GITHUB_RUN_ID)
@@ -221,15 +221,19 @@ jobs:
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
             New-Item -ItemType Directory -Force -Path $path | Out-Null
           }
+          $safeDirectory = $env:GITHUB_WORKSPACE.Replace('\', '/')
           $envLines = @(
             "W6C_INPUT_DIR=$inputDir",
             "W6C_EVIDENCE_DIR=$evidenceDir",
-            "W6C_RUNTIME_DIR=$runtimeDir"
+            "W6C_RUNTIME_DIR=$runtimeDir",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=$safeDirectory"
           ) -join "`r`n"
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Verify exact candidate interactive desktop and transport provenance
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
@@ -272,7 +276,7 @@ jobs:
           Write-Host "W6C prebuilt desktop precondition PASS: $actual / $([string]$prov.archive_name)"
 
       - name: Stage transient WEB-only desktop config
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $userHome = [Environment]::GetFolderPath('UserProfile')
@@ -309,7 +313,7 @@ jobs:
           Write-Host "Transient WEB-only config staged for profile '$profileName'."
 
       - name: Run packaged production desktop smoke
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           try {
@@ -357,7 +361,7 @@ jobs:
           retention-days: 7
 
       - name: Validate sanitized W6C authority evidence
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $path = Join-Path $env:W6C_EVIDENCE_DIR 'w6c-release-artifact-smoke-evidence.json'
@@ -396,7 +400,7 @@ jobs:
 
       - name: Clean transient W6C runtime and downloaded package
         if: always()
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Continue'
           if (-not [string]::IsNullOrWhiteSpace($env:W6C_RUNTIME_DIR)) {
@@ -413,7 +417,7 @@ jobs:
 
       - name: Restore local config exactly
         if: always()
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Continue'
           if ([string]::IsNullOrWhiteSpace($env:W6C_LOCAL_CONFIG_PATH)) { exit 0 }
