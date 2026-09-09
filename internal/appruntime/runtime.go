@@ -16,6 +16,13 @@ type Runtime struct {
 	closeOnce        sync.Once
 	closed           atomic.Bool
 	snapshotRevision atomic.Uint64
+
+	eventHubOnce     sync.Once
+	eventMu          sync.Mutex
+	eventHubCancel   context.CancelFunc
+	eventHubDone     chan struct{}
+	subscribers      map[uint64]*desktopSubscription
+	nextSubscriberID atomic.Uint64
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -26,7 +33,10 @@ func New(core *host.Host) (*Runtime, error) {
 	if core == nil {
 		return nil, ErrNilHost
 	}
-	return &Runtime{core: core}, nil
+	return &Runtime{
+		core:        core,
+		subscribers: make(map[uint64]*desktopSubscription),
+	}, nil
 }
 
 func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
@@ -61,7 +71,42 @@ func (r *Runtime) Subscribe(ctx context.Context, cursor EventCursor) (EventSubsc
 	if err := r.ready(ctx); err != nil {
 		return nil, err
 	}
-	return nil, ErrNotImplemented
+	if cursor.AfterSeq < 0 {
+		cursor.AfterSeq = 0
+	}
+
+	r.startEventHub()
+	replay, err := r.core.DesktopRuntimeQueueAfter(cursor.AfterSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	var subID uint64
+	sub := newDesktopSubscription(len(replay)+desktopEventBuffer, func() {
+		r.removeSubscription(subID)
+	})
+	for _, item := range replay {
+		sub.offer(projectRuntimeQueueItem(item))
+	}
+	subID = r.registerSubscription(sub)
+
+	// Cover durable events appended between the initial replay load and
+	// registration. Duplicates are harmless because durable Seq is stable.
+	lastSeq := cursor.AfterSeq
+	if len(replay) > 0 {
+		lastSeq = replay[len(replay)-1].Seq
+	}
+	if catchup, catchupErr := r.core.DesktopRuntimeQueueAfter(lastSeq); catchupErr == nil {
+		for _, item := range catchup {
+			sub.offer(projectRuntimeQueueItem(item))
+		}
+	}
+
+	go func() {
+		<-ctx.Done()
+		_ = sub.Close()
+	}()
+	return sub, nil
 }
 
 // Close owns disposal of the wrapped Host for the desktop facade. Host.Close
@@ -76,6 +121,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 	}
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
+		r.stopEventHub()
 		r.core.Close()
 	})
 	return nil
