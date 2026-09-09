@@ -78,15 +78,15 @@ func TestDesktopDocumentCatalogWhitelistsExistingArtifacts(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"project.format":    "meta/format.json",
-		"project.book":      "meta/book.json",
-		"project.premise":   "premise.md",
-		"outline.flat":      "outline.json",
-		"chapter.plan:1":    "drafts/01.plan.json",
-		"chapter.draft:1":   "drafts/01.draft.md",
-		"chapter.final:1":   "chapters/01.md",
-		"chapter.record:1":  "meta/chapter_records/000001.json",
-		"summary.chapter:1": "summaries/01.json",
+		"project.format":        "meta/format.json",
+		"project.book":          "meta/book.json",
+		"project.premise":       "premise.md",
+		"outline.flat":          "outline.json",
+		"chapter.plan:1":        "drafts/01.plan.json",
+		"chapter.draft:1":       "drafts/01.draft.md",
+		"chapter.final:1":       "chapters/01.md",
+		"chapter.record:1":      "meta/chapter_records/000001.json",
+		"summary.chapter:1":     "summaries/01.json",
 		"knowledge.world-rules": "world_rules.json",
 	}
 	for id, path := range want {
