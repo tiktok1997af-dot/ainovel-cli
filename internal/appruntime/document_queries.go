@@ -21,27 +21,7 @@ func (r *Runtime) queryDocumentsList(req DocumentsListQuery) (json.RawMessage, e
 	if err != nil {
 		return nil, err
 	}
-
-	filtered := make([]DocumentSummaryDTO, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if req.Kind != "" && artifact.Kind != req.Kind {
-			continue
-		}
-		if req.Prefix != "" && !strings.HasPrefix(artifact.Path, req.Prefix) {
-			continue
-		}
-		filtered = append(filtered, documentSummaryDTO(artifact))
-	}
-
-	limit := effectiveProjectQueryLimit(req.Limit)
-	start, end := pageBounds(req.Offset, limit, len(filtered))
-	items := append([]DocumentSummaryDTO(nil), filtered[start:end]...)
-	return marshalQueryData(DocumentsListResultDTO{
-		Items:  items,
-		Offset: req.Offset,
-		Limit:  limit,
-		Total:  len(filtered),
-	})
+	return marshalQueryData(documentsListDTO(artifacts, req))
 }
 
 func (r *Runtime) queryDocumentsGet(req DocumentsGetQuery) (json.RawMessage, error) {
@@ -56,6 +36,28 @@ func (r *Runtime) queryDocumentsGet(req DocumentsGetQuery) (json.RawMessage, err
 		Document: documentSummaryDTO(artifact),
 		Content:  content,
 	})
+}
+
+func documentsListDTO(artifacts []host.DesktopDocumentArtifact, req DocumentsListQuery) DocumentsListResultDTO {
+	filtered := make([]DocumentSummaryDTO, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if req.Kind != "" && artifact.Kind != req.Kind {
+			continue
+		}
+		if req.Prefix != "" && !strings.HasPrefix(artifact.Path, req.Prefix) {
+			continue
+		}
+		filtered = append(filtered, documentSummaryDTO(artifact))
+	}
+
+	limit := effectiveProjectQueryLimit(req.Limit)
+	start, end := pageBounds(req.Offset, limit, len(filtered))
+	return DocumentsListResultDTO{
+		Items:  append([]DocumentSummaryDTO(nil), filtered[start:end]...),
+		Offset: req.Offset,
+		Limit:  limit,
+		Total:  len(filtered),
+	}
 }
 
 func documentSummaryDTO(artifact host.DesktopDocumentArtifact) DocumentSummaryDTO {
