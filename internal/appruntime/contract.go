@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+const (
+	// ContractVersion is the compatibility handshake shared by the desktop shell
+	// and the Go AppRuntime facade. G02 guarantees backward-compatible additions
+	// within v1; incompatible changes require a new version.
+	ContractVersion = "ainovel.desktop.v1"
+	SchemaVersion   = 1
+)
+
 // AppRuntime is the only supported facade between the desktop product and the
 // existing Go core. Concrete behavior is implemented incrementally across G02.
 type AppRuntime interface {
@@ -16,20 +24,30 @@ type AppRuntime interface {
 	Close(ctx context.Context) error
 }
 
+type ContractInfo struct {
+	Version       string `json:"version"`
+	SchemaVersion int    `json:"schema_version"`
+}
+
+func CurrentContract() ContractInfo {
+	return ContractInfo{Version: ContractVersion, SchemaVersion: SchemaVersion}
+}
+
 // DesktopSnapshot is the transport-neutral root projection consumed by the
 // desktop shell. It deliberately contains only desktop DTOs, never host/webai
 // implementation structs or pointers.
 type DesktopSnapshot struct {
-	Revision       uint64                     `json:"revision"`
-	GeneratedAt    time.Time                  `json:"generated_at"`
-	Product        ProductViewSnapshot        `json:"product"`
-	Project        ProjectViewSnapshot        `json:"project"`
-	Runtime        RuntimeViewSnapshot        `json:"runtime"`
-	CurrentChapter ChapterViewSnapshot        `json:"current_chapter"`
-	Agents         []AgentViewSnapshot        `json:"agents"`
-	Browser        BrowserViewSnapshot        `json:"browser"`
-	Recovery       RecoveryViewSnapshot       `json:"recovery"`
-	QualitySummary QualitySummaryViewSnapshot `json:"quality_summary"`
+	Contract       ContractInfo                 `json:"contract"`
+	Revision       uint64                       `json:"revision"`
+	GeneratedAt    time.Time                    `json:"generated_at"`
+	Product        ProductViewSnapshot          `json:"product"`
+	Project        ProjectViewSnapshot          `json:"project"`
+	Runtime        RuntimeViewSnapshot          `json:"runtime"`
+	CurrentChapter ChapterViewSnapshot          `json:"current_chapter"`
+	Agents         []AgentViewSnapshot          `json:"agents"`
+	Browser        BrowserViewSnapshot          `json:"browser"`
+	Recovery       RecoveryViewSnapshot         `json:"recovery"`
+	QualitySummary QualitySummaryViewSnapshot   `json:"quality_summary"`
 }
 
 type ProductViewSnapshot struct {
@@ -62,21 +80,21 @@ type OutlineItemSnapshot struct {
 }
 
 type RuntimeViewSnapshot struct {
-	State                string `json:"state"`
-	Status               string `json:"status,omitempty"`
-	Phase                string `json:"phase,omitempty"`
-	Flow                 string `json:"flow,omitempty"`
-	IsRunning            bool   `json:"is_running"`
-	Provider             string `json:"provider,omitempty"`
-	Model                string `json:"model,omitempty"`
-	ModelContextWindow   int    `json:"model_context_window,omitempty"`
-	ThinkingLevel        string `json:"thinking_level,omitempty"`
-	PendingSteer         string `json:"pending_steer,omitempty"`
-	AdvanceMode          string `json:"advance_mode,omitempty"`
-	AdvancePermitChapter int    `json:"advance_permit_chapter,omitempty"`
-	HasAdvanceHold       bool   `json:"has_advance_hold"`
-	AdvanceHoldReason    string `json:"advance_hold_reason,omitempty"`
-	AITelemetryStatus    string `json:"ai_telemetry_status,omitempty"`
+	State                DesktopLifecycleState `json:"state"`
+	Status               string                `json:"status,omitempty"`
+	Phase                string                `json:"phase,omitempty"`
+	Flow                 string                `json:"flow,omitempty"`
+	IsRunning            bool                  `json:"is_running"`
+	Provider             string                `json:"provider,omitempty"`
+	Model                string                `json:"model,omitempty"`
+	ModelContextWindow   int                   `json:"model_context_window,omitempty"`
+	ThinkingLevel        string                `json:"thinking_level,omitempty"`
+	PendingSteer         string                `json:"pending_steer,omitempty"`
+	AdvanceMode          string                `json:"advance_mode,omitempty"`
+	AdvancePermitChapter int                   `json:"advance_permit_chapter,omitempty"`
+	HasAdvanceHold       bool                  `json:"has_advance_hold"`
+	AdvanceHoldReason    string                `json:"advance_hold_reason,omitempty"`
+	AITelemetryStatus    string                `json:"ai_telemetry_status,omitempty"`
 }
 
 type ChapterViewSnapshot struct {
@@ -111,15 +129,28 @@ type AgentContextViewSnapshot struct {
 	KeptCount       int     `json:"kept_count"`
 }
 
+type BrowserStatus string
+
+const (
+	BrowserStarting     BrowserStatus = "STARTING"
+	BrowserAuthRequired BrowserStatus = "AUTH_REQUIRED"
+	BrowserReady        BrowserStatus = "READY"
+	BrowserBusy         BrowserStatus = "BUSY"
+	BrowserDegraded     BrowserStatus = "DEGRADED"
+	BrowserFailed       BrowserStatus = "FAILED"
+	BrowserStopped      BrowserStatus = "STOPPED"
+	BrowserUnknown      BrowserStatus = "UNKNOWN"
+)
+
 type BrowserViewSnapshot struct {
-	State       string    `json:"state"`
-	Site        string    `json:"site,omitempty"`
-	BrowserPath string    `json:"browser_path,omitempty"`
-	ProfileDir  string    `json:"profile_dir,omitempty"`
-	PID         int       `json:"pid,omitempty"`
-	StartedAt   time.Time `json:"started_at,omitempty"`
-	ChangedAt   time.Time `json:"changed_at,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
+	State       BrowserStatus `json:"state"`
+	Site        string        `json:"site,omitempty"`
+	BrowserPath string        `json:"browser_path,omitempty"`
+	ProfileDir  string        `json:"profile_dir,omitempty"`
+	PID         int           `json:"pid,omitempty"`
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	ChangedAt   time.Time     `json:"changed_at,omitempty"`
+	Reason      string        `json:"reason,omitempty"`
 }
 
 type RecoveryViewSnapshot struct {
@@ -142,14 +173,17 @@ type QueryKind string
 // QueryRequest is a bounded read request. Payload stays JSON-typed at the
 // bridge boundary and is replaced by typed per-query payloads as queries land.
 type QueryRequest struct {
-	Kind    QueryKind       `json:"kind"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	ContractVersion string          `json:"contract_version,omitempty"`
+	Kind            QueryKind       `json:"kind"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 // QueryResult is the serialization-safe result envelope for the query plane.
 type QueryResult struct {
-	Kind QueryKind       `json:"kind"`
-	Data json.RawMessage `json:"data,omitempty"`
+	ContractVersion string          `json:"contract_version"`
+	Kind            QueryKind       `json:"kind"`
+	Data            json.RawMessage `json:"data,omitempty"`
+	Error           *AppError       `json:"error,omitempty"`
 }
 
 // CommandKind identifies a state-changing desktop command.
@@ -158,40 +192,46 @@ type CommandKind string
 // CommandRequest is the only mutation envelope accepted from desktop code.
 // Run/task/resource identities are additive hooks for the later orchestrator.
 type CommandRequest struct {
-	ID       string          `json:"id"`
-	Kind     CommandKind     `json:"kind"`
-	RunID    string          `json:"run_id,omitempty"`
-	TaskID   string          `json:"task_id,omitempty"`
-	Resource string          `json:"resource,omitempty"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
+	ContractVersion string          `json:"contract_version,omitempty"`
+	ID              string          `json:"id"`
+	Kind            CommandKind     `json:"kind"`
+	RunID           string          `json:"run_id,omitempty"`
+	TaskID          string          `json:"task_id,omitempty"`
+	Resource        string          `json:"resource,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 // CommandResult acknowledges command acceptance. Runtime progress/completion
 // is reported through DesktopEvent rather than by holding the dispatch call.
 type CommandResult struct {
-	CommandID string `json:"command_id"`
-	Accepted  bool   `json:"accepted"`
-	RunID     string `json:"run_id,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
-	Status    string `json:"status,omitempty"`
+	ContractVersion string    `json:"contract_version"`
+	CommandID       string    `json:"command_id"`
+	Accepted        bool      `json:"accepted"`
+	RunID           string    `json:"run_id,omitempty"`
+	TaskID          string    `json:"task_id,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	Error           *AppError `json:"error,omitempty"`
 }
 
 // EventCursor requests replay/subscription after a known durable sequence.
 type EventCursor struct {
-	AfterSeq int64 `json:"after_seq,omitempty"`
+	ContractVersion string `json:"contract_version,omitempty"`
+	AfterSeq        int64  `json:"after_seq,omitempty"`
 }
 
 // DesktopEvent is the typed outer envelope for realtime desktop updates.
 type DesktopEvent struct {
-	Seq      int64           `json:"seq,omitempty"`
-	Time     time.Time       `json:"time"`
-	Category string          `json:"category"`
-	Type     string          `json:"type"`
-	Level    string          `json:"level,omitempty"`
-	RunID    string          `json:"run_id,omitempty"`
-	TaskID   string          `json:"task_id,omitempty"`
-	Summary  string          `json:"summary,omitempty"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
+	ContractVersion string          `json:"contract_version"`
+	Seq             int64           `json:"seq,omitempty"`
+	Time            time.Time       `json:"time"`
+	Category        string          `json:"category"`
+	Type            string          `json:"type"`
+	Level           string          `json:"level,omitempty"`
+	RunID           string          `json:"run_id,omitempty"`
+	TaskID          string          `json:"task_id,omitempty"`
+	Summary         string          `json:"summary,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	Error           *AppError       `json:"error,omitempty"`
 }
 
 // EventSubscription is intentionally transport-neutral. G02.4 supplies the
