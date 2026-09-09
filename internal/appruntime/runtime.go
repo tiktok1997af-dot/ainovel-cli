@@ -17,11 +17,11 @@ type Runtime struct {
 	closed           atomic.Bool
 	snapshotRevision atomic.Uint64
 
-	commandMu       sync.Mutex
-	lifecycleMu     sync.Mutex
-	lifecycleState  DesktopLifecycleState
-	nextCommandID   atomic.Uint64
-	commandWG       sync.WaitGroup
+	commandMu      sync.Mutex
+	lifecycleMu    sync.Mutex
+	lifecycleState DesktopLifecycleState
+	nextCommandID  atomic.Uint64
+	commandWG      sync.WaitGroup
 
 	eventHubOnce     sync.Once
 	eventMu          sync.Mutex
