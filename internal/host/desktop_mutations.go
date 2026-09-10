@@ -131,6 +131,11 @@ func (h *Host) DesktopAppendTimelineEvents(events []domain.TimelineEvent) error 
 	if err := h.desktopMutationReady(); err != nil {
 		return err
 	}
+	// Append is read-modify-write. Refuse to append over a corrupt canonical log
+	// and classify that failure as a read error rather than silently replacing it.
+	if _, err := h.store.World.LoadTimeline(); err != nil {
+		return desktopProjectReadError("timeline", err)
+	}
 	if err := h.store.World.AppendTimelineEvents(events); err != nil {
 		return desktopProjectWriteError("timeline", err)
 	}
@@ -141,6 +146,9 @@ func (h *Host) DesktopUpdateRelationships(changes []domain.RelationshipEntry) er
 	if err := h.desktopMutationReady(); err != nil {
 		return err
 	}
+	if _, err := h.store.World.LoadRelationships(); err != nil {
+		return desktopProjectReadError("relationships", err)
+	}
 	if err := h.store.World.UpdateRelationships(changes); err != nil {
 		return desktopProjectWriteError("relationships", err)
 	}
@@ -150,6 +158,9 @@ func (h *Host) DesktopUpdateRelationships(changes []domain.RelationshipEntry) er
 func (h *Host) DesktopUpdateForeshadow(chapter int, updates []domain.ForeshadowUpdate) error {
 	if err := h.desktopMutationReady(); err != nil {
 		return err
+	}
+	if _, err := h.store.World.LoadForeshadowLedger(); err != nil {
+		return desktopProjectReadError("foreshadow", err)
 	}
 	if err := h.store.World.UpdateForeshadow(chapter, updates); err != nil {
 		return desktopProjectWriteError("foreshadow", err)
