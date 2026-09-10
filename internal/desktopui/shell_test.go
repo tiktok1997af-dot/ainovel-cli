@@ -37,9 +37,9 @@ func TestPrimaryNavigationReservesG01Destinations(t *testing.T) {
 		if items[i].ID != route {
 			t.Fatalf("navigation[%d] = %q, want %q", i, items[i].ID, route)
 		}
-		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteKnowledge
+		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteCreative || route == RouteKnowledge
 		if items[i].Enabled != shouldEnable {
-			t.Fatalf("%s enabled = %v, want %v for G04.5", route, items[i].Enabled, shouldEnable)
+			t.Fatalf("%s enabled = %v, want %v for G04.7", route, items[i].Enabled, shouldEnable)
 		}
 	}
 }
@@ -52,12 +52,10 @@ func TestLayoutForWidthUsesThreeTwoOneRegionProgression(t *testing.T) {
 	if desktop.NavigationWidth != 256 || desktop.InspectorWidth != 360 {
 		t.Fatalf("desktop widths = %d/%d, want 256/360", desktop.NavigationWidth, desktop.InspectorWidth)
 	}
-
 	tablet := LayoutForWidth(900, true)
 	if tablet.Class != ViewportTablet || !tablet.NavigationVisible || !tablet.MainVisible || tablet.InspectorVisible || !tablet.InspectorDrawer {
 		t.Fatalf("unexpected tablet layout: %+v", tablet)
 	}
-
 	mobile := LayoutForWidth(600, true)
 	if mobile.Class != ViewportMobile || mobile.NavigationVisible || !mobile.MainVisible || mobile.InspectorVisible || !mobile.InspectorDrawer {
 		t.Fatalf("unexpected mobile layout: %+v", mobile)
@@ -101,14 +99,8 @@ func TestEmptyAndErrorStatesAreDeterministic(t *testing.T) {
 	if !shell.AcceptSnapshot("empty", testSnapshot(1, "")) || shell.Load != LoadEmpty {
 		t.Fatalf("empty project state = %q, want %q", shell.Load, LoadEmpty)
 	}
-
 	shell.BeginSnapshot("failure")
-	appErr := &appruntime.AppError{
-		Code:      appruntime.ErrorCodeStoreRead,
-		Category:  appruntime.ErrorCategoryStore,
-		Message:   "Project data could not be read.",
-		Retryable: true,
-	}
+	appErr := &appruntime.AppError{Code: appruntime.ErrorCodeStoreRead, Category: appruntime.ErrorCategoryStore, Message: "Project data could not be read.", Retryable: true}
 	if !shell.FailSnapshot("failure", viewErrorFromAppError(appErr)) {
 		t.Fatal("matching failed request should be accepted")
 	}
@@ -121,7 +113,6 @@ func TestResizeDoesNotDiscardAuthoritativeProjection(t *testing.T) {
 	shell := NewShell(1440)
 	shell.BeginSnapshot("ready")
 	shell.AcceptSnapshot("ready", testSnapshot(5, "Project A"))
-
 	shell.Resize(600)
 	if shell.Layout.Class != ViewportMobile {
 		t.Fatalf("layout class = %q, want mobile", shell.Layout.Class)
@@ -131,26 +122,27 @@ func TestResizeDoesNotDiscardAuthoritativeProjection(t *testing.T) {
 	}
 }
 
-func TestProjectAndKnowledgeRoutesEnabledButLaterRoutesRemainDisabled(t *testing.T) {
+func TestG04PointSevenRoutesEnabledButSuccessorRoutesRemainDisabled(t *testing.T) {
 	shell := NewShell(1440)
-	if !shell.SelectRoute(RouteProject) {
-		t.Fatal("G04.4 project route must remain enabled")
+	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative} {
+		if !shell.SelectRoute(route) {
+			t.Fatalf("route %q should be enabled by G04.7", route)
+		}
 	}
-	if !shell.SelectRoute(RouteKnowledge) {
-		t.Fatal("G04.5 knowledge route must be enabled")
+	if shell.Route != RouteCreative {
+		t.Fatalf("route = %q, want creative", shell.Route)
 	}
-	if shell.Route != RouteKnowledge {
-		t.Fatalf("route = %q, want knowledge", shell.Route)
+	for _, route := range []RouteID{RouteReview, RouteRunCenter, RouteSettings} {
+		if shell.SelectRoute(route) {
+			t.Fatalf("successor route %q opened prematurely", route)
+		}
 	}
-	if shell.SelectRoute(RouteCreative) {
-		t.Fatal("G04.7 creative route opened prematurely")
-	}
-	if shell.Route != RouteKnowledge {
+	if shell.Route != RouteCreative {
 		t.Fatalf("disabled successor route changed selection to %q", shell.Route)
 	}
 }
 
-func TestLifecycleControlsDeriveEligibilityButRemainUnwired(t *testing.T) {
+func TestLifecycleControlsDeriveEligibilityButRemainUnwiredAtShellLayer(t *testing.T) {
 	controls := ReservedLifecycleControls(string(appruntime.LifecycleRunning))
 	if len(controls) != 6 {
 		t.Fatalf("control count = %d, want 6", len(controls))
@@ -158,7 +150,7 @@ func TestLifecycleControlsDeriveEligibilityButRemainUnwired(t *testing.T) {
 	eligible := map[string]bool{"pause": true, "stop": true, "cancel": true}
 	for _, control := range controls {
 		if control.Enabled {
-			t.Fatalf("%s must not be wired before G04.6", control.ID)
+			t.Fatalf("%s shell reservation must be activated only by lifecycle controller", control.ID)
 		}
 		if control.Eligible != eligible[control.ID] {
 			t.Fatalf("%s eligibility = %v, want %v", control.ID, control.Eligible, eligible[control.ID])
@@ -183,7 +175,7 @@ func TestAcceptedSnapshotRefreshesLifecyclePresentationFromAuthoritativeState(t 
 			t.Fatalf("%s eligibility = %v, want %v", control.ID, control.Eligible, want)
 		}
 		if control.Enabled {
-			t.Fatalf("%s must remain disabled before G04.6", control.ID)
+			t.Fatalf("%s base shell projection does not optimistically wire controls", control.ID)
 		}
 	}
 }
@@ -191,13 +183,7 @@ func TestAcceptedSnapshotRefreshesLifecyclePresentationFromAuthoritativeState(t 
 func TestActivityIsOrderedDeduplicatedAndBounded(t *testing.T) {
 	shell := NewShell(1440)
 	for i := int64(1); i <= MaxActivityItems+5; i++ {
-		if !shell.ApplyEvent(appruntime.DesktopEvent{
-			ContractVersion: appruntime.ContractVersion,
-			Seq:             i,
-			Category:        "runtime",
-			Type:            "status",
-			Summary:         "event",
-		}) {
+		if !shell.ApplyEvent(appruntime.DesktopEvent{ContractVersion: appruntime.ContractVersion, Seq: i, Category: "runtime", Type: "status", Summary: "event"}) {
 			t.Fatalf("event %d should be accepted", i)
 		}
 	}

@@ -32,19 +32,11 @@ func (f *workspaceRuntime) Snapshot(context.Context) (appruntime.DesktopSnapshot
 func (f *workspaceRuntime) Query(_ context.Context, req appruntime.QueryRequest) (appruntime.QueryResult, error) {
 	f.queryCalls = append(f.queryCalls, req)
 	if err := f.errs[req.Kind]; err != nil {
-		return appruntime.QueryResult{
-			ContractVersion: appruntime.ContractVersion,
-			Kind:            req.Kind,
-			Error:           appErrorFromTestError(err),
-		}, err
+		return appruntime.QueryResult{ContractVersion: appruntime.ContractVersion, Kind: req.Kind, Error: appErrorFromTestError(err)}, err
 	}
 	result, ok := f.results[req.Kind]
 	if !ok {
-		return appruntime.QueryResult{
-			ContractVersion: appruntime.ContractVersion,
-			Kind:            req.Kind,
-			Data:            json.RawMessage(`{}`),
-		}, nil
+		return appruntime.QueryResult{ContractVersion: appruntime.ContractVersion, Kind: req.Kind, Data: json.RawMessage(`{}`)}, nil
 	}
 	return result, nil
 }
@@ -60,7 +52,6 @@ func (f *workspaceRuntime) Subscribe(context.Context, appruntime.EventCursor) (a
 	}
 	return f.sub, nil
 }
-
 func (f *workspaceRuntime) Close(context.Context) error { return nil }
 
 func appErrorFromTestError(err error) *appruntime.AppError {
@@ -77,19 +68,12 @@ func projectQueryResult(t *testing.T, kind appruntime.QueryKind, value any) appr
 	if err != nil {
 		t.Fatal(err)
 	}
-	return appruntime.QueryResult{
-		ContractVersion: appruntime.ContractVersion,
-		Kind:            kind,
-		Data:            raw,
-	}
+	return appruntime.QueryResult{ContractVersion: appruntime.ContractVersion, Kind: kind, Data: raw}
 }
 
 func projectSnapshot(revision uint64) appruntime.DesktopSnapshot {
 	return appruntime.DesktopSnapshot{
-		Contract: appruntime.ContractInfo{
-			Version:       appruntime.ContractVersion,
-			SchemaVersion: appruntime.SchemaVersion,
-		},
+		Contract: appruntime.ContractInfo{Version: appruntime.ContractVersion, SchemaVersion: appruntime.SchemaVersion},
 		Revision: revision,
 		Product:  appruntime.ProductViewSnapshot{Name: "AINOVEL"},
 		Project:  appruntime.ProjectViewSnapshot{Title: "Novel", OutputDir: "project"},
@@ -101,47 +85,29 @@ func fullWorkspaceRuntime(t *testing.T) *workspaceRuntime {
 	return &workspaceRuntime{
 		snapshot: projectSnapshot(7),
 		results: map[appruntime.QueryKind]appruntime.QueryResult{
-			appruntime.QueryProjectOverview: projectQueryResult(t, appruntime.QueryProjectOverview, appruntime.ProjectOverviewResultDTO{
-				FormatVersion:  2,
-				Title:          "Novel",
-				Premise:        "Premise",
-				CurrentChapter: 2,
-				TotalWordCount: 3200,
-			}),
+			appruntime.QueryProjectOverview: projectQueryResult(t, appruntime.QueryProjectOverview, appruntime.ProjectOverviewResultDTO{FormatVersion: 2, Title: "Novel", Premise: "Premise", CurrentChapter: 2, TotalWordCount: 3200}),
 			appruntime.QueryChaptersList: projectQueryResult(t, appruntime.QueryChaptersList, appruntime.ChaptersListResultDTO{
-				Items: []appruntime.ChapterListItemDTO{
-					{Chapter: 1, Title: "One", Status: "accepted", WordCount: 1600},
-					{Chapter: 2, Title: "Two", Status: "planned"},
-				},
-				Offset: 0,
-				Limit:  ProjectWorkspaceQueryLimit,
-				Total:  2,
+				Items:  []appruntime.ChapterListItemDTO{{Chapter: 1, Title: "One", Status: "accepted", WordCount: 1600}, {Chapter: 2, Title: "Two", Status: "planned"}},
+				Offset: 0, Limit: ProjectWorkspaceQueryLimit, Total: 2,
 			}),
-			appruntime.QueryChaptersGet: projectQueryResult(t, appruntime.QueryChaptersGet, appruntime.ChaptersGetResultDTO{
-				Chapter: 2,
-				Title:   "Two",
-				Status:  "planned",
-			}),
-			appruntime.QueryOutlineGet: projectQueryResult(t, appruntime.QueryOutlineGet, appruntime.OutlineGetResultDTO{
-				Chapters: []appruntime.OutlineChapterDTO{
-					{Chapter: 1, Title: "One"},
-					{Chapter: 2, Title: "Two"},
-				},
-			}),
+			appruntime.QueryChaptersGet: projectQueryResult(t, appruntime.QueryChaptersGet, appruntime.ChaptersGetResultDTO{Chapter: 2, Title: "Two", Status: "planned"}),
+			appruntime.QueryOutlineGet:  projectQueryResult(t, appruntime.QueryOutlineGet, appruntime.OutlineGetResultDTO{Chapters: []appruntime.OutlineChapterDTO{{Chapter: 1, Title: "One"}, {Chapter: 2, Title: "Two"}}}),
 		},
 	}
 }
 
-func TestProjectNavigationPreservesG04PointFourAndAllowsG04PointFiveRoute(t *testing.T) {
+func TestProjectNavigationPreservesReadsAndAllowsG04PointSevenCreativeRoute(t *testing.T) {
 	nav := PrimaryNavigation()
 	enabled := map[RouteID]bool{}
 	for _, item := range nav {
 		enabled[item.ID] = item.Enabled
 	}
-	if !enabled[RouteOverview] || !enabled[RouteProject] || !enabled[RouteKnowledge] {
-		t.Fatalf("overview/project/knowledge must be enabled: %+v", enabled)
+	for _, route := range []RouteID{RouteOverview, RouteProject, RouteKnowledge, RouteCreative} {
+		if !enabled[route] {
+			t.Fatalf("G04.7 route %q must be enabled: %+v", route, enabled)
+		}
 	}
-	for _, route := range []RouteID{RouteCreative, RouteReview, RouteRunCenter, RouteSettings} {
+	for _, route := range []RouteID{RouteReview, RouteRunCenter, RouteSettings} {
 		if enabled[route] {
 			t.Fatalf("later route %q opened prematurely", route)
 		}
@@ -161,12 +127,7 @@ func TestOpenProjectWorkspaceBindsOnlyApprovedReadPlane(t *testing.T) {
 		t.Fatalf("LoadChapter() error = %v", err)
 	}
 
-	wantKinds := []appruntime.QueryKind{
-		appruntime.QueryProjectOverview,
-		appruntime.QueryChaptersList,
-		appruntime.QueryOutlineGet,
-		appruntime.QueryChaptersGet,
-	}
+	wantKinds := []appruntime.QueryKind{appruntime.QueryProjectOverview, appruntime.QueryChaptersList, appruntime.QueryOutlineGet, appruntime.QueryChaptersGet}
 	if len(runtime.queryCalls) != len(wantKinds) {
 		t.Fatalf("query calls = %d, want %d", len(runtime.queryCalls), len(wantKinds))
 	}
@@ -180,7 +141,7 @@ func TestOpenProjectWorkspaceBindsOnlyApprovedReadPlane(t *testing.T) {
 		}
 	}
 	if runtime.dispatchCalls != 0 {
-		t.Fatalf("G04.4 must remain read-only, dispatch calls = %d", runtime.dispatchCalls)
+		t.Fatalf("read workspace must not dispatch by itself, dispatch calls = %d", runtime.dispatchCalls)
 	}
 
 	var listReq appruntime.ChaptersListQuery
@@ -202,7 +163,7 @@ func TestOpenProjectWorkspaceBindsOnlyApprovedReadPlane(t *testing.T) {
 		t.Fatal(err)
 	}
 	if chapterReq.Chapter != 2 || chapterReq.IncludeContent {
-		t.Fatalf("chapters.get must be metadata/plan only in G04.4: %+v", chapterReq)
+		t.Fatalf("project chapter metadata read changed: %+v", chapterReq)
 	}
 
 	project := controller.Shell().Project
@@ -225,7 +186,6 @@ func TestProjectWorkspaceRejectsInvalidSelectorBeforeQuery(t *testing.T) {
 	controller := NewController(runtime, 1440)
 	controller.shell.Route = RouteProject
 	controller.shell.SnapshotRevision = 7
-
 	if err := controller.LoadChapter(context.Background(), 0); err == nil {
 		t.Fatal("LoadChapter(0) error = nil")
 	}
@@ -238,17 +198,8 @@ func TestProjectWorkspaceRejectsInvalidSelectorBeforeQuery(t *testing.T) {
 }
 
 func TestProjectWorkspaceMapsStructuredQueryError(t *testing.T) {
-	appErr := &appruntime.AppError{
-		Code:      appruntime.ErrorCodeStoreRead,
-		Category:  appruntime.ErrorCategoryStore,
-		Message:   "Project data could not be read.",
-		Retryable: true,
-	}
-	runtime := &workspaceRuntime{
-		snapshot: projectSnapshot(4),
-		results:  map[appruntime.QueryKind]appruntime.QueryResult{},
-		errs:     map[appruntime.QueryKind]error{appruntime.QueryProjectOverview: appErr},
-	}
+	appErr := &appruntime.AppError{Code: appruntime.ErrorCodeStoreRead, Category: appruntime.ErrorCategoryStore, Message: "Project data could not be read.", Retryable: true}
+	runtime := &workspaceRuntime{snapshot: projectSnapshot(4), results: map[appruntime.QueryKind]appruntime.QueryResult{}, errs: map[appruntime.QueryKind]error{appruntime.QueryProjectOverview: appErr}}
 	controller := NewController(runtime, 1440)
 	if err := controller.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
@@ -256,9 +207,7 @@ func TestProjectWorkspaceMapsStructuredQueryError(t *testing.T) {
 	if err := controller.OpenProjectWorkspace(context.Background()); err == nil {
 		t.Fatal("OpenProjectWorkspace() error = nil")
 	}
-	if controller.Shell().Project.Error == nil ||
-		controller.Shell().Project.Error.Code != string(appruntime.ErrorCodeStoreRead) ||
-		controller.Shell().Project.Load != LoadRuntimeError {
+	if controller.Shell().Project.Error == nil || controller.Shell().Project.Error.Code != string(appruntime.ErrorCodeStoreRead) || controller.Shell().Project.Load != LoadRuntimeError {
 		t.Fatalf("structured query error not projected: %+v", controller.Shell().Project)
 	}
 	if controller.Shell().Load != LoadReady {
@@ -270,15 +219,9 @@ func TestProjectWorkspaceSuppressesStaleQueryTicket(t *testing.T) {
 	shell := NewShell(1440)
 	shell.Route = RouteProject
 	shell.SnapshotRevision = 10
-	first := workspaceQueryTicket{
-		ID:               "first",
-		Kind:             appruntime.QueryChaptersList,
-		SnapshotRevision: 10,
-		Route:            RouteProject,
-	}
+	first := workspaceQueryTicket{ID: "first", Kind: appruntime.QueryChaptersList, SnapshotRevision: 10, Route: RouteProject}
 	second := first
 	second.ID = "second"
-
 	shell.Project.begin(first)
 	shell.Project.begin(second)
 	if shell.Project.current(first, shell) {
@@ -287,7 +230,6 @@ func TestProjectWorkspaceSuppressesStaleQueryTicket(t *testing.T) {
 	if !shell.Project.current(second, shell) {
 		t.Fatal("latest request is not current")
 	}
-
 	shell.SnapshotRevision = 11
 	if shell.Project.current(second, shell) {
 		t.Fatal("request from prior snapshot revision remained current")
@@ -303,7 +245,6 @@ func TestProjectWorkspaceRejectsMismatchedQueryContract(t *testing.T) {
 	result := runtime.results[appruntime.QueryProjectOverview]
 	result.ContractVersion = "other.desktop.v1"
 	runtime.results[appruntime.QueryProjectOverview] = result
-
 	controller := NewController(runtime, 1440)
 	if err := controller.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
@@ -312,8 +253,7 @@ func TestProjectWorkspaceRejectsMismatchedQueryContract(t *testing.T) {
 		t.Fatal("contract mismatch error = nil")
 	}
 	viewErr := controller.Shell().Project.Error
-	if viewErr == nil || viewErr.Code != string(appruntime.ErrorCodeInternal) ||
-		viewErr.Message != "An internal runtime error occurred." {
+	if viewErr == nil || viewErr.Code != string(appruntime.ErrorCodeInternal) || viewErr.Message != "An internal runtime error occurred." {
 		t.Fatalf("unsafe/incorrect protocol error: %+v", viewErr)
 	}
 }

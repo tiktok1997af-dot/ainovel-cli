@@ -30,14 +30,14 @@ type RouteItem struct {
 	Availability string
 }
 
-// PrimaryNavigation reserves the complete G01 product navigation. G04.5 makes
-// the AppRuntime Query-backed Knowledge Studio functional while later
-// workspaces remain explicit disabled placeholders until their owning gate.
+// PrimaryNavigation preserves the complete G01 navigation. G04.7 activates
+// the Creative editor while Review, Run Center, and Settings remain explicit
+// successor placeholders until their owning gates.
 func PrimaryNavigation() []RouteItem {
 	return []RouteItem{
 		{ID: RouteOverview, Label: "Tổng quan", Enabled: true, Availability: "G04.3"},
 		{ID: RouteProject, Label: "Dự án", Enabled: true, Availability: "G04.4"},
-		{ID: RouteCreative, Label: "Sáng tác", Enabled: false, Availability: "G04.7"},
+		{ID: RouteCreative, Label: "Sáng tác", Enabled: true, Availability: "G04.7"},
 		{ID: RouteKnowledge, Label: "Tri thức", Enabled: true, Availability: "G04.5"},
 		{ID: RouteReview, Label: "Review", Enabled: false, Availability: "later gate"},
 		{ID: RouteRunCenter, Label: "Run Center", Enabled: false, Availability: "G05+"},
@@ -213,6 +213,7 @@ type ShellState struct {
 	Error            *ErrorView
 	Project          ProjectWorkspaceState
 	Knowledge        KnowledgeWorkspaceState
+	Write            WritePlaneState
 	HasSnapshot      bool
 	Snapshot         appruntime.DesktopSnapshot
 	SnapshotRevision uint64

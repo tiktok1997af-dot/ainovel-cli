@@ -14,23 +14,26 @@ var (
 )
 
 // Controller owns the child-gated Creative Studio presentation controllers.
-// G04.3 bootstraps Snapshot + Subscribe. G04.4 and G04.5 add only their locked
-// read planes. G04.6 activates only the six locked lifecycle commands through
-// RuntimeClient.Dispatch; later editor/write-plane and scheduling gates remain
-// outside this controller boundary until explicitly opened.
+// G04.3 bootstraps Snapshot + Subscribe; G04.4-G04.5 add read workspaces;
+// G04.6 owns lifecycle commands; G04.7 owns the typed editor/write plane.
+// G05 scheduling/resource-lock/browser-lane ownership remains outside this
+// controller boundary until its own gate opens.
 type Controller struct {
 	runtime   RuntimeClient
 	shell     *ShellState
 	sub       appruntime.EventSubscription
 	nextID    uint64
 	lifecycle lifecycleControlPlane
+	write     writeControlPlane
+	creative  CreativeWorkspaceState
 }
 
 func NewController(runtime RuntimeClient, width int) *Controller {
-	return &Controller{runtime: runtime, shell: NewShell(width)}
+	return &Controller{runtime: runtime, shell: NewShell(width), creative: NewCreativeWorkspaceState()}
 }
 
-func (c *Controller) Shell() *ShellState { return c.shell }
+func (c *Controller) Shell() *ShellState                { return c.shell }
+func (c *Controller) Creative() *CreativeWorkspaceState { return &c.creative }
 
 func (c *Controller) Bootstrap(ctx context.Context) error {
 	if c.runtime == nil {
