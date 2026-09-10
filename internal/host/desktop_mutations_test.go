@@ -22,6 +22,75 @@ func newDesktopMutationTestHost(t *testing.T) (*Host, *store.Store) {
 	return &Host{store: st}, st
 }
 
+func TestDesktopSimpleMutationSeamsWriteCanonicalOwners(t *testing.T) {
+	h, st := newDesktopMutationTestHost(t)
+
+	book := domain.BookMetadata{Title: "Book", Synopsis: "Synopsis"}
+	if err := h.DesktopSaveBookMetadata(book); err != nil {
+		t.Fatalf("save book: %v", err)
+	}
+	if got, err := st.Book.Load(); err != nil || got == nil || *got != book {
+		t.Fatalf("book = %+v err=%v", got, err)
+	}
+
+	if err := h.DesktopSavePremise("A promise with a cost."); err != nil {
+		t.Fatalf("save premise: %v", err)
+	}
+	if got, err := st.Outline.LoadPremise(); err != nil || got != "A promise with a cost." {
+		t.Fatalf("premise = %q err=%v", got, err)
+	}
+
+	plan := domain.ChapterPlan{Chapter: 2, Title: "Door", Goal: "Cross it"}
+	if err := h.DesktopSaveChapterPlan(plan); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	if got, err := st.Drafts.LoadChapterPlan(2); err != nil || got == nil || !reflect.DeepEqual(*got, plan) {
+		t.Fatalf("plan = %+v err=%v", got, err)
+	}
+
+	if err := h.DesktopSaveChapterDraft(2, "working draft"); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+	if got, err := st.Drafts.LoadDraft(2); err != nil || got != "working draft" {
+		t.Fatalf("draft = %q err=%v", got, err)
+	}
+
+	compass := domain.StoryCompass{EndingDirection: "Return changed", OpenThreads: []string{"seal"}, LastUpdated: 2}
+	if err := h.DesktopSaveCompass(compass); err != nil {
+		t.Fatalf("save compass: %v", err)
+	}
+	if got, err := st.Outline.LoadCompass(); err != nil || got == nil || !reflect.DeepEqual(*got, compass) {
+		t.Fatalf("compass = %+v err=%v", got, err)
+	}
+
+	rules := []domain.WorldRule{{Category: "magic", Rule: "Power has a cost", Boundary: "No free resurrection"}}
+	if err := h.DesktopReplaceWorldRules(rules); err != nil {
+		t.Fatalf("replace world rules: %v", err)
+	}
+	if got, err := st.World.LoadWorldRules(); err != nil || !reflect.DeepEqual(got, rules) {
+		t.Fatalf("world rules = %+v err=%v", got, err)
+	}
+
+	relationships := []domain.RelationshipEntry{{CharacterA: "Lead", CharacterB: "Guide", Relation: "allies", Chapter: 2}}
+	if err := h.DesktopUpdateRelationships(relationships); err != nil {
+		t.Fatalf("update relationships: %v", err)
+	}
+	if got, err := st.World.LoadRelationships(); err != nil || !reflect.DeepEqual(got, relationships) {
+		t.Fatalf("relationships = %+v err=%v", got, err)
+	}
+
+	if err := h.DesktopUpdateForeshadow(2, []domain.ForeshadowUpdate{{ID: "seal", Action: "plant", Description: "broken seal"}}); err != nil {
+		t.Fatalf("plant foreshadow: %v", err)
+	}
+	if err := h.DesktopUpdateForeshadow(3, []domain.ForeshadowUpdate{{ID: "seal", Action: "advance"}}); err != nil {
+		t.Fatalf("advance foreshadow: %v", err)
+	}
+	ledger, err := st.World.LoadForeshadowLedger()
+	if err != nil || len(ledger) != 1 || ledger[0].ID != "seal" || ledger[0].Status != "advanced" {
+		t.Fatalf("foreshadow = %+v err=%v", ledger, err)
+	}
+}
+
 func TestDesktopChapterWorkspaceMutationDoesNotAcceptRecord(t *testing.T) {
 	h, st := newDesktopMutationTestHost(t)
 	oldContent := "accepted baseline"
@@ -192,6 +261,24 @@ func TestDesktopOutlineMutationsKeepStoreCoordinationAndProtectedHistory(t *test
 		t.Fatalf("volume replay/coordination failed: volumes=%+v progress=%+v", layered, gotProgress)
 	}
 
+	replacement := []domain.OutlineEntry{{Title: "Five", CoreEvent: "Departure"}}
+	capacity, err := h.DesktopReviseOutline(5, replacement)
+	if err != nil || capacity != 5 {
+		t.Fatalf("revise future tail: capacity=%d err=%v", capacity, err)
+	}
+	capacity, err = h.DesktopReviseOutline(5, replacement)
+	if err != nil || capacity != 5 {
+		t.Fatalf("replay future tail revision: capacity=%d err=%v", capacity, err)
+	}
+	flat, err = st.Outline.LoadOutline()
+	if err != nil || len(flat) != 5 || flat[4].Title != "Five" {
+		t.Fatalf("revised flat projection = %+v err=%v", flat, err)
+	}
+
+	gotProgress, err = st.Progress.Load()
+	if err != nil {
+		t.Fatalf("load progress before protection: %v", err)
+	}
 	gotProgress.CompletedChapters = []int{1}
 	gotProgress.InProgressChapter = 2
 	if err := st.Progress.Save(gotProgress); err != nil {
