@@ -14,14 +14,16 @@ var (
 )
 
 // Controller owns the child-gated Creative Studio presentation controllers.
-// G04.3 bootstraps Snapshot + Subscribe. G04.4 may additionally issue only the
-// approved Project/Chapter/Outline Query calls. Dispatch remains closed until
-// its later owning gate.
+// G04.3 bootstraps Snapshot + Subscribe. G04.4 and G04.5 add only their locked
+// read planes. G04.6 activates only the six locked lifecycle commands through
+// RuntimeClient.Dispatch; later editor/write-plane and scheduling gates remain
+// outside this controller boundary until explicitly opened.
 type Controller struct {
-	runtime RuntimeClient
-	shell   *ShellState
-	sub     appruntime.EventSubscription
-	nextID  uint64
+	runtime   RuntimeClient
+	shell     *ShellState
+	sub       appruntime.EventSubscription
+	nextID    uint64
+	lifecycle lifecycleControlPlane
 }
 
 func NewController(runtime RuntimeClient, width int) *Controller {
@@ -47,6 +49,7 @@ func (c *Controller) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		c.shell.Error = viewErrorFromError(err)
 		c.shell.Load = LoadRuntimeError
+		c.deactivateLifecycleControls()
 		return err
 	}
 	if c.sub != nil {
@@ -67,17 +70,21 @@ func (c *Controller) Refresh(ctx context.Context) error {
 	snapshot, err := c.runtime.Snapshot(ctx)
 	if err != nil {
 		c.shell.FailSnapshot(requestID, viewErrorFromError(err))
+		c.deactivateLifecycleControls()
 		return err
 	}
 	if !c.shell.AcceptSnapshot(requestID, snapshot) && c.shell.Error != nil {
+		c.deactivateLifecycleControls()
 		return errors.New(c.shell.Error.Message)
 	}
+	c.reconcileLifecycleFromSnapshot()
 	return nil
 }
 
 // PumpEvent consumes exactly one projected AppRuntime event. A renderer or
 // desktop transport can decide its own scheduling without the shell creating a
-// competing observer or background persistence loop.
+// competing observer or background persistence loop. Lifecycle events are
+// projected first and then reconciled through one fresh AppRuntime snapshot.
 func (c *Controller) PumpEvent(ctx context.Context) error {
 	if c.sub == nil {
 		return ErrNoSubscription
@@ -89,7 +96,12 @@ func (c *Controller) PumpEvent(ctx context.Context) error {
 		if !ok {
 			return ErrNoSubscription
 		}
-		c.shell.ApplyEvent(event)
+		if !c.shell.ApplyEvent(event) {
+			return nil
+		}
+		if c.observeLifecycleEvent(event) {
+			return c.Refresh(ctx)
+		}
 		return nil
 	}
 }
