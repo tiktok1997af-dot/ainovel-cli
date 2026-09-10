@@ -90,7 +90,14 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 		result.Error = appErr
 		return result, appErr
 	}
-	out, err := r.dispatchLifecycle(ctx, cmd)
+
+	var out CommandResult
+	var err error
+	if isLifecycleCommand(cmd.Kind) {
+		out, err = r.dispatchLifecycle(ctx, cmd)
+	} else {
+		out, err = r.dispatchMutation(ctx, cmd)
+	}
 	out.ContractVersion = ContractVersion
 	if err != nil {
 		appErr := normalizeAppError(err)
