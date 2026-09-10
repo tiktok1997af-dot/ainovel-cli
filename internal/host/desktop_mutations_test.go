@@ -2,6 +2,8 @@ package host
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -102,6 +104,27 @@ func TestDesktopTimelineMutationUsesReplaySafeWorldStoreAppend(t *testing.T) {
 	}
 	if len(got) != 1 || !reflect.DeepEqual(got[0], events[0]) {
 		t.Fatalf("timeline replay duplicated facts: %+v", got)
+	}
+}
+
+func TestDesktopTimelineMutationFailsClosedOnCorruptCanonicalLog(t *testing.T) {
+	h, st := newDesktopMutationTestHost(t)
+	path := filepath.Join(st.Dir(), "timeline.jsonl")
+	corrupt := []byte("{broken json}\n")
+	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
+		t.Fatalf("seed corrupt timeline: %v", err)
+	}
+
+	err := h.DesktopAppendTimelineEvents([]domain.TimelineEvent{{Chapter: 2, Event: "must not append"}})
+	if !errors.Is(err, apperrs.ErrStoreRead) {
+		t.Fatalf("corrupt timeline = %v, want store-read failure", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read corrupt timeline: %v", readErr)
+	}
+	if !reflect.DeepEqual(got, corrupt) {
+		t.Fatalf("corrupt canonical log was modified: %q", string(got))
 	}
 }
 
