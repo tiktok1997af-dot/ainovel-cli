@@ -13,9 +13,10 @@ var (
 	ErrNoSubscription = errors.New("desktopui: event subscription is not open")
 )
 
-// Controller performs the G04.3 shell bootstrap only. It intentionally does
-// not issue workspace queries or dispatch commands; those behaviors are owned
-// by later G04 child gates.
+// Controller owns the child-gated Creative Studio presentation controllers.
+// G04.3 bootstraps Snapshot + Subscribe. G04.4 may additionally issue only the
+// approved Project/Chapter/Outline Query calls. Dispatch remains closed until
+// its later owning gate.
 type Controller struct {
 	runtime RuntimeClient
 	shell   *ShellState
@@ -111,7 +112,7 @@ func (c *Controller) Close(ctx context.Context) error {
 
 func (c *Controller) nextRequestID() string {
 	c.nextID++
-	return fmt.Sprintf("shell-snapshot-%d", c.nextID)
+	return fmt.Sprintf("shell-request-%d", c.nextID)
 }
 
 func viewErrorFromError(err error) *ErrorView {

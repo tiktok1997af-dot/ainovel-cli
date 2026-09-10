@@ -30,13 +30,13 @@ type RouteItem struct {
 	Availability string
 }
 
-// PrimaryNavigation reserves the complete G01 product navigation. G04.3 only
-// makes the snapshot-backed Overview shell functional; successor workspaces
-// remain explicit disabled placeholders until their owning child gate opens.
+// PrimaryNavigation reserves the complete G01 product navigation. G04.4 makes
+// the AppRuntime Query-backed Project workspace functional while later
+// workspaces remain explicit disabled placeholders until their owning gate.
 func PrimaryNavigation() []RouteItem {
 	return []RouteItem{
 		{ID: RouteOverview, Label: "Tổng quan", Enabled: true, Availability: "G04.3"},
-		{ID: RouteProject, Label: "Dự án", Enabled: false, Availability: "G04.4"},
+		{ID: RouteProject, Label: "Dự án", Enabled: true, Availability: "G04.4"},
 		{ID: RouteCreative, Label: "Sáng tác", Enabled: false, Availability: "G04.7"},
 		{ID: RouteKnowledge, Label: "Tri thức", Enabled: false, Availability: "G04.5"},
 		{ID: RouteReview, Label: "Review", Enabled: false, Availability: "later gate"},
@@ -211,6 +211,7 @@ type ShellState struct {
 	Inspector        InspectorState
 	Activity         []ActivityItem
 	Error            *ErrorView
+	Project          ProjectWorkspaceState
 	HasSnapshot      bool
 	Snapshot         appruntime.DesktopSnapshot
 	SnapshotRevision uint64
@@ -227,6 +228,7 @@ func NewShell(width int) *ShellState {
 		Layout:    LayoutForWidth(width, inspectorOpen),
 		Controls:  ReservedLifecycleControls(),
 		Inspector: InspectorState{Open: inspectorOpen, Section: "status"},
+		Project:   NewProjectWorkspaceState(),
 	}
 }
 

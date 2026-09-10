@@ -37,11 +37,9 @@ func TestPrimaryNavigationReservesG01Destinations(t *testing.T) {
 		if items[i].ID != route {
 			t.Fatalf("navigation[%d] = %q, want %q", i, items[i].ID, route)
 		}
-		if route == RouteOverview && !items[i].Enabled {
-			t.Fatal("overview must be enabled in G04.3")
-		}
-		if route != RouteOverview && items[i].Enabled {
-			t.Fatalf("%s must remain a disabled successor-gate placeholder", route)
+		shouldEnable := route == RouteOverview || route == RouteProject
+		if items[i].Enabled != shouldEnable {
+			t.Fatalf("%s enabled = %v, want %v for G04.4", route, items[i].Enabled, shouldEnable)
 		}
 	}
 }
@@ -133,16 +131,19 @@ func TestResizeDoesNotDiscardAuthoritativeProjection(t *testing.T) {
 	}
 }
 
-func TestDisabledSuccessorRouteCannotBecomeActive(t *testing.T) {
+func TestProjectRouteEnabledButLaterRoutesRemainDisabled(t *testing.T) {
 	shell := NewShell(1440)
-	if shell.SelectRoute(RouteProject) {
-		t.Fatal("G04.4 route must remain disabled during G04.3")
+	if !shell.SelectRoute(RouteProject) {
+		t.Fatal("G04.4 project route must be enabled")
 	}
-	if shell.Route != RouteOverview {
-		t.Fatalf("route changed to %q", shell.Route)
+	if shell.Route != RouteProject {
+		t.Fatalf("route = %q, want project", shell.Route)
 	}
-	if !shell.SelectRoute(RouteOverview) {
-		t.Fatal("overview should remain selectable")
+	if shell.SelectRoute(RouteCreative) {
+		t.Fatal("G04.7 creative route opened prematurely")
+	}
+	if shell.Route != RouteProject {
+		t.Fatalf("disabled successor route changed selection to %q", shell.Route)
 	}
 }
 
