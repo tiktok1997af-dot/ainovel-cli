@@ -132,16 +132,16 @@ func fullWorkspaceRuntime(t *testing.T) *workspaceRuntime {
 	}
 }
 
-func TestProjectNavigationOpensOnlyG04PointFourRoute(t *testing.T) {
+func TestProjectNavigationPreservesG04PointFourAndAllowsG04PointFiveRoute(t *testing.T) {
 	nav := PrimaryNavigation()
 	enabled := map[RouteID]bool{}
 	for _, item := range nav {
 		enabled[item.ID] = item.Enabled
 	}
-	if !enabled[RouteOverview] || !enabled[RouteProject] {
-		t.Fatalf("overview/project must be enabled: %+v", enabled)
+	if !enabled[RouteOverview] || !enabled[RouteProject] || !enabled[RouteKnowledge] {
+		t.Fatalf("overview/project/knowledge must be enabled: %+v", enabled)
 	}
-	for _, route := range []RouteID{RouteCreative, RouteKnowledge, RouteReview, RouteRunCenter, RouteSettings} {
+	for _, route := range []RouteID{RouteCreative, RouteReview, RouteRunCenter, RouteSettings} {
 		if enabled[route] {
 			t.Fatalf("later route %q opened prematurely", route)
 		}
