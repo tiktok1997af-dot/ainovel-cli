@@ -21,4 +21,12 @@ var (
 	// ErrCommandRejected reports a command that passed AppRuntime validation but
 	// could not be accepted by the underlying Host/runtime facts.
 	ErrCommandRejected = errors.New("appruntime: command rejected")
+
+	// G03 mutation-plane sentinels keep desktop conflict semantics stable without
+	// exposing Store/domain implementation errors across AppRuntime.
+	ErrInvalidMutation        = errors.New("appruntime: invalid mutation")
+	ErrUnsupportedMutation    = errors.New("appruntime: unsupported mutation")
+	ErrMutationTargetNotFound = errors.New("appruntime: mutation target not found")
+	ErrMutationPrecondition   = errors.New("appruntime: mutation precondition conflict")
+	ErrMutationStale          = errors.New("appruntime: stale mutation")
 )

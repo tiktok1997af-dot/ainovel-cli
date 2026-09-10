@@ -24,22 +24,26 @@ const (
 )
 
 const (
-	ErrorCodeInvalidArgument    ErrorCode = "invalid_argument"
-	ErrorCodeContractMismatch   ErrorCode = "contract_mismatch"
-	ErrorCodeRuntimeUnavailable ErrorCode = "runtime_unavailable"
-	ErrorCodeRuntimeClosed      ErrorCode = "runtime_closed"
-	ErrorCodeRequestCancelled   ErrorCode = "request_cancelled"
-	ErrorCodeCommandNotAllowed  ErrorCode = "command_not_allowed"
-	ErrorCodeCommandRejected    ErrorCode = "command_rejected"
-	ErrorCodeBrowserAuth        ErrorCode = "browser_auth_required"
-	ErrorCodeBrowserTransport   ErrorCode = "browser_transport"
-	ErrorCodeBrowserTimeout     ErrorCode = "browser_timeout"
-	ErrorCodeBrowserProtocol    ErrorCode = "browser_protocol"
-	ErrorCodeAIProvider         ErrorCode = "ai_provider"
-	ErrorCodeStoreRead          ErrorCode = "store_read"
-	ErrorCodeStoreWrite         ErrorCode = "store_write"
-	ErrorCodeRecoveryFailed     ErrorCode = "recovery_failed"
-	ErrorCodeInternal           ErrorCode = "internal"
+	ErrorCodeInvalidArgument      ErrorCode = "invalid_argument"
+	ErrorCodeContractMismatch     ErrorCode = "contract_mismatch"
+	ErrorCodeRuntimeUnavailable   ErrorCode = "runtime_unavailable"
+	ErrorCodeRuntimeClosed        ErrorCode = "runtime_closed"
+	ErrorCodeRequestCancelled     ErrorCode = "request_cancelled"
+	ErrorCodeCommandNotAllowed    ErrorCode = "command_not_allowed"
+	ErrorCodeCommandRejected      ErrorCode = "command_rejected"
+	ErrorCodeUnsupportedOperation ErrorCode = "unsupported_operation"
+	ErrorCodeTargetNotFound       ErrorCode = "target_not_found"
+	ErrorCodePreconditionConflict ErrorCode = "precondition_conflict"
+	ErrorCodeStaleConflict        ErrorCode = "stale_conflict"
+	ErrorCodeBrowserAuth          ErrorCode = "browser_auth_required"
+	ErrorCodeBrowserTransport     ErrorCode = "browser_transport"
+	ErrorCodeBrowserTimeout       ErrorCode = "browser_timeout"
+	ErrorCodeBrowserProtocol      ErrorCode = "browser_protocol"
+	ErrorCodeAIProvider           ErrorCode = "ai_provider"
+	ErrorCodeStoreRead            ErrorCode = "store_read"
+	ErrorCodeStoreWrite           ErrorCode = "store_write"
+	ErrorCodeRecoveryFailed       ErrorCode = "recovery_failed"
+	ErrorCodeInternal             ErrorCode = "internal"
 )
 
 // AppError is the only error shape that may cross the desktop bridge. Cause is
@@ -115,6 +119,14 @@ func safeErrorMessage(code ErrorCode) string {
 		return "This action is not allowed in the current state."
 	case ErrorCodeCommandRejected:
 		return "The runtime rejected this action."
+	case ErrorCodeUnsupportedOperation:
+		return "This project action is not supported."
+	case ErrorCodeTargetNotFound:
+		return "The requested project target was not found."
+	case ErrorCodePreconditionConflict:
+		return "The project changed state before this action could be applied."
+	case ErrorCodeStaleConflict:
+		return "The project data changed after the action was prepared. Refresh and try again."
 	case ErrorCodeBrowserAuth:
 		return "Browser login is required."
 	case ErrorCodeBrowserTransport:
@@ -168,8 +180,16 @@ func normalizeAppError(err error) *AppError {
 		app.Code, app.Category = ErrorCodeRuntimeUnavailable, ErrorCategoryRuntime
 	case errors.Is(err, ErrClosed):
 		app.Code, app.Category = ErrorCodeRuntimeClosed, ErrorCategoryRuntime
-	case errors.Is(err, ErrInvalidCommand):
+	case errors.Is(err, ErrInvalidCommand), errors.Is(err, ErrInvalidMutation):
 		app.Code, app.Category = ErrorCodeInvalidArgument, ErrorCategoryValidation
+	case errors.Is(err, ErrUnsupportedMutation):
+		app.Code, app.Category = ErrorCodeUnsupportedOperation, ErrorCategoryValidation
+	case errors.Is(err, ErrMutationTargetNotFound):
+		app.Code, app.Category = ErrorCodeTargetNotFound, ErrorCategoryConflict
+	case errors.Is(err, ErrMutationPrecondition):
+		app.Code, app.Category = ErrorCodePreconditionConflict, ErrorCategoryConflict
+	case errors.Is(err, ErrMutationStale):
+		app.Code, app.Category = ErrorCodeStaleConflict, ErrorCategoryConflict
 	case errors.Is(err, ErrCommandNotAllowed):
 		app.Code, app.Category = ErrorCodeCommandNotAllowed, ErrorCategoryConflict
 	case errors.Is(err, ErrCommandRejected):
