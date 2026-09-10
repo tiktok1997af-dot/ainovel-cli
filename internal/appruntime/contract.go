@@ -187,13 +187,15 @@ type CommandRequest struct {
 }
 
 type CommandResult struct {
-	ContractVersion string    `json:"contract_version"`
-	CommandID       string    `json:"command_id"`
-	Accepted        bool      `json:"accepted"`
-	RunID           string    `json:"run_id,omitempty"`
-	TaskID          string    `json:"task_id,omitempty"`
-	Status          string    `json:"status,omitempty"`
-	Error           *AppError `json:"error,omitempty"`
+	ContractVersion string          `json:"contract_version"`
+	CommandID       string          `json:"command_id"`
+	Accepted        bool            `json:"accepted"`
+	RunID           string          `json:"run_id,omitempty"`
+	TaskID          string          `json:"task_id,omitempty"`
+	Resource        string          `json:"resource,omitempty"`
+	Status          string          `json:"status,omitempty"`
+	Data            json.RawMessage `json:"data,omitempty"`
+	Error           *AppError       `json:"error,omitempty"`
 }
 
 type EventCursor struct {
