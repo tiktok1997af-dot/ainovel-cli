@@ -33,8 +33,16 @@ type AcceptedRecordState struct {
 	Record  *appruntime.ChapterRecordViewDTO
 }
 
+type creativeQueryTicket struct {
+	ID               string
+	SnapshotRevision uint64
+	Route            RouteID
+	Chapter          int
+}
+
 type CreativeWorkspaceState struct {
 	Load      LoadState
+	Selected  int
 	Chapter   int
 	Artifact  CreativeArtifact
 	Canonical *appruntime.ChaptersGetResultDTO
@@ -43,6 +51,7 @@ type CreativeWorkspaceState struct {
 	Workspace TextEditorState
 	Accepted  AcceptedRecordState
 	Error     *ErrorView
+	pending   creativeQueryTicket
 }
 
 func NewCreativeWorkspaceState() CreativeWorkspaceState {
@@ -87,7 +96,46 @@ func (s *CreativeWorkspaceState) EditWorkspace(content string) bool {
 	return true
 }
 
+func (s *CreativeWorkspaceState) begin(ticket creativeQueryTicket) {
+	s.Selected = ticket.Chapter
+	s.pending = ticket
+	s.Error = nil
+	if s.Canonical != nil {
+		s.Load = LoadRefreshing
+	} else {
+		s.Load = LoadLoading
+	}
+}
+
+func (s *CreativeWorkspaceState) current(ticket creativeQueryTicket, shell *ShellState) bool {
+	return shell != nil && shell.Route == ticket.Route && shell.SnapshotRevision == ticket.SnapshotRevision &&
+		s.Selected == ticket.Chapter && s.pending.ID == ticket.ID
+}
+
+func (s *CreativeWorkspaceState) discard(ticket creativeQueryTicket) {
+	if s.pending.ID != ticket.ID {
+		return
+	}
+	s.pending = creativeQueryTicket{}
+	if s.Error != nil {
+		s.Load = loadStateForWriteError(s.Error)
+		return
+	}
+	if s.Canonical == nil {
+		s.Load = LoadInitial
+		return
+	}
+	s.Load = creativeLoadState(*s.Canonical)
+}
+
+func (s *CreativeWorkspaceState) finish(ticket creativeQueryTicket) {
+	if s.pending.ID == ticket.ID {
+		s.pending = creativeQueryTicket{}
+	}
+}
+
 func (s *CreativeWorkspaceState) applyCanonical(dto appruntime.ChaptersGetResultDTO, preserveDirty bool) {
+	s.Selected = dto.Chapter
 	s.Chapter = dto.Chapter
 	s.Canonical = &dto
 	s.Error = nil

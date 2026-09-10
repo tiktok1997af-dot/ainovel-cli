@@ -11,9 +11,10 @@ const ProjectWorkspaceQueryLimit = 100
 type ProjectTab string
 
 const (
-	ProjectTabOverview ProjectTab = "overview"
-	ProjectTabChapters ProjectTab = "chapters"
-	ProjectTabOutline  ProjectTab = "outline"
+	ProjectTabOverview  ProjectTab = "overview"
+	ProjectTabChapters  ProjectTab = "chapters"
+	ProjectTabOutline   ProjectTab = "outline"
+	ProjectTabDocuments ProjectTab = "documents"
 )
 
 type workspaceQueryTicket struct {
@@ -25,15 +26,20 @@ type workspaceQueryTicket struct {
 }
 
 type ProjectWorkspaceState struct {
-	Load            LoadState
-	Tab             ProjectTab
-	Overview        *appruntime.ProjectOverviewResultDTO
-	Chapters        appruntime.ChaptersListResultDTO
-	SelectedChapter *appruntime.ChaptersGetResultDTO
-	Outline         *appruntime.OutlineGetResultDTO
-	Selected        int
-	Error           *ErrorView
-	pending         map[appruntime.QueryKind]workspaceQueryTicket
+	Load               LoadState
+	Tab                ProjectTab
+	Overview           *appruntime.ProjectOverviewResultDTO
+	Chapters           appruntime.ChaptersListResultDTO
+	SelectedChapter    *appruntime.ChaptersGetResultDTO
+	Outline            *appruntime.OutlineGetResultDTO
+	Documents          appruntime.DocumentsListResultDTO
+	SelectedDocument   *appruntime.DocumentsGetResultDTO
+	SelectedDocumentID string
+	DocumentKind       string
+	DocumentPrefix     string
+	Selected           int
+	Error              *ErrorView
+	pending            map[appruntime.QueryKind]workspaceQueryTicket
 }
 
 func NewProjectWorkspaceState() ProjectWorkspaceState {
@@ -46,7 +52,7 @@ func NewProjectWorkspaceState() ProjectWorkspaceState {
 
 func (p *ProjectWorkspaceState) SelectTab(tab ProjectTab) bool {
 	switch tab {
-	case ProjectTabOverview, ProjectTabChapters, ProjectTabOutline:
+	case ProjectTabOverview, ProjectTabChapters, ProjectTabOutline, ProjectTabDocuments:
 		p.Tab = tab
 		return true
 	default:
@@ -130,11 +136,13 @@ func (p *ProjectWorkspaceState) fail(ticket workspaceQueryTicket, shell *ShellSt
 
 func (p *ProjectWorkspaceState) hasProjectedData() bool {
 	return p.Overview != nil || len(p.Chapters.Items) > 0 || p.Chapters.Total > 0 ||
-		p.SelectedChapter != nil || p.Outline != nil
+		p.SelectedChapter != nil || p.Outline != nil || len(p.Documents.Items) > 0 ||
+		p.Documents.Total > 0 || p.SelectedDocument != nil
 }
 
 func (p *ProjectWorkspaceState) isEmpty() bool {
-	if p.Overview == nil && p.Outline == nil && len(p.Chapters.Items) == 0 && p.Chapters.Total == 0 {
+	if p.Overview == nil && p.Outline == nil && len(p.Chapters.Items) == 0 && p.Chapters.Total == 0 &&
+		len(p.Documents.Items) == 0 && p.Documents.Total == 0 && p.SelectedDocument == nil {
 		return true
 	}
 	if p.Overview != nil {
@@ -148,6 +156,9 @@ func (p *ProjectWorkspaceState) isEmpty() bool {
 		return false
 	}
 	if p.Outline != nil && (len(p.Outline.Chapters) > 0 || len(p.Outline.Volumes) > 0 || p.Outline.Compass != nil) {
+		return false
+	}
+	if len(p.Documents.Items) > 0 || p.Documents.Total > 0 || p.SelectedDocument != nil {
 		return false
 	}
 	return true

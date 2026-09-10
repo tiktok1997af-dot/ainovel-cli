@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/appruntime"
 )
@@ -103,6 +104,61 @@ func (c *Controller) LoadOutlineWindow(ctx context.Context, fromChapter int) err
 		return err
 	}
 	c.shell.Project.Outline = &dto
+	c.shell.Project.finish(ticket)
+	return nil
+}
+
+// LoadDocumentsPage exposes only the supported AppRuntime document catalog.
+// It is a bounded read surface, not Folder View and not a filesystem browser.
+func (c *Controller) LoadDocumentsPage(ctx context.Context, offset int, kind, prefix string) error {
+	if offset < 0 {
+		return c.failLocalProjectValidation("document offset cannot be negative")
+	}
+	kind = strings.TrimSpace(kind)
+	prefix = strings.TrimSpace(prefix)
+	c.shell.Project.SelectTab(ProjectTabDocuments)
+	ticket := c.beginProjectQuery(appruntime.QueryDocumentsList, 0)
+	var dto appruntime.DocumentsListResultDTO
+	payload := appruntime.DocumentsListQuery{
+		PageQuery: appruntime.PageQuery{Offset: offset, Limit: ProjectWorkspaceQueryLimit},
+		Kind:      kind,
+		Prefix:    prefix,
+	}
+	accepted, err := c.executeProjectQuery(ctx, ticket, payload, &dto)
+	if !accepted || err != nil {
+		return err
+	}
+	c.shell.Project.Documents = dto
+	c.shell.Project.DocumentKind = kind
+	c.shell.Project.DocumentPrefix = prefix
+	c.shell.Project.finish(ticket)
+	return nil
+}
+
+// LoadDocument reads one catalog-backed read-only document by opaque ID. The
+// UI never resolves or opens a raw filesystem path from document metadata.
+func (c *Controller) LoadDocument(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return c.failLocalProjectValidation("document id is required")
+	}
+	c.shell.Project.SelectedDocumentID = id
+	c.shell.Project.SelectTab(ProjectTabDocuments)
+	ticket := c.beginProjectQuery(appruntime.QueryDocumentsGet, 0)
+	var dto appruntime.DocumentsGetResultDTO
+	accepted, err := c.executeProjectQuery(ctx, ticket, appruntime.DocumentsGetQuery{ID: id}, &dto)
+	if !accepted || err != nil {
+		return err
+	}
+	if dto.Document.ID != id || !dto.Document.ReadOnly {
+		c.shell.Project.fail(ticket, c.shell, queryProtocolViewError())
+		return errors.New("desktopui: document query returned unsafe or unexpected document")
+	}
+	if c.shell.Project.SelectedDocumentID != id {
+		c.shell.Project.discard(ticket)
+		return nil
+	}
+	c.shell.Project.SelectedDocument = &dto
 	c.shell.Project.finish(ticket)
 	return nil
 }

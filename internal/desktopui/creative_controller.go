@@ -34,40 +34,56 @@ func (c *Controller) LoadCreativeChapter(ctx context.Context, chapter int) error
 }
 
 func (c *Controller) loadCreativeChapter(ctx context.Context, chapter int, preserveDirty bool) error {
-	c.creative.Load = LoadLoading
-	if c.creative.Canonical != nil {
-		c.creative.Load = LoadRefreshing
+	ticket := creativeQueryTicket{
+		ID:               c.nextRequestID(),
+		SnapshotRevision: c.shell.SnapshotRevision,
+		Route:            RouteCreative,
+		Chapter:          chapter,
 	}
-	c.creative.Error = nil
+	c.creative.begin(ticket)
 
 	payload, err := json.Marshal(appruntime.ChaptersGetQuery{Chapter: chapter, IncludeContent: true})
 	if err != nil {
-		return c.failCreativeProtocol()
+		if c.creative.current(ticket, c.shell) {
+			c.creative.finish(ticket)
+			return c.failCreativeProtocol()
+		}
+		c.creative.discard(ticket)
+		return nil
 	}
 	result, err := c.runtime.Query(ctx, appruntime.QueryRequest{
 		ContractVersion: appruntime.ContractVersion,
 		Kind:            appruntime.QueryChaptersGet,
 		Payload:         payload,
 	})
+	if !c.creative.current(ticket, c.shell) {
+		c.creative.discard(ticket)
+		return nil
+	}
 	if err != nil {
+		c.creative.finish(ticket)
 		c.creative.Error = viewErrorFromError(err)
 		c.creative.Load = loadStateForWriteError(c.creative.Error)
 		return err
 	}
 	if result.Error != nil {
+		c.creative.finish(ticket)
 		c.creative.Error = viewErrorFromAppError(result.Error)
 		c.creative.Load = loadStateForWriteError(c.creative.Error)
 		return result.Error
 	}
 	if result.ContractVersion != appruntime.ContractVersion || result.Kind != appruntime.QueryChaptersGet ||
 		len(result.Data) == 0 || !json.Valid(result.Data) {
+		c.creative.finish(ticket)
 		return c.failCreativeProtocol()
 	}
 	var dto appruntime.ChaptersGetResultDTO
 	if err := json.Unmarshal(result.Data, &dto); err != nil || dto.Chapter != chapter {
+		c.creative.finish(ticket)
 		return c.failCreativeProtocol()
 	}
 	c.creative.applyCanonical(dto, preserveDirty)
+	c.creative.finish(ticket)
 	return nil
 }
 
@@ -129,6 +145,9 @@ func (c *Controller) SaveCreativeWorkspace(ctx context.Context) (appruntime.Comm
 
 func (c *Controller) reconcileCreativeChapter(ctx context.Context, chapter int, preserveDirty bool) error {
 	refreshErr := c.Refresh(ctx)
+	if c.shell.Route != RouteCreative || c.creative.Selected != chapter {
+		return refreshErr
+	}
 	queryErr := c.loadCreativeChapter(ctx, chapter, preserveDirty)
 	return errors.Join(refreshErr, queryErr)
 }
