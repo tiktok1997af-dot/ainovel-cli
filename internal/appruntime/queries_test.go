@@ -1,7 +1,6 @@
 package appruntime
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -71,7 +70,10 @@ func TestQueryValidationRejectsInvalidAndUnknownPayloads(t *testing.T) {
 		{Kind: QueryDocumentsGet, Payload: json.RawMessage(`{"id":"../meta/book.json"}`)},
 		{Kind: QueryDocumentsList, Payload: json.RawMessage(`{"prefix":"../meta/"}`)},
 		{Kind: QueryDocumentsList, Payload: json.RawMessage(`{"kind":"filesystem"}`)},
+		{Kind: QueryKnowledgeContext, Payload: json.RawMessage(`{"scope":"secret"}`)},
+		{Kind: QueryKnowledgeCanon, Payload: json.RawMessage(`{"scope":"secret"}`)},
 		{Kind: QueryKnowledgeCharacters, Payload: json.RawMessage(`{"scope":"secret"}`)},
+		{Kind: QueryKnowledgeWorld, Payload: json.RawMessage(`{"sections":["filesystem"]}`)},
 		{Kind: QueryKnowledgeTimeline, Payload: json.RawMessage(`{"from_chapter":9,"to_chapter":3}`)},
 		{Kind: QueryProjectOverview, Payload: json.RawMessage(`{"unknown":true}`)},
 		{Kind: QueryProjectOverview, Payload: json.RawMessage(`{`)},
@@ -91,19 +93,34 @@ func TestQueryValidationRejectsInvalidAndUnknownPayloads(t *testing.T) {
 	}
 }
 
-func TestQueryRouterKeepsKnowledgeDomainsStagedWithoutCoreMutation(t *testing.T) {
-	var runtime Runtime
-	staged := []QueryKind{
-		QueryKnowledgeContext,
-		QueryKnowledgeCanon,
-		QueryKnowledgeCharacters,
-		QueryKnowledgeWorld,
-		QueryKnowledgeTimeline,
+func TestKnowledgeQueryScopesAreTrimmedAndRemainTyped(t *testing.T) {
+	cases := []struct {
+		kind    QueryKind
+		payload string
+		want    string
+	}{
+		{QueryKnowledgeContext, `{"scope":" writer "}`, "writer"},
+		{QueryKnowledgeCanon, `{"scope":" continuity "}`, "continuity"},
+		{QueryKnowledgeCharacters, `{"scope":" cast "}`, "cast"},
 	}
-	for _, kind := range staged {
-		_, err := runtime.routeQuery(context.Background(), QueryRequest{Kind: kind, Payload: json.RawMessage(`{}`)})
-		if !errors.Is(err, ErrNotImplemented) {
-			t.Fatalf("route %q = %v, want staged ErrNotImplemented", kind, err)
+	for _, tc := range cases {
+		route, err := decodeQueryRoute(QueryRequest{Kind: tc.kind, Payload: json.RawMessage(tc.payload)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		switch value := route.Request.(type) {
+		case KnowledgeContextQuery:
+			got = value.Scope
+		case KnowledgeCanonQuery:
+			got = value.Scope
+		case KnowledgeCharactersQuery:
+			got = value.Scope
+		default:
+			t.Fatalf("unexpected typed request %T", route.Request)
+		}
+		if got != tc.want {
+			t.Fatalf("scope = %q, want %q", got, tc.want)
 		}
 	}
 }
@@ -116,10 +133,10 @@ func TestProjectKnowledgeDTOsAreJSONSafe(t *testing.T) {
 		OutlineGetResultDTO{Layered: true, Volumes: []VolumeOutlineViewDTO{{Index: 1, Title: "V1"}}},
 		DocumentsListResultDTO{Items: []DocumentSummaryDTO{{ID: "project.book", Kind: DocumentKindProject, Path: "meta/book.json", ReadOnly: true}}, Total: 1},
 		DocumentsGetResultDTO{Document: DocumentSummaryDTO{ID: "project.book", Kind: DocumentKindProject, Path: "meta/book.json", ReadOnly: true}, Content: "{}"},
-		KnowledgeContextResultDTO{Sections: []KnowledgeSectionDTO{{Name: "canon", Items: []KnowledgeItemDTO{{Kind: "fact", Summary: "stable", Provenance: []ProvenanceDTO{{ArtifactID: "chapter:1", Kind: "chapter"}}}}}}},
-		KnowledgeCanonResultDTO{Facts: []CanonFactDTO{{Kind: "state", Subject: "hero", Field: "status", Value: "alive", Provenance: []ProvenanceDTO{{ArtifactID: "chapter:1", Kind: "chapter"}}}}, Total: 1},
+		KnowledgeContextResultDTO{Sections: []KnowledgeSectionDTO{{Name: "canon", Items: []KnowledgeItemDTO{{Kind: "fact", Summary: "stable", Provenance: []ProvenanceDTO{{ArtifactID: "chapter.record:1", Kind: "chapter_record"}}}}}}},
+		KnowledgeCanonResultDTO{Facts: []CanonFactDTO{{Kind: "state", Subject: "hero", Field: "status", Value: "alive", Provenance: []ProvenanceDTO{{ArtifactID: "chapter.record:1", Kind: "chapter_record"}}}}, Total: 1},
 		KnowledgeCharactersResultDTO{Items: []CharacterViewDTO{{Name: "Hero", Origin: "core"}}, Total: 1},
-		KnowledgeWorldResultDTO{Rules: []WorldRuleViewDTO{{Rule: "rule"}}},
+		KnowledgeWorldResultDTO{Rules: []WorldRuleViewDTO{{Rule: "rule"}}, Foreshadow: []ForeshadowViewDTO{}, Relationships: []RelationshipViewDTO{}, StateChanges: []StateChangeViewDTO{}},
 		KnowledgeTimelineResultDTO{Events: []TimelineEventViewDTO{{Chapter: 1, Event: "event"}}, Total: 1},
 	}
 	for _, value := range values {
