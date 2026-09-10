@@ -39,9 +39,17 @@ func (r *Runtime) routeQuery(ctx context.Context, req QueryRequest) (json.RawMes
 		return r.queryDocumentsList(route.Request.(DocumentsListQuery))
 	case QueryDocumentsGet:
 		return r.queryDocumentsGet(route.Request.(DocumentsGetQuery))
+	case QueryKnowledgeContext:
+		return r.queryKnowledgeContext(route.Request.(KnowledgeContextQuery))
+	case QueryKnowledgeCanon:
+		return r.queryKnowledgeCanon(route.Request.(KnowledgeCanonQuery))
+	case QueryKnowledgeCharacters:
+		return r.queryKnowledgeCharacters(route.Request.(KnowledgeCharactersQuery))
+	case QueryKnowledgeWorld:
+		return r.queryKnowledgeWorld(route.Request.(KnowledgeWorldQuery))
+	case QueryKnowledgeTimeline:
+		return r.queryKnowledgeTimeline(route.Request.(KnowledgeTimelineQuery))
 	default:
-		// Knowledge handlers remain deliberately staged for later G03 steps.
-		// Never return a fake empty success for an unread Store domain.
 		return nil, ErrNotImplemented
 	}
 }
@@ -122,6 +130,10 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 		if err := validateLimit(payload.MaxItems); err != nil {
 			return queryRoute{}, err
 		}
+		payload.Scope = strings.TrimSpace(payload.Scope)
+		if err := validateContextScope(payload.Scope); err != nil {
+			return queryRoute{}, err
+		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
 	case QueryKnowledgeCanon:
 		var payload KnowledgeCanonQuery
@@ -134,6 +146,10 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 		if err := validatePage(payload.PageQuery); err != nil {
 			return queryRoute{}, err
 		}
+		payload.Scope = strings.TrimSpace(payload.Scope)
+		if err := validateCanonScope(payload.Scope); err != nil {
+			return queryRoute{}, err
+		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
 	case QueryKnowledgeCharacters:
 		var payload KnowledgeCharactersQuery
@@ -143,8 +159,8 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 		if err := validatePage(payload.PageQuery); err != nil {
 			return queryRoute{}, err
 		}
-		scope := strings.TrimSpace(payload.Scope)
-		if scope != "" && scope != "all" && scope != "core" && scope != "cast" {
+		payload.Scope = strings.TrimSpace(payload.Scope)
+		if payload.Scope != "" && payload.Scope != "all" && payload.Scope != "core" && payload.Scope != "cast" {
 			return queryRoute{}, invalidQuery("character scope is not supported")
 		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
@@ -154,6 +170,12 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 			return queryRoute{}, err
 		}
 		if err := validateLimit(payload.Limit); err != nil {
+			return queryRoute{}, err
+		}
+		for i := range payload.Sections {
+			payload.Sections[i] = strings.TrimSpace(payload.Sections[i])
+		}
+		if err := validateWorldSections(payload.Sections); err != nil {
 			return queryRoute{}, err
 		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
@@ -205,6 +227,35 @@ func validateLimit(limit int) error {
 	}
 	if limit > MaxQueryPageSize {
 		return invalidQuery(fmt.Sprintf("limit exceeds maximum %d", MaxQueryPageSize))
+	}
+	return nil
+}
+
+func validateContextScope(scope string) error {
+	switch scope {
+	case "", knowledgeScopeWriter, knowledgeScopeEditor, knowledgeScopeOverview:
+		return nil
+	default:
+		return invalidQuery("context scope is not supported")
+	}
+}
+
+func validateCanonScope(scope string) error {
+	switch scope {
+	case "", knowledgeScopeAll, "continuity", "state", "relationship", "foreshadow":
+		return nil
+	default:
+		return invalidQuery("canon scope is not supported")
+	}
+}
+
+func validateWorldSections(sections []string) error {
+	for _, section := range sections {
+		switch section {
+		case knowledgeSectionRules, knowledgeSectionForeshadow, knowledgeSectionRelationships, knowledgeSectionStateChanges:
+		default:
+			return invalidQuery("world section is not supported")
+		}
 	}
 	return nil
 }
