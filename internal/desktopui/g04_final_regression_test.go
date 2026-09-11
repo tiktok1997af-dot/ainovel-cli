@@ -177,6 +177,7 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 		RouteProject:   true,
 		RouteCreative:  true,
 		RouteKnowledge: true,
+		RouteRunCenter: true,
 	}
 	seen := map[RouteID]bool{}
 	for _, item := range PrimaryNavigation() {
@@ -188,7 +189,7 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 		}
 		seen[item.ID] = true
 		if item.Enabled != enabled[item.ID] {
-			t.Fatalf("route %q enabled=%v, want %v", item.ID, item.Enabled, enabled[item.ID])
+			t.Fatalf("route %q enabled=%v, want %v through G05.7", item.ID, item.Enabled, enabled[item.ID])
 		}
 	}
 
@@ -209,9 +210,9 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 	if !shell.AcceptSnapshot("integration", testSnapshot(50, "Integrated")) {
 		t.Fatal("integration snapshot should be accepted")
 	}
-	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative} {
+	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter} {
 		if !shell.SelectRoute(route) {
-			t.Fatalf("locked G04 route %q should be selectable", route)
+			t.Fatalf("route %q should be selectable through G05.7", route)
 		}
 		shell.Resize(759)
 		shell.Resize(1200)
@@ -219,9 +220,9 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 			t.Fatalf("route/resize discarded authoritative projection: %+v", shell)
 		}
 	}
-	for _, route := range []RouteID{RouteReview, RouteRunCenter, RouteSettings} {
+	for _, route := range []RouteID{RouteReview, RouteSettings} {
 		if shell.SelectRoute(route) {
-			t.Fatalf("successor route %q opened during G04 final gate", route)
+			t.Fatalf("later route %q opened during G05.7", route)
 		}
 	}
 }
