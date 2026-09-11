@@ -34,10 +34,10 @@ const (
 // storage, raw provider payloads, or raw SessionManager error strings.
 type BrowserLaneProjection struct {
 	LaneID        domain.BrowserLaneID `json:"lane_id"`
-	State         BrowserLaneState      `json:"state"`
-	RunID         domain.RunID          `json:"run_id,omitempty"`
-	RecoveryCount int                   `json:"recovery_count,omitempty"`
-	ChangedAt     time.Time             `json:"changed_at"`
+	State         BrowserLaneState     `json:"state"`
+	RunID         domain.RunID         `json:"run_id,omitempty"`
+	RecoveryCount int                  `json:"recovery_count,omitempty"`
+	ChangedAt     time.Time            `json:"changed_at"`
 }
 
 type BrowserLanePoolConfig struct {
