@@ -8,8 +8,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
-// G05.2 freezes the serialization contract only. The owning later gates add
-// persistence, scheduling, locking, browser-lane allocation and orchestration.
+// G05.2 freezes the serialization vocabulary. G05.7 operationalizes the
+// existing run queries/commands and additively projects sanitized lane facts.
 const (
 	QueryRunsList     QueryKind = "runs.list"
 	QueryRunsGet      QueryKind = "runs.get"
@@ -75,11 +75,20 @@ type RunSummaryDTO struct {
 	FinishedAt time.Time            `json:"finished_at,omitempty"`
 }
 
+type BrowserLaneDTO struct {
+	LaneID        domain.BrowserLaneID `json:"lane_id"`
+	State         string               `json:"state"`
+	RunID         domain.RunID         `json:"run_id,omitempty"`
+	RecoveryCount int                  `json:"recovery_count,omitempty"`
+	ChangedAt     time.Time            `json:"changed_at"`
+}
+
 type RunsListResultDTO struct {
-	Items  []RunSummaryDTO `json:"items"`
-	Offset int             `json:"offset"`
-	Limit  int             `json:"limit"`
-	Total  int             `json:"total"`
+	Items  []RunSummaryDTO  `json:"items"`
+	Lanes  []BrowserLaneDTO `json:"lanes,omitempty"`
+	Offset int              `json:"offset"`
+	Limit  int              `json:"limit"`
+	Total  int              `json:"total"`
 }
 
 type RunTaskDTO struct {
@@ -137,8 +146,7 @@ type RunTaskEventPayloadDTO struct {
 }
 
 // NewRunControlCommand validates the frozen G05.1 identity and creates only the
-// typed AppRuntime envelope. It never chooses a resource, priority or lane.
-// Runtime handling for these run.* commands remains closed until its owning gate.
+// typed AppRuntime envelope. Scheduler/resource/lane choices remain core-owned.
 func NewRunControlCommand(commandID string, kind CommandKind, runID domain.RunID) (CommandRequest, error) {
 	if !isRunCenterCommandKind(kind) {
 		return CommandRequest{}, fmt.Errorf("unsupported run control command: %s", kind)
@@ -153,6 +161,12 @@ func NewRunControlCommand(commandID string, kind CommandKind, runID domain.RunID
 		Kind:            kind,
 		RunID:           string(runID),
 	}, nil
+}
+
+// NewDesktopRunControlCommand keeps desktopui inside the AppRuntime-only import
+// boundary while preserving the same typed identity validation.
+func NewDesktopRunControlCommand(commandID string, kind CommandKind, runID string) (CommandRequest, error) {
+	return NewRunControlCommand(commandID, kind, domain.RunID(strings.TrimSpace(runID)))
 }
 
 func isRunCenterCommandKind(kind CommandKind) bool {

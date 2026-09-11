@@ -13,11 +13,8 @@ var (
 	ErrNoSubscription = errors.New("desktopui: event subscription is not open")
 )
 
-// Controller owns the child-gated Creative Studio presentation controllers.
-// G04.3 bootstraps Snapshot + Subscribe; G04.4-G04.5 add read workspaces;
-// G04.6 owns lifecycle commands; G04.7 owns the typed editor/write plane.
-// G05 scheduling/resource-lock/browser-lane ownership remains outside this
-// controller boundary until its own gate opens.
+// Controller owns desktop presentation controllers. G05.7 adds Run Center as
+// an AppRuntime-only projection/control workspace; core packages remain hidden.
 type Controller struct {
 	runtime   RuntimeClient
 	shell     *ShellState
@@ -26,10 +23,16 @@ type Controller struct {
 	lifecycle lifecycleControlPlane
 	write     writeControlPlane
 	creative  CreativeWorkspaceState
+	runCenter RunCenterWorkspaceState
 }
 
 func NewController(runtime RuntimeClient, width int) *Controller {
-	return &Controller{runtime: runtime, shell: NewShell(width), creative: NewCreativeWorkspaceState()}
+	return &Controller{
+		runtime:   runtime,
+		shell:     NewShell(width),
+		creative:  NewCreativeWorkspaceState(),
+		runCenter: NewRunCenterWorkspaceState(),
+	}
 }
 
 func (c *Controller) Shell() *ShellState                { return c.shell }
@@ -84,10 +87,9 @@ func (c *Controller) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// PumpEvent consumes exactly one projected AppRuntime event. A renderer or
-// desktop transport can decide its own scheduling without the shell creating a
-// competing observer or background persistence loop. Lifecycle events are
-// projected first and then reconciled through one fresh AppRuntime snapshot.
+// PumpEvent consumes exactly one projected AppRuntime event. RUN events refresh
+// Run Center only when that workspace is open; all reconciliation still flows
+// through fresh AppRuntime reads rather than GUI-owned state.
 func (c *Controller) PumpEvent(ctx context.Context) error {
 	if c.sub == nil {
 		return ErrNoSubscription
@@ -104,6 +106,9 @@ func (c *Controller) PumpEvent(ctx context.Context) error {
 		}
 		if c.observeLifecycleEvent(event) {
 			return c.Refresh(ctx)
+		}
+		if event.Category == appruntime.RunEventCategory && c.shell.Route == RouteRunCenter {
+			return c.RefreshRunCenter(ctx)
 		}
 		return nil
 	}

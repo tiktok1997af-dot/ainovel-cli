@@ -2,6 +2,8 @@ package appruntime
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +31,8 @@ type Runtime struct {
 	eventHubDone     chan struct{}
 	subscribers      map[uint64]*desktopSubscription
 	nextSubscriberID atomic.Uint64
+
+	run *runCoordinator
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -37,11 +41,18 @@ func New(core *host.Host) (*Runtime, error) {
 	if core == nil {
 		return nil, normalizeAppError(ErrNilHost)
 	}
-	return &Runtime{
+	lanes, err := core.DesktopNewBrowserLanePool()
+	if err != nil {
+		return nil, normalizeAppError(fmt.Errorf("initialize browser lane pool: %w", err))
+	}
+	rt := &Runtime{
 		core:           core,
 		lifecycleState: lifecycleFromCore(core.Snapshot().RuntimeState),
 		subscribers:    make(map[uint64]*desktopSubscription),
-	}, nil
+	}
+	rt.run = newRunCoordinator(core, lanes)
+	rt.run.start(rt)
+	return rt, nil
 }
 
 func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
@@ -68,7 +79,13 @@ func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, err
 		result.Error = appErr
 		return result, appErr
 	}
-	data, err := r.routeQuery(ctx, req)
+	var data json.RawMessage
+	var err error
+	if isRunCenterQueryKind(req.Kind) {
+		data, err = r.routeRunCenterQuery(ctx, req)
+	} else {
+		data, err = r.routeQuery(ctx, req)
+	}
 	if err != nil {
 		appErr := normalizeAppError(err)
 		result.Error = appErr
@@ -93,15 +110,28 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 
 	var out CommandResult
 	var err error
-	if isLifecycleCommand(cmd.Kind) {
-		out, err = r.dispatchLifecycle(ctx, cmd)
-	} else {
-		out, err = r.dispatchMutation(ctx, cmd)
+	switch {
+	case isRunCenterCommandKind(cmd.Kind):
+		out, err = r.dispatchRunControl(ctx, cmd)
+	case isLifecycleCommand(cmd.Kind):
+		if r.run != nil && r.run.hasActiveRun() {
+			out = result
+			err = fmt.Errorf("%w: active Run Center execution owns lifecycle control", ErrCommandNotAllowed)
+		} else {
+			out, err = r.dispatchLifecycle(ctx, cmd)
+		}
+	default:
+		if r.run != nil && r.run.hasManagedWork() {
+			out = result
+			err = ErrMutationPrecondition
+		} else {
+			out, err = r.dispatchMutation(ctx, cmd)
+		}
 	}
 	out.ContractVersion = ContractVersion
 	if err != nil {
 		appErr := normalizeAppError(err)
-		if cmd.Kind == CommandResume || cmd.Kind == CommandRetry {
+		if cmd.Kind == CommandResume || cmd.Kind == CommandRetry || cmd.Kind == CommandRunResume || cmd.Kind == CommandRunRetry {
 			appErr = recoveryError(err)
 		}
 		out.Error = appErr
@@ -165,6 +195,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
 		r.stopEventHub()
+		if r.run != nil {
+			r.run.close()
+		}
 		r.core.Close()
 		r.commandWG.Wait()
 	})
