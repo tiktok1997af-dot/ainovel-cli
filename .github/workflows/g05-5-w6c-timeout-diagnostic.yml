@@ -31,6 +31,15 @@ jobs:
           ref: ${{ env.TARGET_SHA }}
           fetch-depth: 0
 
+      - name: Force Git Bash
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBin = Join-Path $env:ProgramFiles 'Git/bin'
+          $bash = Join-Path $gitBin 'bash.exe'
+          if (-not (Test-Path -LiteralPath $bash)) { throw 'Git Bash is required.' }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
       - name: Download exact prior release input
         uses: actions/download-artifact@v4
         with:
@@ -155,13 +164,13 @@ jobs:
             $smokeError = Sanitize ([string]$_.Exception.Message)
           }
 
-          $novel = Join-Path $env:DIAG_RUNTIME_DIR 'output\novel'
+          $novel = Join-Path $env:DIAG_RUNTIME_DIR 'output/novel'
           $meta = Join-Path $novel 'meta'
           $progress = TryJson (Join-Path $meta 'progress.json')
           $pending = TryJson (Join-Path $meta 'pending_commit.json')
           $chapters = @(Get-ChildItem -LiteralPath (Join-Path $novel 'chapters') -Filter '*.md' -File -ErrorAction SilentlyContinue)
           $drafts = @(Get-ChildItem -LiteralPath (Join-Path $novel 'drafts') -Filter '*.md' -File -Recurse -ErrorAction SilentlyContinue)
-          $sessions = @(Get-ChildItem -LiteralPath (Join-Path $meta 'sessions\agents') -Filter '*.jsonl' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc)
+          $sessions = @(Get-ChildItem -LiteralPath (Join-Path $meta 'sessions/agents') -Filter '*.jsonl' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc)
           $sessionTail = ''
           $sessionNames = @()
           if ($sessions.Count -gt 0) {
@@ -172,7 +181,7 @@ jobs:
           if (Test-Path -LiteralPath $novel) {
             $fileInventory = @(Get-ChildItem -LiteralPath $novel -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
               [ordered]@{
-                path = $_.FullName.Substring($novel.Length).TrimStart('\').Replace('\','/')
+                path = $_.FullName.Substring($novel.Length).TrimStart([char]92).Replace([char]92,'/')
                 bytes = $_.Length
                 modified_utc = $_.LastWriteTimeUtc.ToString('o')
                 sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -202,7 +211,7 @@ jobs:
             }
           }
           $diag = [ordered]@{
-            schema = 'ainovel-g05-5-w6c-timeout-diagnostic/1'
+            schema = 'ainovel-g05-5-w6c-timeout-diagnostic/2'
             target_sha = $env:TARGET_SHA
             source_release_run_id = $env:SOURCE_RUN_ID
             smoke_error = $smokeError
