@@ -71,6 +71,12 @@ const (
 	RuntimeQueueCategoryRunPriorityChanged = "run_scheduler.priority_changed"
 	RuntimeQueueCategoryRunDequeued        = "run_scheduler.dequeued"
 	RuntimeQueueCategoryRunRemoved         = "run_scheduler.removed"
+
+	RuntimeQueueCategoryResourceWaitRequested    = "run_resource.wait_requested"
+	RuntimeQueueCategoryResourceAcquired         = "run_resource.acquired"
+	RuntimeQueueCategoryResourceReleased         = "run_resource.released"
+	RuntimeQueueCategoryResourceWaitCancelled    = "run_resource.wait_cancelled"
+	RuntimeQueueCategoryResourceRecoveryReleased = "run_resource.recovery_released"
 )
 
 // IsRunSchedulerQueueCategory reports whether an append-only queue record belongs
@@ -81,6 +87,21 @@ func IsRunSchedulerQueueCategory(category string) bool {
 		RuntimeQueueCategoryRunPriorityChanged,
 		RuntimeQueueCategoryRunDequeued,
 		RuntimeQueueCategoryRunRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsResourceLockQueueCategory reports whether an append-only queue record belongs
+// to the G05.5 logical resource-lock replay protocol.
+func IsResourceLockQueueCategory(category string) bool {
+	switch category {
+	case RuntimeQueueCategoryResourceWaitRequested,
+		RuntimeQueueCategoryResourceAcquired,
+		RuntimeQueueCategoryResourceReleased,
+		RuntimeQueueCategoryResourceWaitCancelled,
+		RuntimeQueueCategoryResourceRecoveryReleased:
 		return true
 	default:
 		return false
@@ -123,6 +144,41 @@ func CompareRunScheduleTickets(a, b RunScheduleTicket, currentTurn int64) int {
 	return 0
 }
 
+// ResourceLockStatus is the bounded result of a G05.5 lock request.
+type ResourceLockStatus string
+
+const (
+	ResourceLockStatusAcquired ResourceLockStatus = "acquired"
+	ResourceLockStatusWaiting  ResourceLockStatus = "waiting"
+)
+
+// ResourceLockWaiter is one persisted FIFO conflict claim.
+type ResourceLockWaiter struct {
+	RunID      RunID `json:"run_id"`
+	RequestSeq int64 `json:"request_seq"`
+}
+
+// ResourceLockState is the deterministic replay projection for one logical resource.
+// A resource may have waiters while OwnerRunID is empty after release/recovery.
+type ResourceLockState struct {
+	Resource   ResourceKey          `json:"resource"`
+	OwnerRunID RunID                `json:"owner_run_id,omitempty"`
+	AcquireSeq int64                `json:"acquire_seq,omitempty"`
+	Waiters    []ResourceLockWaiter `json:"waiters,omitempty"`
+}
+
+// ResourceLockDecision is returned by a lock request without exposing filesystem
+// paths or any GUI-selected lock authority.
+type ResourceLockDecision struct {
+	Status       ResourceLockStatus `json:"status"`
+	Resource     ResourceKey        `json:"resource"`
+	RunID        RunID              `json:"run_id"`
+	OwnerRunID   RunID              `json:"owner_run_id,omitempty"`
+	WaitPosition int                `json:"wait_position,omitempty"`
+	RequestSeq   int64              `json:"request_seq,omitempty"`
+	AcquireSeq   int64              `json:"acquire_seq,omitempty"`
+}
+
 // RuntimeQueueItem 是统一运行时队列的持久化记录。
 type RuntimeQueueItem struct {
 	Seq         int64                `json:"seq"`
@@ -130,6 +186,7 @@ type RuntimeQueueItem struct {
 	Priority    RuntimeQueuePriority `json:"priority"`
 	RunID       RunID                `json:"run_id,omitempty"`
 	RunPriority RunSchedulerPriority `json:"run_priority,omitempty"`
+	Resource    ResourceKey          `json:"resource,omitempty"`
 	TaskID      string               `json:"task_id,omitempty"`
 	Agent       string               `json:"agent,omitempty"`
 	Category    string               `json:"category,omitempty"`
