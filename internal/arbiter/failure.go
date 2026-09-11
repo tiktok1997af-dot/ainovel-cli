@@ -48,7 +48,19 @@ func (d *FailureDecision) ValidateAgainst(f FailureFacts) error {
 		if err := d.Dispatch.validate(); err != nil {
 			return err
 		}
-		return validateDispatchAgainst(d.Dispatch, f.Phase)
+		if err := validateDispatchAgainst(d.Dispatch, f.Phase); err != nil {
+			return err
+		}
+		// Writer 的正常完成边界是 draft/commit_chapter 落盘。Editor 的 StopGuard
+		// 则要求 save_review/save_* 持久化结果，而 save_review 又只接受已完成章节。
+		// 因此 Writer failure/deadlock 直接改派 Editor 会在未完成章节上形成一个
+		// 无合法终态的循环（Editor 被要求评审，Store 必然拒绝）。失败恢复只能继续
+		// Writer、交给 Architect 修复前置事实，或显式 abort；不得用 Editor 绕过
+		// Writer 的持久化边界。
+		if f.Agent == "writer" && d.Dispatch.Agent == "editor" {
+			return fmt.Errorf("writer failure/deadlock 不能在章节完成前直接改派 editor；请 retry、改派 writer/architect 或 abort")
+		}
+		return nil
 	default:
 		return fmt.Errorf("action 非法: %q（可选 retry / reroute / abort）", d.Action)
 	}
