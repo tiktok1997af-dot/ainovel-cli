@@ -25,8 +25,8 @@ func TestG063AggregateReviewStatusFrozenOrderAndDeterministicFingerprint(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Overall != ReviewGatePass {
-		t.Fatalf("overall = %s, want pass", first.Overall)
+	if first.Overall != ReviewGateUnavailable {
+		t.Fatalf("overall = %s, want unavailable while bounded style sample is insufficient", first.Overall)
 	}
 	if first.Freshness.Fingerprint == "" || first.Freshness.Fingerprint != second.Freshness.Fingerprint {
 		t.Fatalf("fingerprint must be deterministic: %q vs %q", first.Freshness.Fingerprint, second.Freshness.Fingerprint)
@@ -80,8 +80,8 @@ func TestG063SemanticScoreNeverInventsHardThreshold(t *testing.T) {
 	if consistency.State != ReviewGatePass {
 		t.Fatalf("score-only semantic gate = %s, want pass without invented threshold", consistency.State)
 	}
-	if got.Overall != ReviewGatePass {
-		t.Fatalf("overall = %s, want pass", got.Overall)
+	if got.Overall != ReviewGateUnavailable {
+		t.Fatalf("overall = %s, want unavailable only because style sample is insufficient", got.Overall)
 	}
 }
 
