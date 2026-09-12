@@ -45,6 +45,26 @@ func (e *cdpEvaluator) Click(ctx context.Context, x, y float64) error {
 	return nil
 }
 
+// PressEnter emits one trusted Enter key press through Chrome's Input domain.
+// It is intentionally separate from ReplaceText so transport recovery can
+// submit an already verified, already focused composer without retyping or
+// replaying the prompt and without a synthetic DOM event.
+func (e *cdpEvaluator) PressEnter(ctx context.Context) error {
+	if e == nil || e.conn == nil {
+		return errors.New("CDP evaluator is closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := e.dispatchKey(ctx, "keyDown", "Enter", "Enter", 13, 0); err != nil {
+		return fmt.Errorf("submit Enter keydown: %w", err)
+	}
+	if err := e.dispatchKey(ctx, "keyUp", "Enter", "Enter", 13, 0); err != nil {
+		return fmt.Errorf("submit Enter keyup: %w", err)
+	}
+	return nil
+}
+
 // ReplaceText drives the visible controlled editor like a real user input path:
 // focus with a trusted pointer click, Ctrl+A, Backspace, then Input.insertText.
 // The method deliberately does not press Enter or touch any submit control.

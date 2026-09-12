@@ -109,6 +109,18 @@ The metadata arguments must omit that same field; keep every other intended smal
 After the raw-value start delimiter, preserve the complete same raw string value verbatim until the end of the assistant message. Do not append a closing delimiter, outer response wrapper, or Markdown fence.
 Do not claim the tool ran. This is a transport-format repair only.`
 
+// rawStringValueRepairPrompt is used only when a TOOL_CALL_RAW response reached
+// the strict raw-tool parser but ended without a non-empty raw string value.
+// The malformed call has not executed, so this stays side-effect-free and
+// consumes the existing bounded protocol-repair budget.
+const rawStringValueRepairPrompt = `Your previous TOOL_CALL_RAW answer was rejected because the raw string value was empty or whitespace. No local tool from that answer has been executed.
+Do not redo the user's task, change the intended tool, change any non-raw argument value, summarize, or add commentary.
+Re-emit the same intended tool call using one valid TOOL_CALL_RAW body.
+Keep the same raw_string_field and metadata arguments. After the raw-value start delimiter, you MUST include the complete non-empty intended raw string value; do not stop immediately after the delimiter.
+Preserve the intended raw prose/content verbatim if it was already composed. The assistant message may end only after the complete raw value.
+Do not append a closing delimiter, outer response wrapper, Markdown fence, or TEXT response.
+Do not claim the tool ran. This is a transport-format repair only.`
+
 // toolRequiredRepairPrompt is narrower than the generic format repair. It is
 // used only after a StopGuard-injected machine marker proves that the worker
 // still owes a persisted artifact, yet the web model returned a valid TEXT-only
@@ -148,6 +160,21 @@ func localToolRequired(messages []agentcore.Message, tools []agentcore.ToolSpec)
 	return false
 }
 
+func recoverRequiredLocalToolFromText(requestPrompt string, msg agentcore.Message, tools []agentcore.ToolSpec) (agentcore.Message, bool) {
+	if msg.StopReason == agentcore.StopReasonToolUse {
+		return msg, true
+	}
+	text := strings.TrimSpace(msg.TextContent())
+	if text == "" {
+		return agentcore.Message{}, false
+	}
+	recovered, err := parseResponseWithRawText(requestPrompt, text, tools)
+	if err != nil || recovered.StopReason != agentcore.StopReasonToolUse {
+		return agentcore.Message{}, false
+	}
+	return recovered, true
+}
+
 func invalidRawStringFieldProtocolError(err error) bool {
 	var webErr *Error
 	if !errors.As(err, &webErr) || webErr == nil {
@@ -157,6 +184,17 @@ func invalidRawStringFieldProtocolError(err error) bool {
 		webErr.Op == "validate raw tool call" &&
 		webErr.Cause != nil &&
 		webErr.Cause.Error() == "raw_string_field is invalid"
+}
+
+func emptyRawStringArgumentProtocolError(err error) bool {
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr == nil {
+		return false
+	}
+	return webErr.Kind == ErrorProtocol &&
+		webErr.Op == "parse raw tool call" &&
+		webErr.Cause != nil &&
+		webErr.Cause.Error() == "raw string argument is empty"
 }
 
 func jsonSyntaxProtocolError(err error) bool {
@@ -171,6 +209,9 @@ func jsonSyntaxProtocolError(err error) bool {
 func repairPromptForProtocolError(err error) string {
 	if invalidRawStringFieldProtocolError(err) {
 		return rawStringFieldRepairPrompt
+	}
+	if emptyRawStringArgumentProtocolError(err) {
+		return rawStringValueRepairPrompt
 	}
 	if jsonSyntaxProtocolError(err) {
 		return jsonSyntaxRepairPrompt
@@ -192,6 +233,9 @@ func (m *Model) repairRequiredLocalTool(ctx context.Context, requestPrompt strin
 		if parseErr == nil {
 			if msg.StopReason == agentcore.StopReasonToolUse {
 				return &agentcore.LLMResponse{Message: msg}, nil
+			}
+			if recovered, ok := recoverRequiredLocalToolFromText(requestPrompt, msg, tools); ok {
+				return &agentcore.LLMResponse{Message: recovered}, nil
 			}
 			lastErr = protocolError(
 				"enforce required local tool call",
@@ -231,6 +275,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	msg, parseErr := parseResponseWithRawText(prompt, raw, tools)
 	if parseErr == nil {
 		if mustUseLocalTool && msg.StopReason != agentcore.StopReasonToolUse {
+			if recovered, ok := recoverRequiredLocalToolFromText(prompt, msg, tools); ok {
+				return &agentcore.LLMResponse{Message: recovered}, nil
+			}
 			return m.repairRequiredLocalTool(ctx, prompt, tools)
 		}
 		return &agentcore.LLMResponse{Message: msg}, nil
@@ -257,6 +304,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
 		if repairErr == nil {
 			if mustUseLocalTool && repaired.StopReason != agentcore.StopReasonToolUse {
+				if recovered, ok := recoverRequiredLocalToolFromText(prompt, repaired, tools); ok {
+					return &agentcore.LLMResponse{Message: recovered}, nil
+				}
 				return m.repairRequiredLocalTool(ctx, prompt, tools)
 			}
 			return &agentcore.LLMResponse{Message: repaired}, nil

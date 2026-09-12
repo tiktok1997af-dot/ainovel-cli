@@ -37,9 +37,9 @@ func TestPrimaryNavigationReservesG01Destinations(t *testing.T) {
 		if items[i].ID != route {
 			t.Fatalf("navigation[%d] = %q, want %q", i, items[i].ID, route)
 		}
-		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteCreative || route == RouteKnowledge
+		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteCreative || route == RouteKnowledge || route == RouteRunCenter
 		if items[i].Enabled != shouldEnable {
-			t.Fatalf("%s enabled = %v, want %v for G04.7", route, items[i].Enabled, shouldEnable)
+			t.Fatalf("%s enabled = %v, want %v through G05.7", route, items[i].Enabled, shouldEnable)
 		}
 	}
 }
@@ -122,23 +122,23 @@ func TestResizeDoesNotDiscardAuthoritativeProjection(t *testing.T) {
 	}
 }
 
-func TestG04PointSevenRoutesEnabledButSuccessorRoutesRemainDisabled(t *testing.T) {
+func TestG04RoutesRemainEnabledAndG057RunCenterOpensWithoutLaterRoutes(t *testing.T) {
 	shell := NewShell(1440)
-	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative} {
+	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter} {
 		if !shell.SelectRoute(route) {
-			t.Fatalf("route %q should be enabled by G04.7", route)
+			t.Fatalf("route %q should be enabled through G05.7", route)
 		}
 	}
-	if shell.Route != RouteCreative {
-		t.Fatalf("route = %q, want creative", shell.Route)
+	if shell.Route != RouteRunCenter {
+		t.Fatalf("route = %q, want run_center", shell.Route)
 	}
-	for _, route := range []RouteID{RouteReview, RouteRunCenter, RouteSettings} {
+	for _, route := range []RouteID{RouteReview, RouteSettings} {
 		if shell.SelectRoute(route) {
-			t.Fatalf("successor route %q opened prematurely", route)
+			t.Fatalf("later route %q opened prematurely", route)
 		}
 	}
-	if shell.Route != RouteCreative {
-		t.Fatalf("disabled successor route changed selection to %q", shell.Route)
+	if shell.Route != RouteRunCenter {
+		t.Fatalf("disabled later route changed selection to %q", shell.Route)
 	}
 }
 

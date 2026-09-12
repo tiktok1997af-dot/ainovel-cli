@@ -76,6 +76,90 @@ func TestModelToolRequiredMarkerRepairsTextIntoLocalToolCall(t *testing.T) {
 	}
 }
 
+func TestModelToolRequiredMarkerPromotesTextWrappedStrictToolCall(t *testing.T) {
+	var executed atomic.Int32
+	tool := agentcore.NewFuncTool("save", "save locally", map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{"type": "string"},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}, func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+		executed.Add(1)
+		if string(args) != `{"value":"ok"}` {
+			t.Fatalf("unexpected tool args: %s", args)
+		}
+		return json.RawMessage(`{"saved":true}`), nil
+	})
+
+	transport := &fakeTransport{responses: []string{
+		`TEXT
+{"kind":"tool_calls","tool_calls":[{"name":"save","arguments":{"value":"ok"}}]}`,
+	}}
+	model := mustModel(t, transport)
+	runner := subagent.NewRunner(subagent.Config{
+		Name:           "writer",
+		Description:    "text-wrapped tool recovery",
+		Model:          model,
+		SystemPrompt:   "test",
+		Tools:          []agentcore.Tool{tool},
+		MaxTurns:       2,
+		StopAfterTools: []string{"save"},
+	})
+
+	if _, err := runner.Run(context.Background(), "writer", localToolRequiredMarker+"\nCall save now."); err != nil {
+		t.Fatalf("Runner.Run: %v", err)
+	}
+	if got := executed.Load(); got != 1 {
+		t.Fatalf("local tool executions = %d, want 1", got)
+	}
+	if got := len(transport.promptSnapshot()); got != 1 {
+		t.Fatalf("web round trips = %d, want 1; recovery should be local", got)
+	}
+}
+
+func TestModelWithoutToolRequiredMarkerKeepsTextWrappedToolJSONAsText(t *testing.T) {
+	var executed atomic.Int32
+	tool := agentcore.NewFuncTool("save", "save locally", map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{"type": "string"},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		executed.Add(1)
+		return json.RawMessage(`{"saved":true}`), nil
+	})
+
+	const wrappedToolJSON = `{"kind":"tool_calls","tool_calls":[{"name":"save","arguments":{"value":"ok"}}]}`
+	transport := &fakeTransport{responses: []string{"TEXT\n" + wrappedToolJSON}}
+	model := mustModel(t, transport)
+	runner := subagent.NewRunner(subagent.Config{
+		Name:         "writer",
+		Description:  "ordinary text remains text",
+		Model:        model,
+		SystemPrompt: "test",
+		Tools:        []agentcore.Tool{tool},
+		MaxTurns:     2,
+	})
+
+	result, err := runner.Run(context.Background(), "writer", "describe a tool call without executing it")
+	if err != nil {
+		t.Fatalf("Runner.Run: %v", err)
+	}
+	if got := executed.Load(); got != 0 {
+		t.Fatalf("local tool executions = %d, want 0", got)
+	}
+	if result.Output != wrappedToolJSON {
+		t.Fatalf("output = %q, want %q", result.Output, wrappedToolJSON)
+	}
+	if got := len(transport.promptSnapshot()); got != 1 {
+		t.Fatalf("web round trips = %d, want 1", got)
+	}
+}
+
 func TestModelToolRequiredMarkerWithoutToolsKeepsTextValid(t *testing.T) {
 	transport := &fakeTransport{responses: []string{"TEXT\nplain response"}}
 	model := mustModel(t, transport)
