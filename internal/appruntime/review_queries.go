@@ -19,7 +19,7 @@ import (
 const defaultReviewHistoryPageSize = 50
 
 func (r *Runtime) queryReviewCatalog() (json.RawMessage, error) {
-	return marshalQueryData(CurrentReviewContractCatalog())
+	return marshalQueryData(ReviewCatalogResultDTO{Contract: CurrentReviewContractCatalog()})
 }
 
 func (r *Runtime) queryReviewStatus(req ReviewStatusQuery) (json.RawMessage, error) {
@@ -487,12 +487,12 @@ func reviewEvidenceFingerprint(target ReviewTargetDTO, revisions []ReviewRevisio
 		})
 	}
 	payload := struct {
-		Target       ReviewTargetDTO          `json:"target"`
-		Revisions    []ReviewRevisionRefDTO   `json:"revisions"`
-		ReviewDigest string                   `json:"review_digest,omitempty"`
+		Target       ReviewTargetDTO            `json:"target"`
+		Revisions    []ReviewRevisionRefDTO     `json:"revisions"`
+		ReviewDigest string                     `json:"review_digest,omitempty"`
 		Findings     []reviewFingerprintFinding `json:"findings,omitempty"`
-		StyleStatus  string                   `json:"style_status"`
-		Style        *stylestat.Stats         `json:"style,omitempty"`
+		StyleStatus  string                     `json:"style_status"`
+		Style        *stylestat.Stats           `json:"style,omitempty"`
 	}{
 		Target: target, Revisions: revisions, ReviewDigest: snapshot.ReviewArtifactDigest,
 		Findings: findings, StyleStatus: snapshot.StyleStatus, Style: snapshot.Style,
