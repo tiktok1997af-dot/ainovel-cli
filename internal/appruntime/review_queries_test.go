@@ -121,8 +121,8 @@ func TestG063ProjectionDoesNotLeakRawReviewOrStyleEvidence(t *testing.T) {
 	}}
 	snapshot.StyleStatus = "ok"
 	snapshot.Style = &stylestat.Stats{
-		Chapters: 5,
-		TopPhrases: []stylestat.PhraseStat{{Text: reviewSecret, Count: 9}},
+		Chapters:          5,
+		TopPhrases:        []stylestat.PhraseStat{{Text: reviewSecret, Count: 9}},
 		RepeatedSentences: []stylestat.SentenceStat{{Text: styleSecret, Chapters: 3, Count: 3}},
 	}
 
@@ -187,8 +187,8 @@ func freshReviewSnapshot(t *testing.T, target ReviewTargetDTO, semanticScore int
 		review.Chapter = target.ThroughChapter
 	}
 	return host.DesktopReviewReadSnapshot{
-		Target: hostReviewTarget(target),
-		Review: review,
+		Target:               hostReviewTarget(target),
+		Review:               review,
 		ReviewArtifactDigest: "sha256:review",
 		ReviewCheckpoint: &domain.Checkpoint{
 			Seq: 9, Step: "review", Digest: "sha256:review", OccurredAt: checkpointAt,
