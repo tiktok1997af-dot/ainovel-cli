@@ -1,6 +1,9 @@
 package host
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -26,14 +29,15 @@ type DesktopReviewTarget struct {
 // values. It is deliberately evidence-only: no mutation handles, browser state
 // or unrestricted project files cross the Host/AppRuntime seam.
 type DesktopReviewReadSnapshot struct {
-	Target           DesktopReviewTarget
-	Review           *domain.ReviewEntry
-	ReviewCheckpoint *domain.Checkpoint
-	ReviewHistory    []domain.Checkpoint
-	Revisions        []domain.ChapterRecord
-	Diagnostics      diag.Report
-	StyleStatus      string
-	Style            *stylestat.Stats
+	Target               DesktopReviewTarget
+	Review               *domain.ReviewEntry
+	ReviewArtifactDigest string
+	ReviewCheckpoint     *domain.Checkpoint
+	ReviewHistory        []domain.Checkpoint
+	Revisions            []domain.ChapterRecord
+	Diagnostics          diag.Report
+	StyleStatus          string
+	Style                *stylestat.Stats
 }
 
 // DesktopReviewRead aggregates the existing canonical Review owners behind a
@@ -53,6 +57,10 @@ func (h *Host) DesktopReviewRead(target DesktopReviewTarget) (DesktopReviewReadS
 	if err != nil {
 		return DesktopReviewReadSnapshot{}, err
 	}
+	reviewDigest, err := desktopReviewArtifactDigest(review)
+	if err != nil {
+		return DesktopReviewReadSnapshot{}, err
+	}
 
 	history := desktopReviewCheckpoints(h.store.Checkpoints.All(), scope, artifact)
 	var latest *domain.Checkpoint
@@ -67,14 +75,15 @@ func (h *Host) DesktopReviewRead(target DesktopReviewTarget) (DesktopReviewReadS
 	}
 
 	return DesktopReviewReadSnapshot{
-		Target:           target,
-		Review:           review,
-		ReviewCheckpoint: latest,
-		ReviewHistory:    history,
-		Revisions:        revisions,
-		Diagnostics:      diag.Analyze(h.store),
-		StyleStatus:      styleStatus,
-		Style:            style,
+		Target:               target,
+		Review:               review,
+		ReviewArtifactDigest: reviewDigest,
+		ReviewCheckpoint:     latest,
+		ReviewHistory:        history,
+		Revisions:            revisions,
+		Diagnostics:          diag.Analyze(h.store),
+		StyleStatus:          styleStatus,
+		Style:                style,
 	}, nil
 }
 
@@ -161,6 +170,18 @@ func (h *Host) desktopReviewArtifact(target DesktopReviewTarget) (*domain.Review
 		return nil, fmt.Errorf("read review artifact: %w", err)
 	}
 	return review, nil
+}
+
+func desktopReviewArtifactDigest(review *domain.ReviewEntry) (string, error) {
+	if review == nil {
+		return "", nil
+	}
+	data, err := json.MarshalIndent(review, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("digest review artifact: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func desktopReviewCheckpoints(all []domain.Checkpoint, scope domain.Scope, artifact string) []domain.Checkpoint {
