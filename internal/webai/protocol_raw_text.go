@@ -176,6 +176,105 @@ func normalizeSingleRedundantResponseWrapper(raw string) string {
 	return raw
 }
 
+func decodeRawToolCallMetadataStrict(metadataText string) (rawToolCallMetadata, error) {
+	var metadata rawToolCallMetadata
+	dec := json.NewDecoder(strings.NewReader(metadataText))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&metadata); err != nil {
+		return rawToolCallMetadata{}, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values in raw tool metadata")
+		}
+		return rawToolCallMetadata{}, err
+	}
+	return metadata, nil
+}
+
+// decodeRawToolCallMetadata keeps TOOL_CALL_RAW metadata fail-closed while
+// tolerating one observed Gemini shape drift: a normal tool-schema argument can
+// be emitted beside "arguments" instead of inside it. Recovery is deliberately
+// narrow. A misplaced key is accepted only when it is a declared property of
+// the selected tool, is not the raw string field, and does not duplicate an
+// argument already present. Every other unknown metadata key still fails.
+func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) (rawToolCallMetadata, error) {
+	metadata, strictErr := decodeRawToolCallMetadataStrict(metadataText)
+	if strictErr == nil {
+		return metadata, nil
+	}
+
+	var object map[string]json.RawMessage
+	dec := json.NewDecoder(strings.NewReader(metadataText))
+	if err := dec.Decode(&object); err != nil || object == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	var name string
+	rawName, ok := object["name"]
+	if !ok || json.Unmarshal(rawName, &name) != nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var field string
+	rawField, ok := object["raw_string_field"]
+	if !ok || json.Unmarshal(rawField, &field) != nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var arguments map[string]json.RawMessage
+	rawArguments, ok := object["arguments"]
+	if !ok || json.Unmarshal(rawArguments, &arguments) != nil || arguments == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	var properties map[string]any
+	for _, tool := range tools {
+		if tool.Name != name {
+			continue
+		}
+		rawProperties, exists := tool.Parameters["properties"]
+		if !exists {
+			return rawToolCallMetadata{}, strictErr
+		}
+		var valid bool
+		properties, valid = rawProperties.(map[string]any)
+		if !valid {
+			return rawToolCallMetadata{}, strictErr
+		}
+		break
+	}
+	if properties == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	for key, value := range object {
+		switch key {
+		case "name", "arguments", "raw_string_field":
+			continue
+		}
+		if key == field {
+			return rawToolCallMetadata{}, fmt.Errorf("raw string field %q must not appear in metadata", field)
+		}
+		if _, declared := properties[key]; !declared {
+			return rawToolCallMetadata{}, strictErr
+		}
+		if _, duplicate := arguments[key]; duplicate {
+			return rawToolCallMetadata{}, fmt.Errorf("tool argument %q appears both inside and outside arguments", key)
+		}
+		arguments[key] = append(json.RawMessage(nil), value...)
+	}
+
+	return rawToolCallMetadata{
+		Name:           name,
+		Arguments:      arguments,
+		RawStringField: field,
+	}, nil
+}
+
 func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
 	if err := validateToolRegistry(tools); err != nil {
 		return agentcore.Message{}, err
@@ -230,17 +329,8 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
 	}
 
-	var metadata rawToolCallMetadata
-	dec := json.NewDecoder(strings.NewReader(metadataText))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&metadata); err != nil {
-		return agentcore.Message{}, protocolError("decode raw tool call metadata", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple JSON values in raw tool metadata")
-		}
+	metadata, err := decodeRawToolCallMetadata(metadataText, tools)
+	if err != nil {
 		return agentcore.Message{}, protocolError("decode raw tool call metadata", err)
 	}
 
