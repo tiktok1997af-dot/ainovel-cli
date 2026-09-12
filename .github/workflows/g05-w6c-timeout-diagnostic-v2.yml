@@ -1,0 +1,245 @@
+name: G05 W6C Timeout Diagnostic v2
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PRODUCT_SHA: d302fbbdabd2b41080e8a8dac63f610e97d6fb1e
+  SOURCE_RUN_ID: '34646816024'
+  SOURCE_ARTIFACT: ainovel-w6c-release-input-d302fbbdabd2b41080e8a8dac63f610e97d6fb1e
+
+jobs:
+  diagnostic-desktop-v2:
+    name: Diagnose exact G05.7 W6C restart failure v2
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 50
+    steps:
+      - name: Checkout exact product SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 0
+
+      - name: Download exact W6C release input from source run
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: ${{ runner.temp }}/g05-w6c-diag-v2-input-${{ github.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Force Git Bash
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
+          $bash = Join-Path $gitBin 'bash.exe'
+          if (-not (Test-Path -LiteralPath $bash)) { throw 'Git Bash is required.' }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$gitBin`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Prepare exact diagnostic runtime and provenance
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:PRODUCT_SHA) { throw "Product SHA drift: $actual" }
+          $inputDir = Join-Path $env:RUNNER_TEMP ("g05-w6c-diag-v2-input-" + $env:GITHUB_RUN_ID)
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("g05-w6c-diag-v2-evidence-" + $env:GITHUB_RUN_ID)
+          $runtimeDir = Join-Path $env:RUNNER_TEMP ("g05-w6c-diag-v2-runtime-" + $env:GITHUB_RUN_ID)
+          foreach ($path in @($evidenceDir, $runtimeDir)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
+          $provFile = @(Get-ChildItem -LiteralPath $inputDir -Filter 'w6c-package-provenance.json' -File -Recurse)
+          if ($provFile.Count -ne 1) { throw 'Expected exactly one W6C package provenance file.' }
+          $prov = Get-Content -LiteralPath $provFile[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $env:PRODUCT_SHA) { throw 'Package candidate SHA mismatch.' }
+          if ([string]$prov.w55_no_api -ne 'PASS') { throw 'Hosted NO-API provenance missing.' }
+          $archive = @(Get-ChildItem -LiteralPath $inputDir -Filter ([string]$prov.archive_name) -File -Recurse)
+          $manifest = @(Get-ChildItem -LiteralPath $inputDir -Filter 'ainovel-cli_checksums.txt' -File -Recurse)
+          $helper = @(Get-ChildItem -LiteralPath $inputDir -Filter 'ainovel-w5e-readiness.exe' -File -Recurse)
+          if ($archive.Count -ne 1 -or $manifest.Count -ne 1 -or $helper.Count -ne 1) { throw 'Diagnostic transport bundle incomplete.' }
+          $helperHash = (Get-FileHash -LiteralPath $helper[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($helperHash -ne [string]$prov.readiness_helper_sha256) { throw 'Readiness helper hash mismatch.' }
+          $safeDirectory = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $envLines = @(
+            "DIAG_INPUT_DIR=$inputDir",
+            "DIAG_EVIDENCE_DIR=$evidenceDir",
+            "DIAG_RUNTIME_DIR=$runtimeDir",
+            "DIAG_ARCHIVE=$($archive[0].FullName)",
+            "DIAG_MANIFEST=$($manifest[0].FullName)",
+            "DIAG_HELPER=$($helper[0].FullName)",
+            "DIAG_HELPER_SHA=$helperHash",
+            "DIAG_SNAPSHOT_VERSION=$([string]$prov.snapshot_version)",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=$safeDirectory"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Stage transient WEB-only config
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("g05-w6c-diag-v2-config-" + $env:GITHUB_RUN_ID + '.json')
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
+              }
+            } catch { }
+          }
+          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
+          if ($browserPath) { $web.browser_path = $browserPath }
+          if ($startUrl) { $web.start_url = $startUrl }
+          $cfg = [ordered]@{ web = $web; language = 'vi' }
+          [System.IO.File]::WriteAllText($configPath, (($cfg | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $envLines = @(
+            "DIAG_CONFIG_PATH=$configPath",
+            "DIAG_CONFIG_BACKUP=$backupPath",
+            "DIAG_CONFIG_HAD_ORIGINAL=$hadOriginal"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Run exact smoke and capture durable state before cleanup
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          $failureMessage = ''
+          try {
+            & ./scripts/w6c-release-artifact-smoke.ps1 `
+              -RepoRoot $env:GITHUB_WORKSPACE `
+              -PackageArchivePath $env:DIAG_ARCHIVE `
+              -ChecksumManifestPath $env:DIAG_MANIFEST `
+              -ReadinessExe $env:DIAG_HELPER `
+              -ExpectedReadinessSha256 $env:DIAG_HELPER_SHA `
+              -ExpectedGitSha $env:PRODUCT_SHA `
+              -ExpectedSnapshotVersion $env:DIAG_SNAPSHOT_VERSION `
+              -EvidenceDir $env:DIAG_EVIDENCE_DIR `
+              -RuntimeDir $env:DIAG_RUNTIME_DIR `
+              -ReadinessTimeoutSeconds 60 `
+              -FirstChapterTimeoutSeconds 1200 `
+              -ResumeTimeoutSeconds 1200
+          } catch {
+            $failed = $true
+            $failureMessage = [string]$_.Exception.Message
+          }
+
+          function Sanitize([string]$text) {
+            if ([string]::IsNullOrEmpty($text)) { return '' }
+            $userHome = [Environment]::GetFolderPath('UserProfile')
+            if ($userHome) { $text = $text.Replace($userHome, '<USERPROFILE>') }
+            $text = [regex]::Replace($text, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+            $text = [regex]::Replace($text, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
+            $text = [regex]::Replace($text, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+            if ($text.Length -gt 20000) { $text = $text.Substring($text.Length - 20000) }
+            return $text
+          }
+          function ReadJsonSafe([string]$path) {
+            if (-not (Test-Path -LiteralPath $path)) { return $null }
+            try { return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json) }
+            catch { return [ordered]@{ parse_error = (Sanitize $_.Exception.Message) } }
+          }
+          function TailSafe([string]$path, [int]$lines) {
+            if (-not (Test-Path -LiteralPath $path)) { return '' }
+            return Sanitize ((Get-Content -LiteralPath $path -Tail $lines -ErrorAction SilentlyContinue) -join "`n")
+          }
+
+          $novel = Join-Path $env:DIAG_RUNTIME_DIR 'output\novel'
+          $meta = Join-Path $novel 'meta'
+          $progress = ReadJsonSafe (Join-Path $meta 'progress.json')
+          $pending = ReadJsonSafe (Join-Path $meta 'pending_commit.json')
+          $files = @()
+          if (Test-Path -LiteralPath $novel) {
+            $files = @(Get-ChildItem -LiteralPath $novel -File -Recurse -ErrorAction SilentlyContinue |
+              Sort-Object FullName |
+              ForEach-Object {
+                $rel = $_.FullName.Substring($novel.Length).TrimStart('\')
+                if ($rel -notmatch '(?i)(cookie|token|profile|config)') {
+                  [ordered]@{ path=$rel; bytes=$_.Length }
+                }
+              })
+          }
+          $sessions = @()
+          $sessionDir = Join-Path $meta 'sessions\agents'
+          if (Test-Path -LiteralPath $sessionDir) {
+            foreach ($sf in @(Get-ChildItem -LiteralPath $sessionDir -Filter '*.jsonl' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+              $txt = Get-Content -LiteralPath $sf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+              $tools = @('save_foundation','save_book','plan_chapter','draft_chapter','commit_chapter','save_review','save_arc_summary','save_volume_summary') | Where-Object { $txt -match [regex]::Escape($_) }
+              $sessions += [ordered]@{
+                name = $sf.Name
+                bytes = $sf.Length
+                observed_tools = @($tools)
+                tail = Sanitize (($txt -split "`r?`n" | Select-Object -Last 60) -join "`n")
+              }
+            }
+          }
+          $logs = @()
+          foreach ($root in @($env:DIAG_EVIDENCE_DIR, $novel)) {
+            if ($root -and (Test-Path -LiteralPath $root)) {
+              foreach ($lf in @(Get-ChildItem -LiteralPath $root -Include '*.log','*.out','*.err' -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+                $logs += [ordered]@{ name=$lf.Name; bytes=$lf.Length; tail=(TailSafe $lf.FullName 160) }
+              }
+            }
+          }
+          $diag = [ordered]@{
+            schema = 'ainovel-g05-w6c-restart-diagnostic/2'
+            product_sha = $env:PRODUCT_SHA
+            source_run_id = $env:SOURCE_RUN_ID
+            diagnostic_run_id = [string]$env:GITHUB_RUN_ID
+            smoke_failed = $failed
+            error = (Sanitize $failureMessage)
+            progress = $progress
+            pending_commit = $pending
+            files = $files
+            sessions = $sessions
+            logs = $logs
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $diagPath = Join-Path $env:DIAG_EVIDENCE_DIR 'g05-w6c-restart-diagnostic-v2.json'
+          $diag | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $diagPath -Encoding UTF8
+          Write-Host ('Diagnostic v2 captured; smoke_failed=' + $failed + '; error=' + (Sanitize $failureMessage))
+
+      - name: Upload sanitized restart diagnostic v2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g05-w6c-restart-diagnostic-v2-${{ env.PRODUCT_SHA }}
+          path: ${{ env.DIAG_EVIDENCE_DIR }}/g05-w6c-restart-diagnostic-v2.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup diagnostic runtime and restore config
+        if: always()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          foreach ($path in @($env:DIAG_RUNTIME_DIR, $env:DIAG_INPUT_DIR, $env:DIAG_EVIDENCE_DIR)) {
+            if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          if ($env:DIAG_CONFIG_HAD_ORIGINAL -eq 'True' -and (Test-Path -LiteralPath $env:DIAG_CONFIG_BACKUP)) {
+            Copy-Item -LiteralPath $env:DIAG_CONFIG_BACKUP -Destination $env:DIAG_CONFIG_PATH -Force
+            Remove-Item -LiteralPath $env:DIAG_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+          } elseif ($env:DIAG_CONFIG_PATH) {
+            Remove-Item -LiteralPath $env:DIAG_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+          }
