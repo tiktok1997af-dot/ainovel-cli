@@ -60,6 +60,58 @@ func TestRawToolCallReconstructsLongStringArgumentVerbatim(t *testing.T) {
 	}
 }
 
+func TestRawToolCallNormalizesDeclaredArgumentFromMetadataTopLevel(t *testing.T) {
+	content := "Chương 1 hoàn chỉnh."
+	raw := rawToolResponse(`{"name":"draft_chapter","arguments":{"mode":"write"},"raw_string_field":"content","chapter":1}`, content)
+	msg, err := parseResponseWithRawText("request", raw, []agentcore.ToolSpec{rawContentToolSpec()})
+	if err != nil {
+		t.Fatalf("parseResponseWithRawText: %v", err)
+	}
+	calls := msg.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "draft_chapter" {
+		t.Fatalf("unexpected tool calls: %+v", calls)
+	}
+	var args struct {
+		Chapter int    `json:"chapter"`
+		Content string `json:"content"`
+		Mode    string `json:"mode"`
+	}
+	if err := json.Unmarshal(calls[0].Args, &args); err != nil {
+		t.Fatalf("unmarshal normalized args: %v", err)
+	}
+	if args.Chapter != 1 || args.Mode != "write" || args.Content != content {
+		t.Fatalf("normalized args mismatch: %+v", args)
+	}
+}
+
+func TestRawToolCallTopLevelArgumentNormalizationRemainsFailClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+	}{
+		{
+			name:     "undeclared key",
+			metadata: `{"name":"draft_chapter","arguments":{"chapter":1,"mode":"write"},"raw_string_field":"content","chapters":1}`,
+		},
+		{
+			name:     "duplicate declared key",
+			metadata: `{"name":"draft_chapter","arguments":{"chapter":1,"mode":"write"},"raw_string_field":"content","chapter":2}`,
+		},
+		{
+			name:     "raw field outside raw region",
+			metadata: `{"name":"draft_chapter","arguments":{"chapter":1,"mode":"write"},"raw_string_field":"content","content":"shadow"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := rawToolResponse(tt.metadata, "x")
+			if _, err := parseResponseWithRawText("request", raw, []agentcore.ToolSpec{rawContentToolSpec()}); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("err = %v, want ErrProtocol", err)
+			}
+		})
+	}
+}
+
 func TestRawToolCallRejectsUnknownToolAndDuplicateRawField(t *testing.T) {
 	unknown := rawToolResponse(`{"name":"shell","arguments":{},"raw_string_field":"content"}`, "x")
 	if _, err := parseResponseWithRawText("request", unknown, []agentcore.ToolSpec{rawContentToolSpec()}); !errors.Is(err, ErrProtocol) {

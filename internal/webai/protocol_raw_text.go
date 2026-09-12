@@ -49,8 +49,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 
 	body, wrapped, err := responseBodyForExtensions(normalizedRaw)
 	if err != nil {
-		// A response that mentions a legacy wrapper must satisfy that wrapper
-		// exactly. Never fall back to DOM-body parsing for a partial wrapper.
 		return agentcore.Message{}, legacyErr
 	}
 	if body == "" {
@@ -65,10 +63,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return text, err
 	}
 
-	// Reuse the locked legacy JSON validator by supplying the envelope locally
-	// for the current bare-body path. A complete legacy wrapper already failed
-	// that same validator above, so returning its original error is equivalent and
-	// avoids accidentally normalizing a malformed legacy body a second time.
 	if strings.HasPrefix(body, "{") {
 		if wrapped {
 			return agentcore.Message{}, legacyErr
@@ -85,11 +79,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 	return agentcore.Message{}, legacyErr
 }
 
-// responseBodyForExtensions returns the body for TEXT/TOOL_CALL_RAW parsing.
-// If either legacy outer marker is present, the entire response must be one
-// valid complete legacy envelope. This keeps missing/stray/nested wrapper cases
-// strict while allowing old wrapped TEXT and TOOL_CALL_RAW browser sessions to
-// continue working.
 func responseBodyForExtensions(raw string) (body string, wrapped bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -140,11 +129,6 @@ func parseBareTextBody(body string) (agentcore.Message, bool, error) {
 	}, true, nil
 }
 
-// normalizeSingleRedundantResponseWrapper tolerates exactly one redundant
-// leading response wrapper sometimes echoed by a browser model. It is purposely
-// narrower than extractEnvelope: only an immediately nested envelope with no
-// other content is normalized. Ambiguous, embedded, repeated or commentary-
-// bearing marker layouts remain untouched and therefore fail the strict parser.
 func normalizeSingleRedundantResponseWrapper(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.HasPrefix(trimmed, responseStart) {
@@ -176,6 +160,108 @@ func normalizeSingleRedundantResponseWrapper(raw string) string {
 	return raw
 }
 
+func decodeRawToolCallMetadataStrict(metadataText string) (rawToolCallMetadata, error) {
+	var metadata rawToolCallMetadata
+	dec := json.NewDecoder(strings.NewReader(metadataText))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&metadata); err != nil {
+		return rawToolCallMetadata{}, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values in raw tool metadata")
+		}
+		return rawToolCallMetadata{}, err
+	}
+	return metadata, nil
+}
+
+// decodeRawToolCallMetadata keeps TOOL_CALL_RAW metadata fail-closed while
+// tolerating one observed Gemini shape drift: a normal tool-schema argument can
+// be emitted beside "arguments" instead of inside it. Recovery is deliberately
+// narrow. A misplaced key is accepted only when it is a declared property of
+// the selected tool, is not the raw string field, and does not duplicate an
+// argument already present. Every other unknown metadata key still fails.
+func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) (rawToolCallMetadata, error) {
+	metadata, strictErr := decodeRawToolCallMetadataStrict(metadataText)
+	if strictErr == nil {
+		return metadata, nil
+	}
+
+	var object map[string]json.RawMessage
+	dec := json.NewDecoder(strings.NewReader(metadataText))
+	if err := dec.Decode(&object); err != nil || object == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	var name string
+	rawName, ok := object["name"]
+	if !ok || json.Unmarshal(rawName, &name) != nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var field string
+	rawField, ok := object["raw_string_field"]
+	if !ok || json.Unmarshal(rawField, &field) != nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+	var arguments map[string]json.RawMessage
+	rawArguments, ok := object["arguments"]
+	if !ok || json.Unmarshal(rawArguments, &arguments) != nil || arguments == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	var properties map[string]any
+	for _, tool := range tools {
+		if tool.Name != name {
+			continue
+		}
+		parameters, valid := tool.Parameters.(map[string]any)
+		if !valid {
+			return rawToolCallMetadata{}, strictErr
+		}
+		rawProperties, exists := parameters["properties"]
+		if !exists {
+			return rawToolCallMetadata{}, strictErr
+		}
+		properties, valid = rawProperties.(map[string]any)
+		if !valid {
+			return rawToolCallMetadata{}, strictErr
+		}
+		break
+	}
+	if properties == nil {
+		return rawToolCallMetadata{}, strictErr
+	}
+
+	for key, value := range object {
+		switch key {
+		case "name", "arguments", "raw_string_field":
+			continue
+		}
+		if key == field {
+			return rawToolCallMetadata{}, fmt.Errorf("raw string field %q must not appear in metadata", field)
+		}
+		if _, declared := properties[key]; !declared {
+			return rawToolCallMetadata{}, strictErr
+		}
+		if _, duplicate := arguments[key]; duplicate {
+			return rawToolCallMetadata{}, fmt.Errorf("tool argument %q appears both inside and outside arguments", key)
+		}
+		arguments[key] = append(json.RawMessage(nil), value...)
+	}
+
+	return rawToolCallMetadata{
+		Name:           name,
+		Arguments:      arguments,
+		RawStringField: field,
+	}, nil
+}
+
 func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
 	if err := validateToolRegistry(tools); err != nil {
 		return agentcore.Message{}, err
@@ -205,8 +291,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	hasLegacyRawEnd := false
 	if valueEndRel := strings.Index(valueRegion, rawValueEnd); valueEndRel >= 0 {
 		hasLegacyRawEnd = true
-		// Backward compatibility with the old framed raw-value form. If the old
-		// end marker appears, it must still be one exact terminal delimiter.
 		if strings.Count(valueRegion, rawValueEnd) != 1 {
 			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value end marker"))
 		}
@@ -220,9 +304,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value marker"))
 	}
 	rawValue = trimOneProtocolLineBreak(rawValue, true)
-	// Only trim the trailing protocol newline when an explicit legacy end marker
-	// supplied it. In the DOM-delimited form the end of the assistant message is
-	// the value boundary, so prose whitespace belongs to the value.
 	if hasLegacyRawEnd {
 		rawValue = trimOneProtocolLineBreak(rawValue, false)
 	}
@@ -230,17 +311,8 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
 	}
 
-	var metadata rawToolCallMetadata
-	dec := json.NewDecoder(strings.NewReader(metadataText))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&metadata); err != nil {
-		return agentcore.Message{}, protocolError("decode raw tool call metadata", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple JSON values in raw tool metadata")
-		}
+	metadata, err := decodeRawToolCallMetadata(metadataText, tools)
+	if err != nil {
 		return agentcore.Message{}, protocolError("decode raw tool call metadata", err)
 	}
 
@@ -294,9 +366,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	}, nil
 }
 
-// trimOneProtocolLineBreak removes only the framing line break introduced
-// immediately after/before a protocol delimiter. It preserves all other prose
-// whitespace verbatim.
 func trimOneProtocolLineBreak(value string, leading bool) string {
 	if leading {
 		if strings.HasPrefix(value, "\r\n") {
