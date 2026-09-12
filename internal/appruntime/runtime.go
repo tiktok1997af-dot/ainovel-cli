@@ -51,6 +51,9 @@ func New(core *host.Host) (*Runtime, error) {
 		subscribers:    make(map[uint64]*desktopSubscription),
 	}
 	rt.run = newRunCoordinator(core, lanes)
+	if err := rt.run.recoverRestart(context.Background()); err != nil {
+		return nil, normalizeAppError(fmt.Errorf("recover multi-run runtime: %w", err))
+	}
 	rt.run.start(rt)
 	return rt, nil
 }
