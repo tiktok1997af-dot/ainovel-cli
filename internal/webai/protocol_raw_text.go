@@ -49,8 +49,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 
 	body, wrapped, err := responseBodyForExtensions(normalizedRaw)
 	if err != nil {
-		// A response that mentions a legacy wrapper must satisfy that wrapper
-		// exactly. Never fall back to DOM-body parsing for a partial wrapper.
 		return agentcore.Message{}, legacyErr
 	}
 	if body == "" {
@@ -65,10 +63,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 		return text, err
 	}
 
-	// Reuse the locked legacy JSON validator by supplying the envelope locally
-	// for the current bare-body path. A complete legacy wrapper already failed
-	// that same validator above, so returning its original error is equivalent and
-	// avoids accidentally normalizing a malformed legacy body a second time.
 	if strings.HasPrefix(body, "{") {
 		if wrapped {
 			return agentcore.Message{}, legacyErr
@@ -85,11 +79,6 @@ func parseResponseWithRawText(requestPrompt, raw string, tools []agentcore.ToolS
 	return agentcore.Message{}, legacyErr
 }
 
-// responseBodyForExtensions returns the body for TEXT/TOOL_CALL_RAW parsing.
-// If either legacy outer marker is present, the entire response must be one
-// valid complete legacy envelope. This keeps missing/stray/nested wrapper cases
-// strict while allowing old wrapped TEXT and TOOL_CALL_RAW browser sessions to
-// continue working.
 func responseBodyForExtensions(raw string) (body string, wrapped bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -140,11 +129,6 @@ func parseBareTextBody(body string) (agentcore.Message, bool, error) {
 	}, true, nil
 }
 
-// normalizeSingleRedundantResponseWrapper tolerates exactly one redundant
-// leading response wrapper sometimes echoed by a browser model. It is purposely
-// narrower than extractEnvelope: only an immediately nested envelope with no
-// other content is normalized. Ambiguous, embedded, repeated or commentary-
-// bearing marker layouts remain untouched and therefore fail the strict parser.
 func normalizeSingleRedundantResponseWrapper(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.HasPrefix(trimmed, responseStart) {
@@ -236,11 +220,14 @@ func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) 
 		if tool.Name != name {
 			continue
 		}
-		rawProperties, exists := tool.Parameters["properties"]
+		parameters, valid := tool.Parameters.(map[string]any)
+		if !valid {
+			return rawToolCallMetadata{}, strictErr
+		}
+		rawProperties, exists := parameters["properties"]
 		if !exists {
 			return rawToolCallMetadata{}, strictErr
 		}
-		var valid bool
 		properties, valid = rawProperties.(map[string]any)
 		if !valid {
 			return rawToolCallMetadata{}, strictErr
@@ -304,8 +291,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	hasLegacyRawEnd := false
 	if valueEndRel := strings.Index(valueRegion, rawValueEnd); valueEndRel >= 0 {
 		hasLegacyRawEnd = true
-		// Backward compatibility with the old framed raw-value form. If the old
-		// end marker appears, it must still be one exact terminal delimiter.
 		if strings.Count(valueRegion, rawValueEnd) != 1 {
 			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value end marker"))
 		}
@@ -319,9 +304,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("nested raw value marker"))
 	}
 	rawValue = trimOneProtocolLineBreak(rawValue, true)
-	// Only trim the trailing protocol newline when an explicit legacy end marker
-	// supplied it. In the DOM-delimited form the end of the assistant message is
-	// the value boundary, so prose whitespace belongs to the value.
 	if hasLegacyRawEnd {
 		rawValue = trimOneProtocolLineBreak(rawValue, false)
 	}
@@ -384,9 +366,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	}, nil
 }
 
-// trimOneProtocolLineBreak removes only the framing line break introduced
-// immediately after/before a protocol delimiter. It preserves all other prose
-// whitespace verbatim.
 func trimOneProtocolLineBreak(value string, leading bool) string {
 	if leading {
 		if strings.HasPrefix(value, "\r\n") {
