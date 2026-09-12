@@ -13,12 +13,12 @@ import (
 
 func TestG063DesktopReviewArtifactDigestMatchesStoreJSONEncoding(t *testing.T) {
 	review := &domain.ReviewEntry{
-		Chapter: 7,
-		Scope: "chapter",
-		Dimensions: []domain.DimensionScore{{Dimension: "consistency", Score: 88, Comment: "ok"}},
+		Chapter:        7,
+		Scope:          "chapter",
+		Dimensions:     []domain.DimensionScore{{Dimension: "consistency", Score: 88, Comment: "ok"}},
 		ContractStatus: "met",
-		Verdict: "accept",
-		Summary: "canonical",
+		Verdict:        "accept",
+		Summary:        "canonical",
 	}
 	got, err := desktopReviewArtifactDigest(review)
 	if err != nil {
