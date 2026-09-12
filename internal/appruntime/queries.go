@@ -49,6 +49,12 @@ func (r *Runtime) routeQuery(ctx context.Context, req QueryRequest) (json.RawMes
 		return r.queryKnowledgeWorld(route.Request.(KnowledgeWorldQuery))
 	case QueryKnowledgeTimeline:
 		return r.queryKnowledgeTimeline(route.Request.(KnowledgeTimelineQuery))
+	case QueryReviewCatalog:
+		return r.queryReviewCatalog()
+	case QueryReviewStatus:
+		return r.queryReviewStatus(route.Request.(ReviewStatusQuery))
+	case QueryReviewHistory:
+		return r.queryReviewHistory(route.Request.(ReviewHistoryQuery))
 	default:
 		return nil, ErrNotImplemented
 	}
@@ -194,6 +200,33 @@ func decodeQueryRoute(req QueryRequest) (queryRoute, error) {
 			return queryRoute{}, err
 		}
 		return queryRoute{Kind: req.Kind, Request: payload}, nil
+	case QueryReviewCatalog:
+		var payload ReviewCatalogQuery
+		if err := decodeQueryPayload(req.Payload, &payload); err != nil {
+			return queryRoute{}, err
+		}
+		return queryRoute{Kind: req.Kind, Request: payload}, nil
+	case QueryReviewStatus:
+		var payload ReviewStatusQuery
+		if err := decodeQueryPayload(req.Payload, &payload); err != nil {
+			return queryRoute{}, err
+		}
+		if err := validateReviewTarget(payload.Target); err != nil {
+			return queryRoute{}, err
+		}
+		return queryRoute{Kind: req.Kind, Request: payload}, nil
+	case QueryReviewHistory:
+		var payload ReviewHistoryQuery
+		if err := decodeQueryPayload(req.Payload, &payload); err != nil {
+			return queryRoute{}, err
+		}
+		if err := validateReviewTarget(payload.Target); err != nil {
+			return queryRoute{}, err
+		}
+		if err := validatePage(payload.PageQuery); err != nil {
+			return queryRoute{}, err
+		}
+		return queryRoute{Kind: req.Kind, Request: payload}, nil
 	default:
 		return queryRoute{}, invalidQuery("query kind is not supported")
 	}
@@ -227,6 +260,26 @@ func validateLimit(limit int) error {
 	}
 	if limit > MaxQueryPageSize {
 		return invalidQuery(fmt.Sprintf("limit exceeds maximum %d", MaxQueryPageSize))
+	}
+	return nil
+}
+
+func validateReviewTarget(target ReviewTargetDTO) error {
+	switch target.Scope {
+	case ReviewScopeChapter:
+		if target.Chapter <= 0 || target.Volume != 0 || target.Arc != 0 || target.ThroughChapter != 0 {
+			return invalidQuery("chapter review target is invalid")
+		}
+	case ReviewScopeArc:
+		if target.Chapter != 0 || target.Volume <= 0 || target.Arc <= 0 || target.ThroughChapter <= 0 {
+			return invalidQuery("arc review target is invalid")
+		}
+	case ReviewScopeGlobal:
+		if target.Chapter != 0 || target.Volume != 0 || target.Arc != 0 || target.ThroughChapter <= 0 {
+			return invalidQuery("global review target is invalid")
+		}
+	default:
+		return invalidQuery("review scope is not supported")
 	}
 	return nil
 }
