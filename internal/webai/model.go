@@ -160,6 +160,21 @@ func localToolRequired(messages []agentcore.Message, tools []agentcore.ToolSpec)
 	return false
 }
 
+func recoverRequiredLocalToolFromText(requestPrompt string, msg agentcore.Message, tools []agentcore.ToolSpec) (agentcore.Message, bool) {
+	if msg.StopReason == agentcore.StopReasonToolUse {
+		return msg, true
+	}
+	text := strings.TrimSpace(msg.TextContent())
+	if text == "" {
+		return agentcore.Message{}, false
+	}
+	recovered, err := parseResponseWithRawText(requestPrompt, text, tools)
+	if err != nil || recovered.StopReason != agentcore.StopReasonToolUse {
+		return agentcore.Message{}, false
+	}
+	return recovered, true
+}
+
 func invalidRawStringFieldProtocolError(err error) bool {
 	var webErr *Error
 	if !errors.As(err, &webErr) || webErr == nil {
@@ -219,6 +234,9 @@ func (m *Model) repairRequiredLocalTool(ctx context.Context, requestPrompt strin
 			if msg.StopReason == agentcore.StopReasonToolUse {
 				return &agentcore.LLMResponse{Message: msg}, nil
 			}
+			if recovered, ok := recoverRequiredLocalToolFromText(requestPrompt, msg, tools); ok {
+				return &agentcore.LLMResponse{Message: recovered}, nil
+			}
 			lastErr = protocolError(
 				"enforce required local tool call",
 				fmt.Errorf("repair attempt %d returned stop reason %q instead of a local tool call", attempt+1, msg.StopReason),
@@ -257,6 +275,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 	msg, parseErr := parseResponseWithRawText(prompt, raw, tools)
 	if parseErr == nil {
 		if mustUseLocalTool && msg.StopReason != agentcore.StopReasonToolUse {
+			if recovered, ok := recoverRequiredLocalToolFromText(prompt, msg, tools); ok {
+				return &agentcore.LLMResponse{Message: recovered}, nil
+			}
 			return m.repairRequiredLocalTool(ctx, prompt, tools)
 		}
 		return &agentcore.LLMResponse{Message: msg}, nil
@@ -283,6 +304,9 @@ func (m *Model) Generate(ctx context.Context, messages []agentcore.Message, tool
 		repaired, repairErr := parseResponseWithRawText(prompt, repairedRaw, tools)
 		if repairErr == nil {
 			if mustUseLocalTool && repaired.StopReason != agentcore.StopReasonToolUse {
+				if recovered, ok := recoverRequiredLocalToolFromText(prompt, repaired, tools); ok {
+					return &agentcore.LLMResponse{Message: recovered}, nil
+				}
 				return m.repairRequiredLocalTool(ctx, prompt, tools)
 			}
 			return &agentcore.LLMResponse{Message: repaired}, nil
