@@ -16,14 +16,14 @@ const (
 )
 
 const (
-	MaxWebAIModelIDBytes    = 128
-	MaxWebAIModelLabelBytes = 256
-	DualWebAILaneCapacity   = 1
-	DualWebAIConcurrency    = 2
-	DualWebLocalWorkers     = 2
-	DualWebMaxActiveJobs    = 4
-	DualWebCheckpointMin    = 5
-	DualWebCheckpointMax    = 10
+	MaxWebAIModelIDBytes     = 128
+	MaxWebAIModelLabelBytes  = 256
+	DualWebAILaneCapacity    = 1
+	DualWebAIConcurrency     = 2
+	DualWebLocalWorkers      = 2
+	DualWebMaxActiveJobs     = 4
+	DualWebCheckpointMin     = 5
+	DualWebCheckpointMax     = 10
 	DualWebCheckpointDefault = 10
 )
 
@@ -34,21 +34,21 @@ type WebAIModelOptionDTO struct {
 }
 
 type WebAIModelCatalogDTO struct {
-	Provider WebAIProvider        `json:"provider"`
+	Provider WebAIProvider         `json:"provider"`
 	Models   []WebAIModelOptionDTO `json:"models"`
-	Revision string               `json:"revision,omitempty"`
+	Revision string                `json:"revision,omitempty"`
 }
 
 type WebAIModelSelectionDTO struct {
-	Provider        WebAIProvider `json:"provider"`
-	RequestedModelID string       `json:"requested_model_id"`
-	RequestedLabel   string       `json:"requested_label,omitempty"`
-	ObservedModelID  string       `json:"observed_model_id,omitempty"`
-	CatalogRevision  string       `json:"catalog_revision,omitempty"`
-	Authenticated    bool         `json:"authenticated"`
-	ProviderReady    bool         `json:"provider_ready"`
-	ModelAvailable   bool         `json:"model_available"`
-	Verified         bool         `json:"verified"`
+	Provider         WebAIProvider `json:"provider"`
+	RequestedModelID string        `json:"requested_model_id"`
+	RequestedLabel   string        `json:"requested_label,omitempty"`
+	ObservedModelID  string        `json:"observed_model_id,omitempty"`
+	CatalogRevision  string        `json:"catalog_revision,omitempty"`
+	Authenticated    bool          `json:"authenticated"`
+	ProviderReady    bool          `json:"provider_ready"`
+	ModelAvailable   bool          `json:"model_available"`
+	Verified         bool          `json:"verified"`
 }
 
 type WebAIModelPreflightDTO struct {
@@ -58,36 +58,36 @@ type WebAIModelPreflightDTO struct {
 }
 
 type DualWebParallelConfigDTO struct {
-	Mode               string `json:"mode"`
-	StrictRole         bool   `json:"strict_role"`
-	LazyBrowserStart   bool   `json:"lazy_browser_start"`
-	PipelineEnabled    bool   `json:"pipeline_enabled"`
-	AutoReview         bool   `json:"auto_review"`
-	AutoQA             bool   `json:"auto_qa"`
-	AutoRepair         string `json:"auto_repair"`
-	CheckpointChapters int    `json:"checkpoint_chapters"`
-	GeminiLaneCapacity int    `json:"gemini_lane_capacity"`
-	ChatGPTLaneCapacity int   `json:"chatgpt_lane_capacity"`
-	AIConcurrency      int    `json:"ai_concurrency"`
-	LocalWorkers       int    `json:"local_workers"`
-	MaxActiveJobs      int    `json:"max_active_jobs"`
+	Mode                string `json:"mode"`
+	StrictRole          bool   `json:"strict_role"`
+	LazyBrowserStart    bool   `json:"lazy_browser_start"`
+	PipelineEnabled     bool   `json:"pipeline_enabled"`
+	AutoReview          bool   `json:"auto_review"`
+	AutoQA              bool   `json:"auto_qa"`
+	AutoRepair          string `json:"auto_repair"`
+	CheckpointChapters  int    `json:"checkpoint_chapters"`
+	GeminiLaneCapacity  int    `json:"gemini_lane_capacity"`
+	ChatGPTLaneCapacity int    `json:"chatgpt_lane_capacity"`
+	AIConcurrency       int    `json:"ai_concurrency"`
+	LocalWorkers        int    `json:"local_workers"`
+	MaxActiveJobs       int    `json:"max_active_jobs"`
 }
 
 func FrozenDualWebParallelDefaults() DualWebParallelConfigDTO {
 	return DualWebParallelConfigDTO{
-		Mode:                 "balanced",
-		StrictRole:           true,
-		LazyBrowserStart:     true,
-		PipelineEnabled:      true,
-		AutoReview:           true,
-		AutoQA:               true,
-		AutoRepair:           "bounded",
-		CheckpointChapters:   DualWebCheckpointDefault,
-		GeminiLaneCapacity:   DualWebAILaneCapacity,
-		ChatGPTLaneCapacity:  DualWebAILaneCapacity,
-		AIConcurrency:        DualWebAIConcurrency,
-		LocalWorkers:         DualWebLocalWorkers,
-		MaxActiveJobs:        DualWebMaxActiveJobs,
+		Mode:                "balanced",
+		StrictRole:          true,
+		LazyBrowserStart:    true,
+		PipelineEnabled:     true,
+		AutoReview:          true,
+		AutoQA:              true,
+		AutoRepair:          "bounded",
+		CheckpointChapters:  DualWebCheckpointDefault,
+		GeminiLaneCapacity:  DualWebAILaneCapacity,
+		ChatGPTLaneCapacity: DualWebAILaneCapacity,
+		AIConcurrency:       DualWebAIConcurrency,
+		LocalWorkers:        DualWebLocalWorkers,
+		MaxActiveJobs:       DualWebMaxActiveJobs,
 	}
 }
 
