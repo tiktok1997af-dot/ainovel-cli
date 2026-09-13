@@ -50,8 +50,16 @@ func TestCurrentReviewContractCatalogIsStable(t *testing.T) {
 	if !reflect.DeepEqual(got.QueryKinds, []QueryKind{QueryReviewCatalog, QueryReviewStatus, QueryReviewHistory}) {
 		t.Fatalf("query kinds = %v", got.QueryKinds)
 	}
-	if !reflect.DeepEqual(got.CommandKinds, []CommandKind{CommandReviewRun, CommandReviewRepair, CommandReviewRerun, CommandReviewPromoteOfficial}) {
-		t.Fatalf("command kinds = %v", got.CommandKinds)
+	if !reflect.DeepEqual(got.CommandKinds, []CommandKind{CommandReviewRun, CommandReviewRepair, CommandReviewRerun}) {
+		t.Fatalf("operational command kinds = %v", got.CommandKinds)
+	}
+	if isReviewCommandKind(CommandReviewPromoteOfficial) {
+		t.Fatal("review.promote_official must remain CLOSED for G06.4")
+	}
+	for _, kind := range got.CommandKinds {
+		if kind == CommandReviewPromoteOfficial {
+			t.Fatal("review.promote_official must not be advertised by G06.4 catalog")
+		}
 	}
 	if !reflect.DeepEqual(got.EventTypes, []string{EventTypeReviewState, EventTypeReviewGate, EventTypeReviewAction}) {
 		t.Fatalf("event types = %v", got.EventTypes)
@@ -114,13 +122,13 @@ func TestReviewProjectionDTOJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestReviewContractDoesNotAdvertiseOperationalRouting(t *testing.T) {
-	// G06.2 freezes vocabulary only. Operational query/command routing belongs
-	// to G06.3-G06.5 and therefore must not be added to the G03 supported-query
-	// discovery list just because the constants exist.
+func TestReviewQueriesRemainOutOfLegacySupportedQueryDiscovery(t *testing.T) {
+	// Review queries are routed explicitly by AppRuntime, but the older G03
+	// SupportedQueryKinds discovery surface remains a frozen project/knowledge
+	// list and must not be silently repurposed as a global capability registry.
 	for _, kind := range SupportedQueryKinds() {
 		if kind == QueryReviewCatalog || kind == QueryReviewStatus || kind == QueryReviewHistory {
-			t.Fatalf("review query %s advertised before operationalization", kind)
+			t.Fatalf("review query %s leaked into legacy G03 discovery list", kind)
 		}
 	}
 }
