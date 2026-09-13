@@ -19,32 +19,40 @@ func TestG064OperationalReviewCommandSet(t *testing.T) {
 	}
 }
 
-func TestSameReviewWorkIntentIgnoresRecoveryProgressOnly(t *testing.T) {
-	base := domain.ReviewRunWork{
-		Action:              domain.ReviewWorkRepair,
-		Target:              domain.ReviewWorkTarget{Scope: "chapter", Chapter: 7},
+func TestReviewCommandMatchesExistingIgnoresRecoveryProgress(t *testing.T) {
+	record := &domain.RunRegistryRecord{
+		RunID:  "review-run",
+		TaskID: domain.TaskID(CommandReviewRepair),
+		Source: domain.RunRecordSourceRegistry,
+		ReviewWork: &domain.ReviewRunWork{
+			Action:              domain.ReviewWorkRepair,
+			Target:              domain.ReviewWorkTarget{Scope: "chapter", Chapter: 7},
+			ExpectedFingerprint: "sha256:abc",
+			ExpectedRevisions: []domain.ReviewWorkRevision{{
+				Chapter:       7,
+				Revision:      2,
+				ContentSHA256: "abc",
+			}},
+			GateIDs:           []string{"consistency"},
+			Chapters:          []int{7},
+			RepairMode:        "rewrite",
+			Prepared:          true,
+			CompletedChapters: []int{7},
+			Executed:          true,
+		},
+	}
+	intent := reviewCommandIntent{
+		Target:              ReviewTargetDTO{Scope: ReviewScopeChapter, Chapter: 7},
 		ExpectedFingerprint: "sha256:abc",
-		ExpectedRevisions: []domain.ReviewWorkRevision{{
-			Chapter:       7,
-			Revision:      2,
-			ContentSHA256: "abc",
-		}},
-		GateIDs:    []string{"consistency"},
-		Chapters:   []int{7},
-		RepairMode: "rewrite",
+		GateIDs:             []ReviewGateID{ReviewGateConsistency},
+		Chapters:            []int{7},
 	}
-	progressed := base
-	progressed.Prepared = true
-	progressed.CompletedChapters = []int{7}
-	progressed.Executed = true
-	if !sameReviewWorkIntent(progressed, base) {
-		t.Fatal("recovery progress fields must not change idempotent command intent")
+	if !reviewCommandMatchesExisting(record, CommandReviewRepair, domain.TaskID(CommandReviewRepair), intent) {
+		t.Fatal("durable replay must match despite Prepared/Completed/Executed progress")
 	}
-
-	different := base
-	different.ExpectedFingerprint = "sha256:def"
-	if sameReviewWorkIntent(different, base) {
-		t.Fatal("different fingerprint must be different command intent")
+	intent.ExpectedFingerprint = "sha256:def"
+	if reviewCommandMatchesExisting(record, CommandReviewRepair, domain.TaskID(CommandReviewRepair), intent) {
+		t.Fatal("different fingerprint must not match existing durable command")
 	}
 }
 
