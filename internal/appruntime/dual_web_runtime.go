@@ -1,6 +1,7 @@
 package appruntime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -17,11 +18,11 @@ const (
 )
 
 type WebAIProviderRuntimeDTO struct {
-	Provider      WebAIProvider `json:"provider"`
-	LaneID        string        `json:"lane_id"`
-	Authenticated bool          `json:"authenticated"`
-	Ready         bool          `json:"ready"`
-	ActiveModelID string        `json:"active_model_id,omitempty"`
+	Provider      WebAIProvider        `json:"provider"`
+	LaneID        string               `json:"lane_id"`
+	Authenticated bool                 `json:"authenticated"`
+	Ready         bool                 `json:"ready"`
+	ActiveModelID string               `json:"active_model_id,omitempty"`
 	Catalog       WebAIModelCatalogDTO `json:"catalog"`
 }
 
@@ -261,7 +262,7 @@ func (r *dualWebProviderRuntime) dispatch(cmd CommandRequest) (CommandResult, er
 		return result, ErrNotImplemented
 	}
 	var payload WebAIModelSelectCommandPayload
-	if err := decodeCommandPayload(cmd.Payload, &payload); err != nil {
+	if err := decodeDualWebCommandPayload(cmd.Payload, &payload); err != nil {
 		return result, err
 	}
 	selection, err := r.selectModel(payload.Provider, payload.ModelID)
@@ -276,6 +277,21 @@ func (r *dualWebProviderRuntime) dispatch(cmd CommandRequest) (CommandResult, er
 	result.Status = "MODEL_SELECTED"
 	result.Data = data
 	return result, nil
+}
+
+func decodeDualWebCommandPayload(raw json.RawMessage, dst any) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fmt.Errorf("%w: web AI model selection payload is required", ErrInvalidCommand)
+	}
+	if !json.Valid(raw) {
+		return fmt.Errorf("%w: web AI model selection payload is invalid", ErrInvalidCommand)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return fmt.Errorf("%w: web AI model selection payload does not match contract", ErrInvalidCommand)
+	}
+	return nil
 }
 
 func providerSnapshotDTO(snapshot webAIProviderSnapshot) WebAIProviderRuntimeDTO {
