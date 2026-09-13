@@ -32,7 +32,8 @@ type Runtime struct {
 	subscribers      map[uint64]*desktopSubscription
 	nextSubscriberID atomic.Uint64
 
-	run *runCoordinator
+	run           *runCoordinator
+	reviewBackend *reviewAwareRunBackend
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -45,12 +46,14 @@ func New(core *host.Host) (*Runtime, error) {
 	if err != nil {
 		return nil, normalizeAppError(fmt.Errorf("initialize browser lane pool: %w", err))
 	}
+	reviewBackend := newReviewAwareRunBackend(core)
 	rt := &Runtime{
 		core:           core,
 		lifecycleState: lifecycleFromCore(core.Snapshot().RuntimeState),
 		subscribers:    make(map[uint64]*desktopSubscription),
+		reviewBackend:  reviewBackend,
 	}
-	rt.run = newRunCoordinator(core, lanes)
+	rt.run = newRunCoordinator(reviewBackend, lanes)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
 		return nil, normalizeAppError(fmt.Errorf("recover multi-run runtime: %w", err))
 	}
@@ -116,6 +119,8 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	switch {
 	case isRunCenterCommandKind(cmd.Kind):
 		out, err = r.dispatchRunControl(ctx, cmd)
+	case isReviewCommandKind(cmd.Kind):
+		out, err = r.dispatchReviewCommand(ctx, cmd)
 	case isLifecycleCommand(cmd.Kind):
 		if r.run != nil && r.run.hasActiveRun() {
 			out = result
@@ -198,6 +203,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
 		r.stopEventHub()
+		if r.reviewBackend != nil {
+			r.reviewBackend.close()
+		}
 		if r.run != nil {
 			r.run.close()
 		}
