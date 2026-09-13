@@ -35,6 +35,7 @@ type Runtime struct {
 	run           *runCoordinator
 	reviewBackend *reviewAwareRunBackend
 	coCreate      *coCreateRuntimeAdapter
+	dualWeb       *dualWebProviderRuntime
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -54,6 +55,7 @@ func New(core *host.Host) (*Runtime, error) {
 		subscribers:    make(map[uint64]*desktopSubscription),
 		reviewBackend:  reviewBackend,
 		coCreate:       newCoCreateRuntimeAdapter(core),
+		dualWeb:        newDualWebProviderRuntime(),
 	}
 	rt.run = newRunCoordinator(reviewBackend, lanes)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
@@ -91,6 +93,12 @@ func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, err
 	var err error
 	if req.Kind == QuerySettingsGet {
 		data, err = r.querySettingsGet(req)
+	} else if isDualWebQueryKind(req.Kind) {
+		if r.dualWeb == nil {
+			err = ErrRuntimeUnavailable
+		} else {
+			data, err = r.dualWeb.query(req)
+		}
 	} else if isRunCenterQueryKind(req.Kind) {
 		data, err = r.routeRunCenterQuery(ctx, req)
 	} else {
@@ -123,6 +131,13 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	switch {
 	case cmd.Kind == CommandSettingsUpdate:
 		out, err = r.dispatchSettingsUpdate(ctx, cmd)
+	case isDualWebCommandKind(cmd.Kind):
+		if r.dualWeb == nil {
+			out = result
+			err = ErrRuntimeUnavailable
+		} else {
+			out, err = r.dualWeb.dispatch(cmd)
+		}
 	case isCoCreateCommandKind(cmd.Kind):
 		out, err = r.dispatchCoCreate(ctx, cmd)
 	case isRunCenterCommandKind(cmd.Kind):
