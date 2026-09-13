@@ -96,21 +96,19 @@ func fullWorkspaceRuntime(t *testing.T) *workspaceRuntime {
 	}
 }
 
-func TestProjectNavigationPreservesG04ReadsAndAllowsG057RunCenter(t *testing.T) {
+func TestProjectNavigationPreservesReadsAndAllowsG066Review(t *testing.T) {
 	nav := PrimaryNavigation()
 	enabled := map[RouteID]bool{}
 	for _, item := range nav {
 		enabled[item.ID] = item.Enabled
 	}
-	for _, route := range []RouteID{RouteOverview, RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter} {
+	for _, route := range []RouteID{RouteOverview, RouteProject, RouteKnowledge, RouteCreative, RouteReview, RouteRunCenter} {
 		if !enabled[route] {
-			t.Fatalf("route %q must be enabled through G05.7: %+v", route, enabled)
+			t.Fatalf("route %q must be enabled through G06.6: %+v", route, enabled)
 		}
 	}
-	for _, route := range []RouteID{RouteReview, RouteSettings} {
-		if enabled[route] {
-			t.Fatalf("later route %q opened prematurely", route)
-		}
+	if enabled[RouteSettings] {
+		t.Fatal("Settings opened prematurely")
 	}
 }
 
