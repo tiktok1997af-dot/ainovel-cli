@@ -179,6 +179,7 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 		RouteKnowledge: true,
 		RouteReview:    true,
 		RouteRunCenter: true,
+		RouteSettings:  true,
 	}
 	seen := map[RouteID]bool{}
 	for _, item := range PrimaryNavigation() {
@@ -190,7 +191,7 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 		}
 		seen[item.ID] = true
 		if item.Enabled != enabled[item.ID] {
-			t.Fatalf("route %q enabled=%v, want %v through G06.6", item.ID, item.Enabled, enabled[item.ID])
+			t.Fatalf("route %q enabled=%v, want %v through G07", item.ID, item.Enabled, enabled[item.ID])
 		}
 	}
 
@@ -211,18 +212,15 @@ func TestG04FinalResponsiveNavigationAndAccessibilitySemantics(t *testing.T) {
 	if !shell.AcceptSnapshot("integration", testSnapshot(50, "Integrated")) {
 		t.Fatal("integration snapshot should be accepted")
 	}
-	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter, RouteReview} {
+	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter, RouteReview, RouteSettings} {
 		if !shell.SelectRoute(route) {
-			t.Fatalf("route %q should be selectable through G06.6", route)
+			t.Fatalf("route %q should be selectable through G07", route)
 		}
 		shell.Resize(759)
 		shell.Resize(1200)
 		if shell.SnapshotRevision != 50 || shell.Header.ProjectTitle != "Integrated" {
 			t.Fatalf("route/resize discarded authoritative projection: %+v", shell)
 		}
-	}
-	if shell.SelectRoute(RouteSettings) {
-		t.Fatal("Settings opened during G06.6")
 	}
 }
 
