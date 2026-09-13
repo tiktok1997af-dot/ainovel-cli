@@ -24,6 +24,7 @@ type Controller struct {
 	lifecycle lifecycleControlPlane
 	write     writeControlPlane
 	creative  CreativeWorkspaceState
+	cocreate  CoCreateWorkspaceState
 	review    ReviewWorkspaceState
 	runCenter RunCenterWorkspaceState
 	settings  SettingsWorkspaceState
@@ -34,6 +35,7 @@ func NewController(runtime RuntimeClient, width int) *Controller {
 		runtime:   runtime,
 		shell:     NewShell(width),
 		creative:  NewCreativeWorkspaceState(),
+		cocreate:  NewCoCreateWorkspaceState(),
 		review:    NewReviewWorkspaceState(),
 		runCenter: NewRunCenterWorkspaceState(),
 		settings:  NewSettingsWorkspaceState(),
