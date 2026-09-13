@@ -51,7 +51,7 @@ func (f *settingsWorkspaceRuntime) Dispatch(_ context.Context, req appruntime.Co
 		CommandID:       req.ID,
 		Accepted:        true,
 		Status:          "completed",
-		Data:            json.RawMessage(`{"saved":true,"fingerprint":"fp-next"}`),
+		Data:            json.RawMessage("{}"),
 	}, nil
 }
 
