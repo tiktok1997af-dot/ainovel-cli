@@ -12,6 +12,8 @@ const (
 	CommandReviewRun             CommandKind = "review.run"
 	CommandReviewRepair          CommandKind = "review.repair"
 	CommandReviewRerun           CommandKind = "review.rerun"
+	// Reserved G06.2 vocabulary only. It is intentionally absent from the
+	// operational G06.4 catalog/router and remains CLOSED until G06.5.
 	CommandReviewPromoteOfficial CommandKind = "review.promote_official"
 )
 
@@ -103,7 +105,6 @@ func CurrentReviewContractCatalog() ReviewContractCatalog {
 			CommandReviewRun,
 			CommandReviewRepair,
 			CommandReviewRerun,
-			CommandReviewPromoteOfficial,
 		},
 		EventTypes: []string{
 			EventTypeReviewState,
@@ -239,6 +240,8 @@ type ReviewRerunCommandPayload struct {
 	ExpectedFingerprint string          `json:"expected_fingerprint"`
 }
 
+// Reserved for G06.5; not operational in CurrentReviewContractCatalog and not
+// accepted by Runtime.Dispatch during G06.4.
 type ReviewPromoteOfficialCommandPayload struct {
 	Target              ReviewTargetDTO        `json:"target"`
 	ExpectedFingerprint string                 `json:"expected_fingerprint"`
