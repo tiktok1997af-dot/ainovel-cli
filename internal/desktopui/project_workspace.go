@@ -15,6 +15,7 @@ const (
 	ProjectTabChapters  ProjectTab = "chapters"
 	ProjectTabOutline   ProjectTab = "outline"
 	ProjectTabDocuments ProjectTab = "documents"
+	ProjectTabFolder    ProjectTab = "folder"
 )
 
 type workspaceQueryTicket struct {
@@ -50,9 +51,16 @@ func NewProjectWorkspaceState() ProjectWorkspaceState {
 	}
 }
 
+func (p *ProjectWorkspaceState) FolderView() FolderViewState {
+	if p == nil {
+		return NewFolderViewState()
+	}
+	return BuildFolderView(p.Documents, p.SelectedDocumentID)
+}
+
 func (p *ProjectWorkspaceState) SelectTab(tab ProjectTab) bool {
 	switch tab {
-	case ProjectTabOverview, ProjectTabChapters, ProjectTabOutline, ProjectTabDocuments:
+	case ProjectTabOverview, ProjectTabChapters, ProjectTabOutline, ProjectTabDocuments, ProjectTabFolder:
 		p.Tab = tab
 		return true
 	default:
