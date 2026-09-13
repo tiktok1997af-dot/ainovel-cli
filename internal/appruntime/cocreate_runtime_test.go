@@ -197,36 +197,218 @@ func TestG083CoCreateStillUsesG082TypedValidation(t *testing.T) {
 	}
 }
 
-func TestG084StageExecutionSlotsRemainClosed(t *testing.T) {
+func g085StageRuntime(t *testing.T) (*Runtime, *int, *int, *string) {
+	t.Helper()
+	core := &host.Host{}
+	beginCalls := 0
+	cancelCalls := 0
+	finishedDraft := ""
+	rt := &Runtime{
+		core: core,
+		coCreate: &coCreateRuntimeAdapter{
+			core: core,
+			stageBegin: func() bool {
+				beginCalls++
+				return true
+			},
+			stageTurn: func(_ context.Context, history []host.CoCreateMessage) (host.CoCreateReply, error) {
+				if len(history) != 1 || history[0].Role != "user" || history[0].Content != "Plan the next arc." {
+					t.Fatalf("stage Host history = %#v", history)
+				}
+				return host.CoCreateReply{
+					Message:     "Raise the cost before the next safe zone.",
+					Prompt:      "## Next arc\n- Raise the cost.",
+					Ready:       true,
+					Suggestions: []string{"Add a false safe zone."},
+					Raw:         "stage raw must stay internal",
+				}, nil
+			},
+			stageFinish: func(draft string) error {
+				finishedDraft = draft
+				return nil
+			},
+			stageCancel: func() {
+				cancelCalls++
+			},
+		},
+	}
+	return rt, &beginCalls, &cancelCalls, &finishedDraft
+}
+
+func TestG085StageBeginTurnFinishWrapExistingHostSeams(t *testing.T) {
+	rt, beginCalls, _, finishedDraft := g085StageRuntime(t)
+
+	begin, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:      "cmd-stage-begin",
+		Kind:    CommandCoCreateStageBegin,
+		Payload: json.RawMessage(`{}`),
+	})
+	if err != nil || !begin.Accepted {
+		t.Fatalf("stage begin: result=%+v err=%v", begin, err)
+	}
+	if *beginCalls != 1 || !rt.coCreate.stageActive {
+		t.Fatalf("stage begin state: calls=%d active=%v", *beginCalls, rt.coCreate.stageActive)
+	}
+	var beginDTO CoCreateStageStateResultDTO
+	if err := json.Unmarshal(begin.Data, &beginDTO); err != nil {
+		t.Fatal(err)
+	}
+	if beginDTO.Session.Mode != CoCreateModeStage || !beginDTO.Session.StageActive || beginDTO.Session.HistoryCount != 0 {
+		t.Fatalf("begin session = %+v", beginDTO.Session)
+	}
+
+	turn, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:   "cmd-stage-turn",
+		Kind: CommandCoCreateTurn,
+		Payload: json.RawMessage(`{
+			"mode":"stage",
+			"history":[{"role":"user","message":"Plan the next arc."}]
+		}`),
+	})
+	if err != nil || !turn.Accepted {
+		t.Fatalf("stage turn: result=%+v err=%v", turn, err)
+	}
+	var turnDTO CoCreateTurnResultDTO
+	if err := json.Unmarshal(turn.Data, &turnDTO); err != nil {
+		t.Fatal(err)
+	}
+	if turnDTO.Session.Mode != CoCreateModeStage || !turnDTO.Session.StageActive || turnDTO.Session.HistoryCount != 2 {
+		t.Fatalf("stage turn session = %+v", turnDTO.Session)
+	}
+	if turnDTO.Draft != "## Next arc\n- Raise the cost." || !turnDTO.Ready {
+		t.Fatalf("stage turn dto = %+v", turnDTO)
+	}
+	if strings.Contains(string(turn.Data), "stage raw must stay internal") {
+		t.Fatalf("raw stage Host/provider payload leaked: %s", turn.Data)
+	}
+
+	finish, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:      "cmd-stage-finish",
+		Kind:    CommandCoCreateStageFinish,
+		Payload: json.RawMessage(`{"draft":"## Next arc\n- Raise the cost."}`),
+	})
+	if err != nil || !finish.Accepted {
+		t.Fatalf("stage finish: result=%+v err=%v", finish, err)
+	}
+	if *finishedDraft != "## Next arc\n- Raise the cost." || rt.coCreate.stageActive {
+		t.Fatalf("stage finish state: draft=%q active=%v", *finishedDraft, rt.coCreate.stageActive)
+	}
+	var finishDTO CoCreateStageStateResultDTO
+	if err := json.Unmarshal(finish.Data, &finishDTO); err != nil {
+		t.Fatal(err)
+	}
+	if finishDTO.Session.StageActive || finishDTO.Session.Mode != CoCreateModeStage {
+		t.Fatalf("finish session = %+v", finishDTO.Session)
+	}
+}
+
+func TestG085StageCancelAndOrderingFailClosed(t *testing.T) {
+	rt, beginCalls, cancelCalls, _ := g085StageRuntime(t)
+
+	stageTurn := CommandRequest{
+		ID:   "cmd-stage-turn-before-begin",
+		Kind: CommandCoCreateTurn,
+		Payload: json.RawMessage(`{
+			"mode":"stage",
+			"history":[{"role":"user","message":"Plan the next arc."}]
+		}`),
+	}
+	if result, err := rt.Dispatch(context.Background(), stageTurn); err == nil || result.Accepted || !errors.Is(err, ErrCommandNotAllowed) {
+		t.Fatalf("stage turn before begin did not fail closed: result=%+v err=%v", result, err)
+	}
+
+	beginCmd := CommandRequest{ID: "cmd-stage-begin", Kind: CommandCoCreateStageBegin, Payload: json.RawMessage(`{}`)}
+	if _, err := rt.Dispatch(context.Background(), beginCmd); err != nil {
+		t.Fatalf("stage begin: %v", err)
+	}
+	if _, err := rt.Dispatch(context.Background(), beginCmd); err == nil || !errors.Is(err, ErrCommandNotAllowed) {
+		t.Fatalf("duplicate stage begin did not fail closed: %v", err)
+	}
+	if *beginCalls != 1 {
+		t.Fatalf("duplicate begin reached Host: %d", *beginCalls)
+	}
+
+	if result, err := rt.Dispatch(context.Background(), g083ColdStartCommand()); err == nil || result.Accepted || !errors.Is(err, ErrCommandNotAllowed) {
+		t.Fatalf("cold-start turn escaped active stage occupancy: result=%+v err=%v", result, err)
+	}
+
+	cancel, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:      "cmd-stage-cancel",
+		Kind:    CommandCoCreateStageCancel,
+		Payload: json.RawMessage(`{}`),
+	})
+	if err != nil || !cancel.Accepted {
+		t.Fatalf("stage cancel: result=%+v err=%v", cancel, err)
+	}
+	if *cancelCalls != 1 || rt.coCreate.stageActive {
+		t.Fatalf("stage cancel state: calls=%d active=%v", *cancelCalls, rt.coCreate.stageActive)
+	}
+	if _, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:      "cmd-stage-cancel-again",
+		Kind:    CommandCoCreateStageCancel,
+		Payload: json.RawMessage(`{}`),
+	}); err == nil || !errors.Is(err, ErrCommandNotAllowed) {
+		t.Fatalf("cancel without active stage did not fail closed: %v", err)
+	}
+}
+
+func TestG085StageHostFailuresFailClosedWithoutRawLeak(t *testing.T) {
+	hostErr := errors.New("stage web turn failed")
 	core := &host.Host{}
 	rt := &Runtime{
-		core:     core,
-		coCreate: newCoCreateRuntimeAdapter(core),
-	}
-
-	cases := []CommandRequest{
-		{
-			ID:   "cmd-stage-turn",
-			Kind: CommandCoCreateTurn,
-			Payload: json.RawMessage(`{
-				"mode":"stage",
-				"history":[{"role":"user","message":"Plan the next arc."}]
-			}`),
+		core: core,
+		coCreate: &coCreateRuntimeAdapter{
+			core:        core,
+			stageActive: true,
+			stageTurn: func(context.Context, []host.CoCreateMessage) (host.CoCreateReply, error) {
+				return host.CoCreateReply{}, hostErr
+			},
 		},
-		{ID: "cmd-stage-begin", Kind: CommandCoCreateStageBegin, Payload: json.RawMessage(`{}`)},
-		{ID: "cmd-stage-finish", Kind: CommandCoCreateStageFinish, Payload: json.RawMessage(`{"draft":"## Next arc\n- Raise the cost."}`)},
-		{ID: "cmd-stage-cancel", Kind: CommandCoCreateStageCancel, Payload: json.RawMessage(`{}`)},
 	}
+	result, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:   "cmd-stage-turn-fail",
+		Kind: CommandCoCreateTurn,
+		Payload: json.RawMessage(`{
+			"mode":"stage",
+			"history":[{"role":"user","message":"Plan the next arc."}]
+		}`),
+	})
+	if err == nil || result.Accepted {
+		t.Fatalf("failed stage Host turn was accepted: result=%+v err=%v", result, err)
+	}
+	if strings.Contains(err.Error(), hostErr.Error()) || strings.Contains(string(result.Data), hostErr.Error()) {
+		t.Fatalf("raw stage Host error leaked: result=%+v err=%v", result, err)
+	}
+	if !rt.coCreate.stageActive {
+		t.Fatal("stage turn failure must keep stage active for retry/cancel")
+	}
+}
 
-	for _, cmd := range cases {
-		t.Run(string(cmd.Kind), func(t *testing.T) {
-			result, err := rt.Dispatch(context.Background(), cmd)
-			if err == nil || !errors.Is(err, ErrNotImplemented) {
-				t.Fatalf("G08.5 execution opened early: result=%+v err=%v", result, err)
-			}
-			if result.Accepted {
-				t.Fatalf("G08.5 execution accepted early: %+v", result)
-			}
-		})
+func TestG085StageFinishFailureReconcilesTerminalOccupancy(t *testing.T) {
+	hostErr := errors.New("continue failed after stage occupancy cleared")
+	core := &host.Host{}
+	rt := &Runtime{
+		core: core,
+		coCreate: &coCreateRuntimeAdapter{
+			core:        core,
+			stageActive: true,
+			stageFinish: func(string) error {
+				return hostErr
+			},
+		},
+	}
+	result, err := rt.Dispatch(context.Background(), CommandRequest{
+		ID:      "cmd-stage-finish-fail",
+		Kind:    CommandCoCreateStageFinish,
+		Payload: json.RawMessage(`{"draft":"## Next arc\n- Keep pressure high."}`),
+	})
+	if err == nil || result.Accepted {
+		t.Fatalf("failed stage finish was accepted: result=%+v err=%v", result, err)
+	}
+	if rt.coCreate.stageActive {
+		t.Fatal("stage finish error must not leave stale AppRuntime stage occupancy")
+	}
+	if strings.Contains(err.Error(), hostErr.Error()) {
+		t.Fatalf("raw Host finish error leaked: %v", err)
 	}
 }

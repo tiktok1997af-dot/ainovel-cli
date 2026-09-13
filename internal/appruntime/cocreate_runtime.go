@@ -10,11 +10,16 @@ import (
 )
 
 // coCreateRuntimeAdapter is the single AppRuntime-to-Host seam for desktop
-// CoCreate. G08.4 opens only cold-start turn execution; stage execution remains
-// closed for G08.5.
+// CoCreate. G08.5 opens the existing Host stage begin/turn/finish/cancel seams
+// while keeping all browser/provider/session authority inside Host.
 type coCreateRuntimeAdapter struct {
 	core          *host.Host
 	coldStartTurn func(context.Context, []host.CoCreateMessage) (host.CoCreateReply, error)
+	stageBegin    func() bool
+	stageTurn     func(context.Context, []host.CoCreateMessage) (host.CoCreateReply, error)
+	stageFinish   func(string) error
+	stageCancel   func()
+	stageActive   bool
 }
 
 func newCoCreateRuntimeAdapter(core *host.Host) *coCreateRuntimeAdapter {
@@ -23,6 +28,12 @@ func newCoCreateRuntimeAdapter(core *host.Host) *coCreateRuntimeAdapter {
 		adapter.coldStartTurn = func(ctx context.Context, history []host.CoCreateMessage) (host.CoCreateReply, error) {
 			return core.CoCreateStream(ctx, history, nil)
 		}
+		adapter.stageBegin = core.PauseForCoCreate
+		adapter.stageTurn = func(ctx context.Context, history []host.CoCreateMessage) (host.CoCreateReply, error) {
+			return core.StageCoCreateStream(ctx, history, nil)
+		}
+		adapter.stageFinish = core.ResumeFromCoCreate
+		adapter.stageCancel = core.CancelCoCreate
 	}
 	return adapter
 }
@@ -81,18 +92,29 @@ func (a *coCreateRuntimeAdapter) dispatch(ctx context.Context, route coCreateCon
 		case CoCreateModeColdStart:
 			return a.dispatchColdStartTurn(ctx, payload, result)
 		case CoCreateModeStage:
-			return result, fmt.Errorf("%w: stage CoCreate execution opens in G08.5", ErrNotImplemented)
+			return a.dispatchStageTurn(ctx, payload, result)
 		default:
 			return result, fmt.Errorf("%w: invalid CoCreate mode", ErrInvalidCommand)
 		}
-	case CommandCoCreateStageBegin, CommandCoCreateStageFinish, CommandCoCreateStageCancel:
-		return result, fmt.Errorf("%w: stage CoCreate execution opens in G08.5", ErrNotImplemented)
+	case CommandCoCreateStageBegin:
+		return a.dispatchStageBegin(result)
+	case CommandCoCreateStageFinish:
+		payload, ok := route.Request.(CoCreateStageFinishCommandPayload)
+		if !ok {
+			return result, fmt.Errorf("%w: invalid stage finish route", ErrInvalidCommand)
+		}
+		return a.dispatchStageFinish(payload, result)
+	case CommandCoCreateStageCancel:
+		return a.dispatchStageCancel(result)
 	default:
 		return result, fmt.Errorf("%w: invalid CoCreate route", ErrInvalidCommand)
 	}
 }
 
 func (a *coCreateRuntimeAdapter) dispatchColdStartTurn(ctx context.Context, payload CoCreateTurnCommandPayload, result CommandResult) (CommandResult, error) {
+	if a.stageActive {
+		return result, fmt.Errorf("%w: stage CoCreate is active", ErrCommandNotAllowed)
+	}
 	if a.coldStartTurn == nil {
 		return result, ErrRuntimeUnavailable
 	}
@@ -102,11 +124,77 @@ func (a *coCreateRuntimeAdapter) dispatchColdStartTurn(ctx context.Context, payl
 		return result, fmt.Errorf("cold-start CoCreate turn: %w", err)
 	}
 
+	return projectCoCreateTurnResult(payload, reply, false, result)
+}
+
+func (a *coCreateRuntimeAdapter) dispatchStageBegin(result CommandResult) (CommandResult, error) {
+	if a.stageActive {
+		return result, fmt.Errorf("%w: stage CoCreate is already active", ErrCommandNotAllowed)
+	}
+	if a.stageBegin == nil {
+		return result, ErrRuntimeUnavailable
+	}
+	if !a.stageBegin() {
+		return result, fmt.Errorf("%w: Host rejected stage CoCreate begin", ErrCommandRejected)
+	}
+
+	a.stageActive = true
+	return projectCoCreateStageState(true, result)
+}
+
+func (a *coCreateRuntimeAdapter) dispatchStageTurn(ctx context.Context, payload CoCreateTurnCommandPayload, result CommandResult) (CommandResult, error) {
+	if !a.stageActive {
+		return result, fmt.Errorf("%w: stage CoCreate is not active", ErrCommandNotAllowed)
+	}
+	if a.stageTurn == nil {
+		return result, ErrRuntimeUnavailable
+	}
+
+	reply, err := a.stageTurn(ctx, coCreateHostHistory(payload.History))
+	if err != nil {
+		return result, fmt.Errorf("stage CoCreate turn: %w", err)
+	}
+	return projectCoCreateTurnResult(payload, reply, true, result)
+}
+
+func (a *coCreateRuntimeAdapter) dispatchStageFinish(payload CoCreateStageFinishCommandPayload, result CommandResult) (CommandResult, error) {
+	if !a.stageActive {
+		return result, fmt.Errorf("%w: stage CoCreate is not active", ErrCommandNotAllowed)
+	}
+	if a.stageFinish == nil {
+		return result, ErrRuntimeUnavailable
+	}
+
+	// Host.ResumeFromCoCreate clears Host occupancy before it calls Continue.
+	// Mirror that terminal transition after the Host call even on error so the
+	// AppRuntime presentation flag cannot claim a stage that Host already left.
+	err := a.stageFinish(payload.Draft)
+	a.stageActive = false
+	if err != nil {
+		return result, fmt.Errorf("finish stage CoCreate: %w", err)
+	}
+	return projectCoCreateStageState(false, result)
+}
+
+func (a *coCreateRuntimeAdapter) dispatchStageCancel(result CommandResult) (CommandResult, error) {
+	if !a.stageActive {
+		return result, fmt.Errorf("%w: stage CoCreate is not active", ErrCommandNotAllowed)
+	}
+	if a.stageCancel == nil {
+		return result, ErrRuntimeUnavailable
+	}
+
+	a.stageCancel()
+	a.stageActive = false
+	return projectCoCreateStageState(false, result)
+}
+
+func projectCoCreateTurnResult(payload CoCreateTurnCommandPayload, reply host.CoCreateReply, stageActive bool, result CommandResult) (CommandResult, error) {
 	dto := CoCreateTurnResultDTO{
 		Session: CoCreateSessionDTO{
-			Mode:         CoCreateModeColdStart,
+			Mode:         payload.Mode,
 			HistoryCount: len(payload.History) + 1,
-			StageActive:  false,
+			StageActive:  stageActive,
 		},
 		Message:     strings.TrimSpace(reply.Message),
 		Draft:       strings.TrimSpace(reply.Prompt),
@@ -120,6 +208,23 @@ func (a *coCreateRuntimeAdapter) dispatchColdStartTurn(ctx context.Context, payl
 	data, err := json.Marshal(dto)
 	if err != nil {
 		return result, fmt.Errorf("encode CoCreate turn result: %w", err)
+	}
+	result.Accepted = true
+	result.Data = data
+	return result, nil
+}
+
+func projectCoCreateStageState(active bool, result CommandResult) (CommandResult, error) {
+	dto := CoCreateStageStateResultDTO{
+		Session: CoCreateSessionDTO{
+			Mode:         CoCreateModeStage,
+			HistoryCount: 0,
+			StageActive:  active,
+		},
+	}
+	data, err := json.Marshal(dto)
+	if err != nil {
+		return result, fmt.Errorf("encode stage CoCreate state: %w", err)
 	}
 	result.Accepted = true
 	result.Data = data
