@@ -64,7 +64,7 @@ func (r *Runtime) dispatchReviewCommand(ctx context.Context, cmd CommandRequest)
 		return result, err
 	}
 	if record != nil {
-		if record.ReviewWork == nil || !reflect.DeepEqual(*record.ReviewWork, work) {
+		if record.ReviewWork == nil || !sameReviewWorkIntent(*record.ReviewWork, work) {
 			return result, fmt.Errorf("%w: command id already belongs to different run work", ErrCommandRejected)
 		}
 		result.Accepted = true
@@ -144,13 +144,17 @@ func (r *Runtime) prepareReviewWork(cmd CommandRequest) (domain.ReviewRunWork, R
 	if expected != "" && expected != status.Freshness.Fingerprint {
 		return domain.ReviewRunWork{}, target, fmt.Errorf("%w: review target fingerprint changed", ErrMutationPrecondition)
 	}
+	var baselineSeq int64
+	if snapshot.ReviewCheckpoint != nil {
+		baselineSeq = snapshot.ReviewCheckpoint.Seq
+	}
 
 	work := domain.ReviewRunWork{
 		Action:              string(cmd.Kind),
 		Target:              reviewWorkTarget(target),
 		ExpectedFingerprint: expected,
 		ExpectedRevisions:   reviewWorkRevisions(status.Freshness.Revisions),
-		BaselineReviewSeq:   latestSnapshotReviewSeq(snapshot),
+		BaselineReviewSeq:   baselineSeq,
 	}
 	if cmd.Kind == CommandReviewRepair {
 		mode, err := validateRepairSelection(status, gateIDs, chapters)
@@ -247,20 +251,22 @@ func reviewWorkRevisions(refs []ReviewRevisionRefDTO) []domain.ReviewWorkRevisio
 	return out
 }
 
-func latestSnapshotReviewSeq(snapshot interface{ GetReviewCheckpoint() *domain.Checkpoint }) int64 {
-	checkpoint := snapshot.GetReviewCheckpoint()
-	if checkpoint == nil {
-		return 0
-	}
-	return checkpoint.Seq
-}
-
 func reviewGateStrings(ids []ReviewGateID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, string(id))
 	}
 	return out
+}
+
+func sameReviewWorkIntent(existing, requested domain.ReviewRunWork) bool {
+	existing.Prepared = false
+	existing.CompletedChapters = nil
+	existing.Executed = false
+	requested.Prepared = false
+	requested.CompletedChapters = nil
+	requested.Executed = false
+	return reflect.DeepEqual(existing, requested)
 }
 
 func reviewCommandResult(target ReviewTargetDTO, kind CommandKind, runState string) ReviewCommandResultDTO {
