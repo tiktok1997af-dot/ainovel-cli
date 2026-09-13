@@ -50,16 +50,19 @@ func TestCurrentReviewContractCatalogIsStable(t *testing.T) {
 	if !reflect.DeepEqual(got.QueryKinds, []QueryKind{QueryReviewCatalog, QueryReviewStatus, QueryReviewHistory}) {
 		t.Fatalf("query kinds = %v", got.QueryKinds)
 	}
-	if !reflect.DeepEqual(got.CommandKinds, []CommandKind{CommandReviewRun, CommandReviewRepair, CommandReviewRerun}) {
+	if !reflect.DeepEqual(got.CommandKinds, []CommandKind{
+		CommandReviewRun,
+		CommandReviewRepair,
+		CommandReviewRerun,
+		CommandReviewPromoteOfficial,
+	}) {
 		t.Fatalf("operational command kinds = %v", got.CommandKinds)
 	}
+	// Promotion is operational in G06.5 but is deliberately not a managed
+	// browser/scheduler Review command. It has its own direct privileged mutation
+	// route in Runtime.Dispatch.
 	if isReviewCommandKind(CommandReviewPromoteOfficial) {
-		t.Fatal("review.promote_official must remain CLOSED for G06.4")
-	}
-	for _, kind := range got.CommandKinds {
-		if kind == CommandReviewPromoteOfficial {
-			t.Fatal("review.promote_official must not be advertised by G06.4 catalog")
-		}
+		t.Fatal("review.promote_official must not enter the G06.4 managed review-run router")
 	}
 	if !reflect.DeepEqual(got.EventTypes, []string{EventTypeReviewState, EventTypeReviewGate, EventTypeReviewAction}) {
 		t.Fatalf("event types = %v", got.EventTypes)
