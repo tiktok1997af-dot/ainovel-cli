@@ -135,11 +135,14 @@ func TestG084ColdStartHostFailureFailsClosed(t *testing.T) {
 	})
 
 	result, err := rt.Dispatch(context.Background(), g083ColdStartCommand())
-	if err == nil || !strings.Contains(err.Error(), hostErr.Error()) {
-		t.Fatalf("Host failure not propagated: result=%+v err=%v", result, err)
+	if err == nil {
+		t.Fatalf("Host failure was accepted: result=%+v", result)
 	}
 	if result.Accepted {
 		t.Fatalf("failed Host turn was accepted: %+v", result)
+	}
+	if strings.Contains(err.Error(), hostErr.Error()) || strings.Contains(string(result.Data), hostErr.Error()) {
+		t.Fatalf("raw Host error leaked across AppRuntime boundary: result=%+v err=%v", result, err)
 	}
 }
 
