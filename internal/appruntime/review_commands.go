@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -25,6 +24,13 @@ func isReviewCommandKind(kind CommandKind) bool {
 	}
 }
 
+type reviewCommandIntent struct {
+	Target              ReviewTargetDTO
+	ExpectedFingerprint string
+	GateIDs             []ReviewGateID
+	Chapters            []int
+}
+
 func (r *Runtime) dispatchReviewCommand(ctx context.Context, cmd CommandRequest) (CommandResult, error) {
 	r.commandMu.Lock()
 	defer r.commandMu.Unlock()
@@ -38,7 +44,7 @@ func (r *Runtime) dispatchReviewCommand(ctx context.Context, cmd CommandRequest)
 		return result, fmt.Errorf("%w: review commands derive the canonical story resource", ErrInvalidCommand)
 	}
 
-	work, target, err := r.prepareReviewWork(cmd)
+	intent, err := decodeReviewCommandIntent(cmd)
 	if err != nil {
 		return result, err
 	}
@@ -64,15 +70,22 @@ func (r *Runtime) dispatchReviewCommand(ctx context.Context, cmd CommandRequest)
 		return result, err
 	}
 	if record != nil {
-		if record.ReviewWork == nil || !sameReviewWorkIntent(*record.ReviewWork, work) {
+		if !reviewCommandMatchesExisting(record, cmd.Kind, taskID, intent) {
 			return result, fmt.Errorf("%w: command id already belongs to different run work", ErrCommandRejected)
 		}
+		// Durable command identity wins on replay. Do not recompute a fresh CAS
+		// against story state that the already-accepted repair/rerun may itself
+		// have changed.
 		result.Accepted = true
 		result.Status = record.State
-		result.Data, _ = json.Marshal(reviewCommandResult(target, cmd.Kind, record.State))
+		result.Data, _ = json.Marshal(reviewCommandResult(intent.Target, cmd.Kind, record.State))
 		return result, nil
 	}
 
+	work, err := r.prepareReviewWork(cmd.Kind, intent)
+	if err != nil {
+		return result, err
+	}
 	record = &domain.RunRegistryRecord{
 		RunID:      runID,
 		TaskID:     taskID,
@@ -90,59 +103,78 @@ func (r *Runtime) dispatchReviewCommand(ctx context.Context, cmd CommandRequest)
 	if latest, loadErr := r.run.backend.DesktopRunLoad(runID); loadErr == nil && latest != nil {
 		result.Status = latest.State
 	}
-	result.Data, _ = json.Marshal(reviewCommandResult(target, cmd.Kind, result.Status))
-	r.emitReviewAction(runID, taskID, target, cmd.Kind, result.Status, work.Chapters)
+	result.Data, _ = json.Marshal(reviewCommandResult(intent.Target, cmd.Kind, result.Status))
+	r.emitReviewAction(runID, taskID, intent.Target, cmd.Kind, result.Status, work.Chapters)
 	r.run.wake()
 	return result, nil
 }
 
-func (r *Runtime) prepareReviewWork(cmd CommandRequest) (domain.ReviewRunWork, ReviewTargetDTO, error) {
-	var target ReviewTargetDTO
-	var expected string
-	var gateIDs []ReviewGateID
-	var chapters []int
-
+func decodeReviewCommandIntent(cmd CommandRequest) (reviewCommandIntent, error) {
+	var intent reviewCommandIntent
 	switch cmd.Kind {
 	case CommandReviewRun:
 		var payload ReviewRunCommandPayload
 		if err := decodeReviewPayload(cmd.Payload, &payload); err != nil {
-			return domain.ReviewRunWork{}, target, err
+			return intent, err
 		}
-		target, expected = payload.Target, strings.TrimSpace(payload.ExpectedFingerprint)
+		intent.Target = payload.Target
+		intent.ExpectedFingerprint = strings.TrimSpace(payload.ExpectedFingerprint)
 	case CommandReviewRepair:
 		var payload ReviewRepairCommandPayload
 		if err := decodeReviewPayload(cmd.Payload, &payload); err != nil {
-			return domain.ReviewRunWork{}, target, err
+			return intent, err
 		}
-		target, expected = payload.Target, strings.TrimSpace(payload.ExpectedFingerprint)
-		gateIDs = slices.Clone(payload.GateIDs)
-		chapters = slices.Clone(payload.Chapters)
-		if expected == "" {
-			return domain.ReviewRunWork{}, target, fmt.Errorf("%w: review.repair requires expected_fingerprint", ErrInvalidCommand)
+		intent.Target = payload.Target
+		intent.ExpectedFingerprint = strings.TrimSpace(payload.ExpectedFingerprint)
+		intent.GateIDs = slices.Clone(payload.GateIDs)
+		intent.Chapters = slices.Clone(payload.Chapters)
+		if intent.ExpectedFingerprint == "" {
+			return intent, fmt.Errorf("%w: review.repair requires expected_fingerprint", ErrInvalidCommand)
 		}
 	case CommandReviewRerun:
 		var payload ReviewRerunCommandPayload
 		if err := decodeReviewPayload(cmd.Payload, &payload); err != nil {
-			return domain.ReviewRunWork{}, target, err
+			return intent, err
 		}
-		target, expected = payload.Target, strings.TrimSpace(payload.ExpectedFingerprint)
-		if expected == "" {
-			return domain.ReviewRunWork{}, target, fmt.Errorf("%w: review.rerun requires expected_fingerprint", ErrInvalidCommand)
+		intent.Target = payload.Target
+		intent.ExpectedFingerprint = strings.TrimSpace(payload.ExpectedFingerprint)
+		if intent.ExpectedFingerprint == "" {
+			return intent, fmt.Errorf("%w: review.rerun requires expected_fingerprint", ErrInvalidCommand)
 		}
 	default:
-		return domain.ReviewRunWork{}, target, fmt.Errorf("%w: %q", ErrInvalidCommand, cmd.Kind)
+		return intent, fmt.Errorf("%w: %q", ErrInvalidCommand, cmd.Kind)
 	}
+	if err := validateReviewTarget(intent.Target); err != nil {
+		return intent, fmt.Errorf("%w: invalid review target: %v", ErrInvalidCommand, err)
+	}
+	return intent, nil
+}
 
-	snapshot, err := r.core.DesktopReviewRead(hostReviewTarget(target))
-	if err != nil {
-		return domain.ReviewRunWork{}, target, err
+func reviewCommandMatchesExisting(record *domain.RunRegistryRecord, kind CommandKind, taskID domain.TaskID, intent reviewCommandIntent) bool {
+	if record == nil || record.ReviewWork == nil || record.TaskID != taskID {
+		return false
 	}
-	status, err := aggregateReviewStatus(target, snapshot)
-	if err != nil {
-		return domain.ReviewRunWork{}, target, err
+	work := record.ReviewWork
+	if work.Action != string(kind) || work.Target != reviewWorkTarget(intent.Target) || work.ExpectedFingerprint != intent.ExpectedFingerprint {
+		return false
 	}
-	if expected != "" && expected != status.Freshness.Fingerprint {
-		return domain.ReviewRunWork{}, target, fmt.Errorf("%w: review target fingerprint changed", ErrMutationPrecondition)
+	if kind == CommandReviewRepair {
+		return slices.Equal(work.GateIDs, reviewGateStrings(intent.GateIDs)) && slices.Equal(work.Chapters, intent.Chapters)
+	}
+	return len(work.GateIDs) == 0 && len(work.Chapters) == 0 && work.RepairMode == ""
+}
+
+func (r *Runtime) prepareReviewWork(kind CommandKind, intent reviewCommandIntent) (domain.ReviewRunWork, error) {
+	snapshot, err := r.core.DesktopReviewRead(hostReviewTarget(intent.Target))
+	if err != nil {
+		return domain.ReviewRunWork{}, err
+	}
+	status, err := aggregateReviewStatus(intent.Target, snapshot)
+	if err != nil {
+		return domain.ReviewRunWork{}, err
+	}
+	if intent.ExpectedFingerprint != "" && intent.ExpectedFingerprint != status.Freshness.Fingerprint {
+		return domain.ReviewRunWork{}, fmt.Errorf("%w: review target fingerprint changed", ErrMutationPrecondition)
 	}
 	var baselineSeq int64
 	if snapshot.ReviewCheckpoint != nil {
@@ -150,25 +182,25 @@ func (r *Runtime) prepareReviewWork(cmd CommandRequest) (domain.ReviewRunWork, R
 	}
 
 	work := domain.ReviewRunWork{
-		Action:              string(cmd.Kind),
-		Target:              reviewWorkTarget(target),
-		ExpectedFingerprint: expected,
+		Action:              string(kind),
+		Target:              reviewWorkTarget(intent.Target),
+		ExpectedFingerprint: intent.ExpectedFingerprint,
 		ExpectedRevisions:   reviewWorkRevisions(status.Freshness.Revisions),
 		BaselineReviewSeq:   baselineSeq,
 	}
-	if cmd.Kind == CommandReviewRepair {
-		mode, err := validateRepairSelection(status, gateIDs, chapters)
+	if kind == CommandReviewRepair {
+		mode, err := validateRepairSelection(status, intent.GateIDs, intent.Chapters)
 		if err != nil {
-			return domain.ReviewRunWork{}, target, err
+			return domain.ReviewRunWork{}, err
 		}
-		work.GateIDs = reviewGateStrings(gateIDs)
-		work.Chapters = chapters
+		work.GateIDs = reviewGateStrings(intent.GateIDs)
+		work.Chapters = slices.Clone(intent.Chapters)
 		work.RepairMode = mode
 	}
 	if err := work.Validate(); err != nil {
-		return domain.ReviewRunWork{}, target, fmt.Errorf("%w: %v", ErrInvalidCommand, err)
+		return domain.ReviewRunWork{}, fmt.Errorf("%w: %v", ErrInvalidCommand, err)
 	}
-	return work, target, nil
+	return work, nil
 }
 
 func decodeReviewPayload(raw json.RawMessage, dst any) error {
@@ -257,16 +289,6 @@ func reviewGateStrings(ids []ReviewGateID) []string {
 		out = append(out, string(id))
 	}
 	return out
-}
-
-func sameReviewWorkIntent(existing, requested domain.ReviewRunWork) bool {
-	existing.Prepared = false
-	existing.CompletedChapters = nil
-	existing.Executed = false
-	requested.Prepared = false
-	requested.CompletedChapters = nil
-	requested.Executed = false
-	return reflect.DeepEqual(existing, requested)
 }
 
 func reviewCommandResult(target ReviewTargetDTO, kind CommandKind, runState string) ReviewCommandResultDTO {
