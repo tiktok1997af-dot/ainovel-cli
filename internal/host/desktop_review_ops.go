@@ -86,23 +86,16 @@ func (h *Host) executeDesktopReviewEvaluation(ctx context.Context, runID domain.
 
 func (h *Host) executeDesktopReviewRepair(ctx context.Context, runID domain.RunID, work domain.ReviewRunWork, target DesktopReviewTarget) error {
 	if !work.Prepared {
-		progress, err := h.store.Progress.Load()
-		if err != nil {
+		if err := h.prepareDesktopRepairQueue(work); err != nil {
 			return err
 		}
-		if progress == nil {
-			return fmt.Errorf("review repair requires project progress")
-		}
-		if len(progress.PendingRewrites) != 0 {
-			return fmt.Errorf("review repair cannot replace existing pending rewrite queue %v", progress.PendingRewrites)
-		}
+		// Mark Prepared only after the canonical Progress queue is durable. If a
+		// crash occurs between those writes, prepareDesktopRepairQueue recognizes
+		// the exact existing bounded queue and is idempotent on restart.
 		if err := h.updateDesktopReviewWork(runID, func(current *domain.ReviewRunWork) error {
 			current.Prepared = true
 			return nil
 		}); err != nil {
-			return err
-		}
-		if _, err := h.store.Progress.ApplyReviewOutcome(repairFlow(work.RepairMode), work.Chapters, "desktop review repair"); err != nil {
 			return err
 		}
 		work.Prepared = true
@@ -167,6 +160,41 @@ func (h *Host) executeDesktopReviewRepair(ctx context.Context, runID domain.RunI
 	})
 }
 
+func (h *Host) prepareDesktopRepairQueue(work domain.ReviewRunWork) error {
+	progress, err := h.store.Progress.Load()
+	if err != nil {
+		return err
+	}
+	if progress == nil {
+		return fmt.Errorf("review repair requires project progress")
+	}
+	if len(progress.PendingRewrites) != 0 {
+		if !slices.Equal(progress.PendingRewrites, work.Chapters) {
+			return fmt.Errorf("review repair cannot replace existing pending rewrite queue %v", progress.PendingRewrites)
+		}
+		if progress.Flow == repairFlow(work.RepairMode) {
+			return nil
+		}
+		_, err = h.store.Progress.ApplyReviewOutcome(repairFlow(work.RepairMode), work.Chapters, "desktop review repair")
+		return err
+	}
+
+	if progress.Phase == domain.PhaseComplete {
+		// Reopen is the sole Store-owned legal complete->writing transition. Do
+		// not bypass it with a generic Flow update.
+		if err := h.store.Progress.Reopen(work.Chapters, "desktop review repair"); err != nil {
+			return err
+		}
+		if work.RepairMode == "polish" {
+			_, err = h.store.Progress.ApplyReviewOutcome(domain.FlowPolishing, work.Chapters, "desktop review repair")
+			return err
+		}
+		return nil
+	}
+	_, err = h.store.Progress.ApplyReviewOutcome(repairFlow(work.RepairMode), work.Chapters, "desktop review repair")
+	return err
+}
+
 func (h *Host) ensureDesktopRepairQueue(work domain.ReviewRunWork, completed map[int]struct{}) error {
 	progress, err := h.store.Progress.Load()
 	if err != nil {
@@ -186,7 +214,7 @@ func (h *Host) ensureDesktopRepairQueue(work domain.ReviewRunWork, completed map
 			return fmt.Errorf("pending rewrite chapter %d escaped bounded review repair set %v", pending, remaining)
 		}
 	}
-	if slices.Equal(progress.PendingRewrites, remaining) {
+	if slices.Equal(progress.PendingRewrites, remaining) && progress.Flow == repairFlow(work.RepairMode) {
 		return nil
 	}
 	_, err = h.store.Progress.ApplyReviewOutcome(repairFlow(work.RepairMode), remaining, "desktop review repair recovery")
