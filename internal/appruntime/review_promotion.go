@@ -62,11 +62,11 @@ func (r *Runtime) dispatchReviewPromotion(ctx context.Context, cmd CommandReques
 	}
 
 	data, err := json.Marshal(ReviewPromoteOfficialResultDTO{
-		Target:              payload.Target,
-		Revisions:           officialSelectionRefs(selection.Revisions),
-		ReviewFingerprint:   selection.ReviewFingerprint,
-		PromotedAt:          selection.PromotedAt,
-		AlreadyOfficial:     !changed,
+		Target:            payload.Target,
+		Revisions:         officialSelectionRefs(selection.Revisions),
+		ReviewFingerprint: selection.ReviewFingerprint,
+		PromotedAt:        selection.PromotedAt,
+		AlreadyOfficial:   !changed,
 	})
 	if err != nil {
 		return result, fmt.Errorf("marshal review promotion result: %w", err)
