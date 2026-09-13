@@ -9,9 +9,9 @@ const (
 )
 
 const (
-	CommandReviewRun             CommandKind = "review.run"
-	CommandReviewRepair          CommandKind = "review.repair"
-	CommandReviewRerun           CommandKind = "review.rerun"
+	CommandReviewRun    CommandKind = "review.run"
+	CommandReviewRepair CommandKind = "review.repair"
+	CommandReviewRerun  CommandKind = "review.rerun"
 	// Reserved G06.2 vocabulary only. It is intentionally absent from the
 	// operational G06.4 catalog/router and remains CLOSED until G06.5.
 	CommandReviewPromoteOfficial CommandKind = "review.promote_official"
