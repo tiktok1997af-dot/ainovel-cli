@@ -34,6 +34,7 @@ type Runtime struct {
 
 	run           *runCoordinator
 	reviewBackend *reviewAwareRunBackend
+	coCreate      *coCreateRuntimeAdapter
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -52,6 +53,7 @@ func New(core *host.Host) (*Runtime, error) {
 		lifecycleState: lifecycleFromCore(core.Snapshot().RuntimeState),
 		subscribers:    make(map[uint64]*desktopSubscription),
 		reviewBackend:  reviewBackend,
+		coCreate:       newCoCreateRuntimeAdapter(core),
 	}
 	rt.run = newRunCoordinator(reviewBackend, lanes)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
@@ -121,6 +123,8 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	switch {
 	case cmd.Kind == CommandSettingsUpdate:
 		out, err = r.dispatchSettingsUpdate(ctx, cmd)
+	case isCoCreateCommandKind(cmd.Kind):
+		out, err = r.dispatchCoCreate(ctx, cmd)
 	case isRunCenterCommandKind(cmd.Kind):
 		out, err = r.dispatchRunControl(ctx, cmd)
 	case cmd.Kind == CommandReviewPromoteOfficial:
