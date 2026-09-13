@@ -119,6 +119,13 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	switch {
 	case isRunCenterCommandKind(cmd.Kind):
 		out, err = r.dispatchRunControl(ctx, cmd)
+	case cmd.Kind == CommandReviewPromoteOfficial:
+		if r.run != nil && r.run.hasManagedWork() {
+			out = result
+			err = ErrMutationPrecondition
+		} else {
+			out, err = r.dispatchReviewPromotion(ctx, cmd)
+		}
 	case isReviewCommandKind(cmd.Kind):
 		out, err = r.dispatchReviewCommand(ctx, cmd)
 	case isLifecycleCommand(cmd.Kind):
