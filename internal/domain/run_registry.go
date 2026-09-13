@@ -21,8 +21,9 @@ const (
 )
 
 // RunRegistryRecord is the additive durable per-run fact stored by G05.3.
-// State and Status are intentionally opaque: G05.3 persists facts but does not
-// define scheduler ordering, priority policy, recovery transitions, locks or lanes.
+// G06.4 additively attaches ReviewWork only for the three operational Review
+// actions. Scheduler ordering, resource ownership and browser lanes remain G05
+// authorities; ReviewWork only tells the selected run what bounded work to do.
 type RunRegistryRecord struct {
 	Version     int             `json:"version"`
 	RunID       RunID           `json:"run_id"`
@@ -31,6 +32,7 @@ type RunRegistryRecord struct {
 	Status      string          `json:"status,omitempty"`
 	TaskID      TaskID          `json:"task_id,omitempty"`
 	LegacyPhase Phase           `json:"legacy_phase,omitempty"`
+	ReviewWork  *ReviewRunWork  `json:"review_work,omitempty"`
 	CreatedAt   time.Time       `json:"created_at,omitempty"`
 	UpdatedAt   time.Time       `json:"updated_at,omitempty"`
 	StartedAt   time.Time       `json:"started_at,omitempty"`
@@ -56,8 +58,16 @@ func (r RunRegistryRecord) Validate() error {
 		if r.RunID != LegacySingleRunID {
 			return fmt.Errorf("legacy projection must use run_id %q", LegacySingleRunID)
 		}
+		if r.ReviewWork != nil {
+			return fmt.Errorf("legacy projection must not carry review_work")
+		}
 	default:
 		return fmt.Errorf("unsupported run record source %q", r.Source)
+	}
+	if r.ReviewWork != nil {
+		if err := r.ReviewWork.Validate(); err != nil {
+			return fmt.Errorf("invalid review_work: %w", err)
+		}
 	}
 	if err := validateRunRecordText("state", r.State, 128, true); err != nil {
 		return err

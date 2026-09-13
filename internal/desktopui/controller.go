@@ -13,8 +13,8 @@ var (
 	ErrNoSubscription = errors.New("desktopui: event subscription is not open")
 )
 
-// Controller owns desktop presentation controllers. G05.7 adds Run Center as
-// an AppRuntime-only projection/control workspace; core packages remain hidden.
+// Controller owns desktop presentation controllers. Review and Run Center are
+// AppRuntime-only projection/control workspaces; core packages remain hidden.
 type Controller struct {
 	runtime   RuntimeClient
 	shell     *ShellState
@@ -23,6 +23,7 @@ type Controller struct {
 	lifecycle lifecycleControlPlane
 	write     writeControlPlane
 	creative  CreativeWorkspaceState
+	review    ReviewWorkspaceState
 	runCenter RunCenterWorkspaceState
 }
 
@@ -31,6 +32,7 @@ func NewController(runtime RuntimeClient, width int) *Controller {
 		runtime:   runtime,
 		shell:     NewShell(width),
 		creative:  NewCreativeWorkspaceState(),
+		review:    NewReviewWorkspaceState(),
 		runCenter: NewRunCenterWorkspaceState(),
 	}
 }
@@ -87,9 +89,9 @@ func (c *Controller) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// PumpEvent consumes exactly one projected AppRuntime event. RUN events refresh
-// Run Center only when that workspace is open; all reconciliation still flows
-// through fresh AppRuntime reads rather than GUI-owned state.
+// PumpEvent consumes exactly one projected AppRuntime event. Workspace state is
+// never mutated from event payloads: relevant events trigger fresh authoritative
+// AppRuntime reads for the currently open workspace.
 func (c *Controller) PumpEvent(ctx context.Context) error {
 	if c.sub == nil {
 		return ErrNoSubscription
@@ -106,6 +108,9 @@ func (c *Controller) PumpEvent(ctx context.Context) error {
 		}
 		if c.observeLifecycleEvent(event) {
 			return c.Refresh(ctx)
+		}
+		if c.shell.Route == RouteReview && shouldRefreshReviewFromEvent(event) {
+			return c.RefreshReview(ctx)
 		}
 		if event.Category == appruntime.RunEventCategory && c.shell.Route == RouteRunCenter {
 			return c.RefreshRunCenter(ctx)

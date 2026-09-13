@@ -30,15 +30,15 @@ type RouteItem struct {
 	Availability string
 }
 
-// PrimaryNavigation preserves the complete G01 navigation. G05.7 activates
-// Run Center while Review and Settings remain explicit successor placeholders.
+// PrimaryNavigation preserves the complete G01 navigation. G06.6 activates
+// Review while Settings remains an explicit successor placeholder.
 func PrimaryNavigation() []RouteItem {
 	return []RouteItem{
 		{ID: RouteOverview, Label: "Tổng quan", Enabled: true, Availability: "G04.3"},
 		{ID: RouteProject, Label: "Dự án", Enabled: true, Availability: "G04.4"},
 		{ID: RouteCreative, Label: "Sáng tác", Enabled: true, Availability: "G04.7"},
 		{ID: RouteKnowledge, Label: "Tri thức", Enabled: true, Availability: "G04.5"},
-		{ID: RouteReview, Label: "Review", Enabled: false, Availability: "later gate"},
+		{ID: RouteReview, Label: "Review", Enabled: true, Availability: "G06.6"},
 		{ID: RouteRunCenter, Label: "Run Center", Enabled: true, Availability: "G05.7"},
 		{ID: RouteSettings, Label: "Cài đặt", Enabled: false, Availability: "later gate"},
 	}

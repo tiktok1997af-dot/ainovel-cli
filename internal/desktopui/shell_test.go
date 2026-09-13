@@ -37,9 +37,9 @@ func TestPrimaryNavigationReservesG01Destinations(t *testing.T) {
 		if items[i].ID != route {
 			t.Fatalf("navigation[%d] = %q, want %q", i, items[i].ID, route)
 		}
-		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteCreative || route == RouteKnowledge || route == RouteRunCenter
+		shouldEnable := route == RouteOverview || route == RouteProject || route == RouteCreative || route == RouteKnowledge || route == RouteReview || route == RouteRunCenter
 		if items[i].Enabled != shouldEnable {
-			t.Fatalf("%s enabled = %v, want %v through G05.7", route, items[i].Enabled, shouldEnable)
+			t.Fatalf("%s enabled = %v, want %v through G06.6", route, items[i].Enabled, shouldEnable)
 		}
 	}
 }
@@ -122,23 +122,21 @@ func TestResizeDoesNotDiscardAuthoritativeProjection(t *testing.T) {
 	}
 }
 
-func TestG04RoutesRemainEnabledAndG057RunCenterOpensWithoutLaterRoutes(t *testing.T) {
+func TestG066ReviewAndEarlierRoutesOpenWhileSettingsStaysClosed(t *testing.T) {
 	shell := NewShell(1440)
-	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter} {
+	for _, route := range []RouteID{RouteProject, RouteKnowledge, RouteCreative, RouteRunCenter, RouteReview} {
 		if !shell.SelectRoute(route) {
-			t.Fatalf("route %q should be enabled through G05.7", route)
+			t.Fatalf("route %q should be enabled through G06.6", route)
 		}
 	}
-	if shell.Route != RouteRunCenter {
-		t.Fatalf("route = %q, want run_center", shell.Route)
+	if shell.Route != RouteReview {
+		t.Fatalf("route = %q, want review", shell.Route)
 	}
-	for _, route := range []RouteID{RouteReview, RouteSettings} {
-		if shell.SelectRoute(route) {
-			t.Fatalf("later route %q opened prematurely", route)
-		}
+	if shell.SelectRoute(RouteSettings) {
+		t.Fatal("Settings opened prematurely")
 	}
-	if shell.Route != RouteRunCenter {
-		t.Fatalf("disabled later route changed selection to %q", shell.Route)
+	if shell.Route != RouteReview {
+		t.Fatalf("disabled Settings changed selection to %q", shell.Route)
 	}
 }
 
