@@ -168,8 +168,8 @@ func TestG082CoCreateFiniteBoundsFailClosed(t *testing.T) {
 	}
 
 	if err := validateCoCreateTurnResult(CoCreateTurnResultDTO{
-		Session: CoCreateSessionDTO{Mode: CoCreateModeStage, HistoryCount: 3, StageActive: true},
-		Message: "reply",
+		Session:     CoCreateSessionDTO{Mode: CoCreateModeStage, HistoryCount: 3, StageActive: true},
+		Message:     "reply",
 		Suggestions: []string{"a", "b", "c", "d"},
 	}); err == nil {
 		t.Fatal("oversized suggestion set accepted")
@@ -178,10 +178,10 @@ func TestG082CoCreateFiniteBoundsFailClosed(t *testing.T) {
 
 func TestG082CoCreateResultDTOIsSanitizedAndBounded(t *testing.T) {
 	result := CoCreateTurnResultDTO{
-		Session: CoCreateSessionDTO{Mode: CoCreateModeStage, HistoryCount: 3, StageActive: true},
-		Message: "Keep the next arc focused on the sealed bridge.",
-		Draft:   "## Next arc\n- Sealed bridge",
-		Ready:   true,
+		Session:     CoCreateSessionDTO{Mode: CoCreateModeStage, HistoryCount: 3, StageActive: true},
+		Message:     "Keep the next arc focused on the sealed bridge.",
+		Draft:       "## Next arc\n- Sealed bridge",
+		Ready:       true,
 		Suggestions: []string{"Raise the cost", "Bring back the witness"},
 	}
 	if err := validateCoCreateTurnResult(result); err != nil {
