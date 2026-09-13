@@ -87,7 +87,9 @@ func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, err
 	}
 	var data json.RawMessage
 	var err error
-	if isRunCenterQueryKind(req.Kind) {
+	if req.Kind == QuerySettingsGet {
+		data, err = r.querySettingsGet(req)
+	} else if isRunCenterQueryKind(req.Kind) {
 		data, err = r.routeRunCenterQuery(ctx, req)
 	} else {
 		data, err = r.routeQuery(ctx, req)
@@ -117,6 +119,8 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	var out CommandResult
 	var err error
 	switch {
+	case cmd.Kind == CommandSettingsUpdate:
+		out, err = r.dispatchSettingsUpdate(ctx, cmd)
 	case isRunCenterCommandKind(cmd.Kind):
 		out, err = r.dispatchRunControl(ctx, cmd)
 	case cmd.Kind == CommandReviewPromoteOfficial:
