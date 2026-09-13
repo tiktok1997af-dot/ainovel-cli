@@ -13,8 +13,9 @@ var (
 	ErrNoSubscription = errors.New("desktopui: event subscription is not open")
 )
 
-// Controller owns desktop presentation controllers. Review and Run Center are
-// AppRuntime-only projection/control workspaces; core packages remain hidden.
+// Controller owns desktop presentation controllers. Review, Run Center, and
+// Settings are AppRuntime-only projection/control workspaces; core packages
+// remain hidden.
 type Controller struct {
 	runtime   RuntimeClient
 	shell     *ShellState
@@ -25,6 +26,7 @@ type Controller struct {
 	creative  CreativeWorkspaceState
 	review    ReviewWorkspaceState
 	runCenter RunCenterWorkspaceState
+	settings  SettingsWorkspaceState
 }
 
 func NewController(runtime RuntimeClient, width int) *Controller {
@@ -34,6 +36,7 @@ func NewController(runtime RuntimeClient, width int) *Controller {
 		creative:  NewCreativeWorkspaceState(),
 		review:    NewReviewWorkspaceState(),
 		runCenter: NewRunCenterWorkspaceState(),
+		settings:  NewSettingsWorkspaceState(),
 	}
 }
 
