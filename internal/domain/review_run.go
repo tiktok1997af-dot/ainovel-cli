@@ -40,19 +40,43 @@ func (t ReviewWorkTarget) Validate() error {
 	return nil
 }
 
+type ReviewWorkRevision struct {
+	Chapter       int    `json:"chapter"`
+	Revision      int    `json:"revision"`
+	ContentSHA256 string `json:"content_sha256"`
+}
+
+func (r ReviewWorkRevision) Validate() error {
+	if r.Chapter <= 0 || r.Revision <= 0 {
+		return fmt.Errorf("review work revision requires positive chapter and revision")
+	}
+	if strings.TrimSpace(r.ContentSHA256) == "" {
+		return fmt.Errorf("review work revision requires content_sha256")
+	}
+	if err := validateRunRecordText("content_sha256", r.ContentSHA256, 128, true); err != nil {
+		return err
+	}
+	return nil
+}
+
 // ReviewRunWork is the minimal durable payload needed for the G06.4 scheduler
 // to restart one bounded Review action after a process crash. Prepared,
 // CompletedChapters and Executed are orchestration progress facts, not story facts.
+// ExpectedRevisions and BaselineReviewSeq close the cross-file crash window:
+// recovery can prove that a chapter/review already committed before the process
+// died even when the final run-metadata update did not happen.
 type ReviewRunWork struct {
-	Action              string           `json:"action"`
-	Target              ReviewWorkTarget `json:"target"`
-	ExpectedFingerprint string           `json:"expected_fingerprint,omitempty"`
-	GateIDs             []string         `json:"gate_ids,omitempty"`
-	Chapters            []int            `json:"chapters,omitempty"`
-	RepairMode          string           `json:"repair_mode,omitempty"` // rewrite / polish
-	Prepared            bool             `json:"prepared,omitempty"`
-	CompletedChapters   []int            `json:"completed_chapters,omitempty"`
-	Executed            bool             `json:"executed,omitempty"`
+	Action              string               `json:"action"`
+	Target              ReviewWorkTarget     `json:"target"`
+	ExpectedFingerprint string               `json:"expected_fingerprint,omitempty"`
+	ExpectedRevisions   []ReviewWorkRevision `json:"expected_revisions,omitempty"`
+	BaselineReviewSeq   int64                `json:"baseline_review_seq,omitempty"`
+	GateIDs             []string             `json:"gate_ids,omitempty"`
+	Chapters            []int                `json:"chapters,omitempty"`
+	RepairMode          string               `json:"repair_mode,omitempty"` // rewrite / polish
+	Prepared            bool                 `json:"prepared,omitempty"`
+	CompletedChapters   []int                `json:"completed_chapters,omitempty"`
+	Executed            bool                 `json:"executed,omitempty"`
 }
 
 func (w ReviewRunWork) Validate() error {
@@ -63,6 +87,19 @@ func (w ReviewRunWork) Validate() error {
 		if err := validateRunRecordText("expected_fingerprint", w.ExpectedFingerprint, 256, true); err != nil {
 			return err
 		}
+	}
+	if w.BaselineReviewSeq < 0 {
+		return fmt.Errorf("baseline_review_seq must be >= 0")
+	}
+	seenRevisions := make(map[int]struct{}, len(w.ExpectedRevisions))
+	for _, revision := range w.ExpectedRevisions {
+		if err := revision.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seenRevisions[revision.Chapter]; exists {
+			return fmt.Errorf("duplicate expected revision chapter %d", revision.Chapter)
+		}
+		seenRevisions[revision.Chapter] = struct{}{}
 	}
 
 	switch w.Action {
@@ -96,6 +133,9 @@ func (w ReviewRunWork) Validate() error {
 				return fmt.Errorf("duplicate review.repair chapter %d", chapter)
 			}
 			seenChapters[chapter] = struct{}{}
+			if _, exists := seenRevisions[chapter]; !exists {
+				return fmt.Errorf("review.repair chapter %d has no expected revision", chapter)
+			}
 		}
 		seenCompleted := make(map[int]struct{}, len(w.CompletedChapters))
 		for _, chapter := range w.CompletedChapters {
