@@ -21,10 +21,24 @@ func TestSettingsUpdatePayloadRequiresCASAndRejectsUnknownFields(t *testing.T) {
 	if _, err := decodeSettingsUpdatePayload(valid); err != nil {
 		t.Fatalf("valid payload rejected: %v", err)
 	}
-	if _, err := decodeSettingsUpdatePayload([]byte(`{"values":{"notify_enabled":true}}`)); !errors.Is(err, ErrInvalidCommand) {
+	missingCAS, err := json.Marshal(map[string]any{
+		"values": map[string]any{"notify_enabled": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeSettingsUpdatePayload(missingCAS); !errors.Is(err, ErrInvalidCommand) {
 		t.Fatalf("missing fingerprint error=%v", err)
 	}
-	if _, err := decodeSettingsUpdatePayload([]byte(`{"expected_fingerprint":"abc","values":{"notify_enabled":true},"provider":"api"}`)); !errors.Is(err, ErrInvalidCommand) {
+	unknownField, err := json.Marshal(map[string]any{
+		"expected_fingerprint": "abc",
+		"values":               map[string]any{"notify_enabled": true},
+		"provider":             "api",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeSettingsUpdatePayload(unknownField); !errors.Is(err, ErrInvalidCommand) {
 		t.Fatalf("unknown provider field error=%v", err)
 	}
 }
