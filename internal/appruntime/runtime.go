@@ -71,6 +71,7 @@ func New(core *host.Host) (*Runtime, error) {
 		return nil, normalizeAppError(fmt.Errorf("initialize browser lane pool: %w", err))
 	}
 	reviewBackend := newReviewAwareRunBackend(core)
+	admissionBackend := newD07AdmissionRunBackend(reviewBackend)
 	rt := &Runtime{
 		core:           core,
 		lifecycleState: lifecycleFromCore(core.Snapshot().RuntimeState),
@@ -83,8 +84,13 @@ func New(core *host.Host) (*Runtime, error) {
 	if err := rt.syncChatGPTProviderSnapshot(); err != nil {
 		return nil, normalizeAppError(fmt.Errorf("initialize ChatGPT Web lane projection: %w", err))
 	}
-	rt.run = newRunCoordinator(reviewBackend, lanes)
+	// Run Center remains the sole scheduler. Its backend is wrapped only at the
+	// Resume/release seam so every production AI execution must pass through the
+	// D04 dual-provider admission authority after Run Center already owns the
+	// canonical story resource.
+	rt.run = newRunCoordinator(admissionBackend, lanes)
 	rt.parallel = newDualWebParallelAuthority(newResilientDualWebLaneAuthority(rt), reviewBackend, policy.Config.Mode)
+	admissionBackend.bindParallel(rt.parallel)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
 		return nil, normalizeAppError(fmt.Errorf("recover multi-run runtime: %w", err))
 	}
