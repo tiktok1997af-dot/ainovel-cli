@@ -111,9 +111,10 @@ func TestD03ChatGPTLaneIsLazyIsolatedAndSingleTurn(t *testing.T) {
 
 func TestD03ChatGPTLaneFailsClosedWhenActiveModelCannotBeObserved(t *testing.T) {
 	lane := NewChatGPTLane(ChatGPTLaneConfig{
-		BrowserPath: fakeBrowserExecutable(t),
-		ProfileDir:  filepath.Join(t.TempDir(), "chatgpt-profile"),
-		Launcher:    &fakeBrowserLauncher{},
+		BrowserPath:          fakeBrowserExecutable(t),
+		ProfileDir:           filepath.Join(t.TempDir(), "chatgpt-profile"),
+		Launcher:             &fakeBrowserLauncher{},
+		RequireObservedModel: true,
 		Probe: fixedReadinessProbe{result: ReadinessResult{
 			State: SessionReady,
 		}},
@@ -131,6 +132,38 @@ func TestD03ChatGPTLaneFailsClosedWhenActiveModelCannotBeObserved(t *testing.T) 
 	if err := lane.BeginTurn(); err == nil {
 		t.Fatal("turn admitted without verified ChatGPT model observation")
 	}
+}
+
+func TestD08ChatGPTLaneUsesProviderDefaultWhenAuthenticatedUIHidesModel(t *testing.T) {
+	lane := NewChatGPTLane(ChatGPTLaneConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  filepath.Join(t.TempDir(), "chatgpt-profile"),
+		Launcher:    &fakeBrowserLauncher{},
+		Probe: fixedReadinessProbe{result: ReadinessResult{
+			State:  SessionReady,
+			Reason: "authenticated ChatGPT composer ready",
+		}},
+		evaluatorFactory: chatGPTModelEvaluatorFactory(`{"active_label":"","models":[]}`),
+	})
+
+	snap, err := lane.Start(context.Background())
+	defer lane.Stop()
+	if err != nil {
+		t.Fatalf("provider-default Start: %v", err)
+	}
+	if !snap.Authenticated || !snap.Ready || snap.State != SessionReady {
+		t.Fatalf("provider-default lane snapshot = %+v", snap)
+	}
+	if snap.Catalog.ActiveModelID != chatGPTProviderDefaultModelID || snap.Catalog.Revision != chatGPTProviderDefaultCatalogRev {
+		t.Fatalf("provider-default catalog = %+v", snap.Catalog)
+	}
+	if len(snap.Catalog.Models) != 1 || !snap.Catalog.Models[0].Available || snap.Catalog.Models[0].Label != chatGPTProviderDefaultModelLabel {
+		t.Fatalf("provider-default models = %+v", snap.Catalog.Models)
+	}
+	if err := lane.BeginTurn(); err != nil {
+		t.Fatalf("provider-default BeginTurn: %v", err)
+	}
+	lane.EndTurn()
 }
 
 func TestD03ChatGPTLaneDefaultProfileIsProviderSpecific(t *testing.T) {
