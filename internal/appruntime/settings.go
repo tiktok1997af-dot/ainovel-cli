@@ -38,15 +38,17 @@ func (r *Runtime) dispatchSettingsUpdate(ctx context.Context, cmd CommandRequest
 		return result, err
 	}
 	state, err := r.core.DesktopSettingsSave(payload.ExpectedFingerprint, host.DesktopSettingsUpdate{
-		BrowserPath:     payload.Values.BrowserPath,
-		ProfileName:     payload.Values.ProfileName,
-		StartURL:        payload.Values.StartURL,
-		Language:        payload.Values.Language,
-		ReasoningEffort: payload.Values.ReasoningEffort,
-		Style:           payload.Values.Style,
-		ContextWindow:   payload.Values.ContextWindow,
-		NotifyEnabled:   payload.Values.NotifyEnabled,
-		NotifyEvents:    append([]string(nil), payload.Values.NotifyEvents...),
+		BrowserPath:        payload.Values.BrowserPath,
+		ProfileName:        payload.Values.ProfileName,
+		StartURL:           payload.Values.StartURL,
+		Language:           payload.Values.Language,
+		ReasoningEffort:    payload.Values.ReasoningEffort,
+		Style:              payload.Values.Style,
+		ContextWindow:      payload.Values.ContextWindow,
+		PipelineMode:       payload.Values.PipelineMode,
+		CheckpointChapters: payload.Values.CheckpointChapters,
+		NotifyEnabled:      payload.Values.NotifyEnabled,
+		NotifyEvents:       append([]string(nil), payload.Values.NotifyEvents...),
 	})
 	if err != nil {
 		if errors.Is(err, host.ErrDesktopSettingsStale) {
@@ -86,10 +88,11 @@ func settingsDTOFromHost(state host.DesktopSettingsSnapshot) SettingsGetResultDT
 		Identity: SettingsIdentityDTO{WebEnabled: state.WebEnabled, WebSite: state.WebSite},
 		Values: settingsValuesDTOFromHost(state.Values.BrowserPath, state.Values.ProfileName, state.Values.StartURL,
 			state.Values.Language, state.Values.ReasoningEffort, state.Values.Style, state.Values.ContextWindow,
-			state.Values.NotifyEnabled, state.Values.NotifyEvents),
+			state.Values.PipelineMode, state.Values.CheckpointChapters, state.Values.NotifyEnabled, state.Values.NotifyEvents),
 		Runtime: SettingsRuntimeDTO{Values: settingsValuesDTOFromHost(state.Runtime.BrowserPath, state.Runtime.ProfileName,
 			state.Runtime.StartURL, state.Runtime.Language, state.Runtime.ReasoningEffort, state.Runtime.Style,
-			state.Runtime.ContextWindow, state.Runtime.NotifyEnabled, state.Runtime.NotifyEvents)},
+			state.Runtime.ContextWindow, state.Runtime.PipelineMode, state.Runtime.CheckpointChapters,
+			state.Runtime.NotifyEnabled, state.Runtime.NotifyEvents)},
 		ConfigScope:     state.TargetScope,
 		ConfigPathClass: state.TargetPathClass,
 		Fingerprint:     state.Fingerprint,
@@ -98,16 +101,18 @@ func settingsDTOFromHost(state host.DesktopSettingsSnapshot) SettingsGetResultDT
 	}
 }
 
-func settingsValuesDTOFromHost(browserPath, profileName, startURL, language, reasoningEffort, style string, contextWindow int, notifyEnabled bool, notifyEvents []string) SettingsValuesDTO {
+func settingsValuesDTOFromHost(browserPath, profileName, startURL, language, reasoningEffort, style string, contextWindow int, pipelineMode string, checkpointChapters int, notifyEnabled bool, notifyEvents []string) SettingsValuesDTO {
 	return SettingsValuesDTO{
-		BrowserPath:     browserPath,
-		ProfileName:     profileName,
-		StartURL:        startURL,
-		Language:        language,
-		ReasoningEffort: reasoningEffort,
-		Style:           style,
-		ContextWindow:   contextWindow,
-		NotifyEnabled:   notifyEnabled,
-		NotifyEvents:    append([]string(nil), notifyEvents...),
+		BrowserPath:        browserPath,
+		ProfileName:        profileName,
+		StartURL:           startURL,
+		Language:           language,
+		ReasoningEffort:    reasoningEffort,
+		Style:              style,
+		ContextWindow:      contextWindow,
+		PipelineMode:       pipelineMode,
+		CheckpointChapters: checkpointChapters,
+		NotifyEnabled:      notifyEnabled,
+		NotifyEvents:       append([]string(nil), notifyEvents...),
 	}
 }
