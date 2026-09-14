@@ -12,8 +12,8 @@ func TestCompletionErrorAcceptsOnlyPersistedCompleteState(t *testing.T) {
 	t.Parallel()
 
 	if err := completionError(host.UISnapshot{
-		RuntimeState:  "completed",
-		Phase:         string(domain.PhaseComplete),
+		RuntimeState:   "completed",
+		Phase:          string(domain.PhaseComplete),
 		CurrentChapter: 1,
 		CompletedCount: 1,
 		TotalChapters:  1,
@@ -44,8 +44,8 @@ func TestCompletionErrorRejectsPhaseCompleteWithoutCompletedLifecycle(t *testing
 	t.Parallel()
 
 	err := completionError(host.UISnapshot{
-		RuntimeState:  "idle",
-		Phase:         string(domain.PhaseComplete),
+		RuntimeState:   "idle",
+		Phase:          string(domain.PhaseComplete),
 		CurrentChapter: 1,
 		CompletedCount: 1,
 		TotalChapters:  1,
