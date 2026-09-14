@@ -284,17 +284,25 @@ $outputRoot = Join-Path $RuntimeDir 'output\novel'
 $progressPath = Join-Path $outputRoot 'meta\progress.json'
 if (-not (Test-Path -LiteralPath $progressPath)) { Fail 'progress.json missing after packaged run' }
 $progress = Get-Content -LiteralPath $progressPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$completed = @($progress.completed_chapters | ForEach-Object { [int]$_ })
+$progressFields = @{}
+foreach ($name in @('completed_chapters', 'phase', 'current_chapter', 'in_progress_chapter', 'total_chapters')) {
+    $property = $progress.PSObject.Properties[$name]
+    $progressFields[$name] = if ($null -eq $property) { $null } else { $property.Value }
+}
+$completed = @()
+if ($null -ne $progressFields['completed_chapters']) {
+    $completed = @($progressFields['completed_chapters'] | ForEach-Object { [int]$_ })
+}
 $chapters = @(Get-ChildItem -LiteralPath (Join-Path $outputRoot 'chapters') -Filter '*.md' -File -ErrorAction SilentlyContinue)
 $providerEvidence = Read-SessionProviderEvidence (Join-Path $outputRoot 'meta\sessions\agents')
 
 $boundaryDiagnostic = [ordered]@{
     schema = 'ainovel-d08-boundary-diagnostic/1'
     git_sha = $ExpectedGitSha
-    phase = [string]$progress.phase
-    current_chapter = [int]$progress.current_chapter
-    in_progress_chapter = [int]$progress.in_progress_chapter
-    total_chapters = [int]$progress.total_chapters
+    phase = [string]$progressFields['phase']
+    current_chapter = if ($null -eq $progressFields['current_chapter']) { 0 } else { [int]$progressFields['current_chapter'] }
+    in_progress_chapter = if ($null -eq $progressFields['in_progress_chapter']) { 0 } else { [int]$progressFields['in_progress_chapter'] }
+    total_chapters = if ($null -eq $progressFields['total_chapters']) { 0 } else { [int]$progressFields['total_chapters'] }
     completed_chapters = $completed
     chapter_file_count = [int]$chapters.Count
     architect_session_files = [int]$providerEvidence.architect_files
