@@ -2,22 +2,33 @@ package appruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
+// DesktopStartCommandPayload is the D05 desktop START envelope. The embedded
+// G02 StartCommandPayload remains unchanged; D05 adds only the Web provider
+// selection needed by the fail-closed model gate.
+type DesktopStartCommandPayload struct {
+	StartCommandPayload
+	Provider WebAIProvider `json:"provider"`
+}
+
 // enforceDesktopStartModelGate is the D05 authority boundary for the global
-// desktop START command. The selected Web provider is carried in
-// CommandRequest.Resource so the existing v1 START payload remains unchanged.
-// Missing, unknown, unauthenticated, unready, or unverified providers fail
-// closed before the legacy engine can be resumed.
+// desktop START command. Missing, unknown, unauthenticated, unready, or
+// unverified providers fail closed before the legacy engine can be resumed.
 func (r *Runtime) enforceDesktopStartModelGate(ctx context.Context, cmd CommandRequest) error {
 	if cmd.Kind != CommandStart {
 		return nil
 	}
-	provider := WebAIProvider(strings.TrimSpace(cmd.Resource))
+	payload := DesktopStartCommandPayload{}
+	if len(cmd.Payload) == 0 || json.Unmarshal(cmd.Payload, &payload) != nil {
+		return fmt.Errorf("%w: START requires a valid Gemini or ChatGPT selection", ErrMutationPrecondition)
+	}
+	provider := payload.Provider
 	if err := provider.Validate(); err != nil {
 		return fmt.Errorf("%w: START requires an explicit Gemini or ChatGPT selection", ErrMutationPrecondition)
 	}
