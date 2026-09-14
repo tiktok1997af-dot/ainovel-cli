@@ -40,7 +40,13 @@ func TestBrowserLaunchArgsNormalLoginContainsNoDevToolsOrAutomation(t *testing.T
 			t.Fatalf("normal login args contain forbidden %q: %v", forbidden, args)
 		}
 	}
-	for _, want := range []string{"--user-data-dir=profile", "--hide-crash-restore-bubble"} {
+	for _, want := range []string{
+		"--user-data-dir=profile",
+		"--hide-crash-restore-bubble",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-background-mode",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("normal login args missing %q: %v", want, args)
 		}
