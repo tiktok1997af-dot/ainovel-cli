@@ -70,8 +70,8 @@ func (c *Controller) ExecuteSelectedStart(ctx context.Context) (appruntime.Comma
 	provider := c.model.Selected
 	if err := provider.Validate(); err != nil {
 		return appruntime.CommandResult{}, lifecycleAppError(
-			appruntime.ErrorCodeMutationPrecondition,
-			appruntime.ErrorCategoryValidation,
+			appruntime.ErrorCodePreconditionConflict,
+			appruntime.ErrorCategoryConflict,
 			"Select Gemini or ChatGPT before starting.",
 			false,
 		)
