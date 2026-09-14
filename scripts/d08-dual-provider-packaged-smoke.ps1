@@ -200,7 +200,17 @@ foreach ($path in @($stdoutPath, $stderrPath, (Join-Path $outputRoot 'headless.l
 if ($runtimeText -notmatch 'default=web/gemini-web' -or $runtimeText -notmatch 'specialist=chatgpt-web/chatgpt-web') {
     Fail 'strict-role model graph was not projected by packaged runtime'
 }
-$forbidden = @('OPENAI_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','OPENROUTER_API_KEY','api.openai.com','api.anthropic.com','openrouter.ai/api','generativelanguage.googleapis.com','localhost:11434')
+$forbidden = @(
+    ('OPENAI_' + 'API_KEY'),
+    ('ANTHROPIC_' + 'API_KEY'),
+    ('GEMINI_' + 'API_KEY'),
+    ('OPENROUTER_' + 'API_KEY'),
+    ('api.' + 'openai.com'),
+    ('api.' + 'anthropic.com'),
+    ('openrouter.' + 'ai/api'),
+    ('generativelanguage.' + 'googleapis.com'),
+    ('localhost:' + '11434')
+)
 foreach ($marker in $forbidden) {
     if ($runtimeText.IndexOf($marker, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Fail "forbidden API/runtime marker observed: $marker" }
 }
