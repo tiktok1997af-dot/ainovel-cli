@@ -323,6 +323,7 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     .replace(/\u00a0/g, ' ')
     .replace(/[\u200b\ufeff]/g, '')
     .trim();
+  const stripLineBreaks = (value) => String(value || '').replace(/\n/g, '');
   const lineBreakCount = (value) => (String(value || '').match(/\n/g) || []).length;
   const readCandidates = (composer) => {
     if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
@@ -357,7 +358,9 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     focused:false
   };
   const candidates = readCandidates(composer).map(normalize);
-  const matched = candidates.find((value) => value === expected) || '';
+  const exactMatched = candidates.find((value) => value === expected) || '';
+  const lineBreakMatched = exactMatched ? '' : (candidates.find((value) => stripLineBreaks(value) === stripLineBreaks(expected)) || '');
+  const matched = exactMatched || lineBreakMatched;
   const diagnostic = matched || candidates.reduce((best, value) => {
     if (best === '') return value;
     return Math.abs(value.length - expected.length) < Math.abs(best.length - expected.length) ? value : best;
@@ -369,7 +372,8 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
   const composerLength = actual.length;
   const composerLineBreaks = lineBreakCount(actual);
   const expectedLineBreaks = lineBreakCount(expected);
-  if (actual !== expected) return {
+  const lineBreakEquivalent = actual !== expected && stripLineBreaks(actual) === stripLineBreaks(expected);
+  if (actual !== expected && !lineBreakEquivalent) return {
     ok:false,
     reason:'composer text mismatch',
     composer_length:composerLength,
