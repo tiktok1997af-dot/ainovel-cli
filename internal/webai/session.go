@@ -50,12 +50,22 @@ func NewSessionManager(cfg SessionConfig) *SessionManager {
 		launcher = ExecBrowserLauncher{}
 	}
 	site := strings.ToLower(strings.TrimSpace(cfg.Site))
-	if strings.TrimSpace(cfg.StartURL) == "" && (site == "gemini" || site == "gemini-web") {
-		cfg.StartURL = "https://gemini.google.com/app"
+	if strings.TrimSpace(cfg.StartURL) == "" {
+		switch site {
+		case "gemini", "gemini-web":
+			cfg.StartURL = "https://gemini.google.com/app"
+		case "chatgpt", "chatgpt-web":
+			cfg.StartURL = "https://chatgpt.com/"
+		}
 	}
 	probe := cfg.Probe
-	if probe == nil && (site == "gemini" || site == "gemini-web") {
-		probe = NewGeminiDevToolsReadinessProbe()
+	if probe == nil {
+		switch site {
+		case "gemini", "gemini-web":
+			probe = NewGeminiDevToolsReadinessProbe()
+		case "chatgpt", "chatgpt-web":
+			probe = NewChatGPTDevToolsReadinessProbe()
+		}
 	}
 	now := time.Now()
 	return &SessionManager{
