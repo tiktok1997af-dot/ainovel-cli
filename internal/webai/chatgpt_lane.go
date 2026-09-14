@@ -13,6 +13,11 @@ const (
 	ChatGPTWebSite            = "chatgpt-web"
 	ChatGPTWebLaneID          = "chatgpt-web"
 	DefaultChatGPTProfileName = "ainovel-chatgpt-web"
+
+	chatGPTProviderDefaultModelID       = "provider-default"
+	chatGPTProviderDefaultModelLabel    = "ChatGPT provider default"
+	chatGPTProviderDefaultCatalogRev    = "provider-default/chatgpt-web/v1"
+	chatGPTActiveModelNotObservableText = "chatgpt active model is not observable"
 )
 
 type ChatGPTLaneConfig struct {
@@ -23,6 +28,12 @@ type ChatGPTLaneConfig struct {
 	Launcher    BrowserLauncher
 	Probe       ReadinessProbe
 	Session     *SessionManager
+
+	// RequireObservedModel keeps model-specific routing fail-closed. The current
+	// D08 specialist graph requests only the ChatGPT provider default, so its zero
+	// value permits a deterministic provider-default catalog when the authenticated
+	// ChatGPT UI hides its marketing model label.
+	RequireObservedModel bool
 
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 }
@@ -40,13 +51,14 @@ type ChatGPTLaneSnapshot struct {
 // active model turn. D07 also makes the same lane a WEB-only Transport so role
 // routing never creates a second ChatGPT profile/session/tab.
 type ChatGPTLane struct {
-	mu               sync.Mutex
-	session          *SessionManager
-	adapter          sites.ModelCatalogObserver
-	transport        *GeminiWebTransport
-	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
-	turnActive       bool
-	catalog          sites.ModelCatalogSnapshot
+	mu                   sync.Mutex
+	session              *SessionManager
+	adapter              sites.ModelCatalogObserver
+	transport            *GeminiWebTransport
+	evaluatorFactory     func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
+	requireObservedModel bool
+	turnActive           bool
+	catalog              sites.ModelCatalogSnapshot
 }
 
 var _ Transport = (*ChatGPTLane)(nil)
@@ -79,10 +91,11 @@ func NewChatGPTLane(cfg ChatGPTLaneConfig) *ChatGPTLane {
 		evaluatorFactory: factory,
 	})
 	return &ChatGPTLane{
-		session:          session,
-		adapter:          interaction,
-		transport:        transport,
-		evaluatorFactory: factory,
+		session:              session,
+		adapter:              interaction,
+		transport:            transport,
+		evaluatorFactory:     factory,
+		requireObservedModel: cfg.RequireObservedModel,
 	}
 }
 
@@ -269,8 +282,12 @@ func (l *ChatGPTLane) observeModels(ctx context.Context, snap SessionSnapshot) e
 	defer evaluator.Close()
 	catalog, err := l.adapter.ObserveModels(ctx, evaluator)
 	if err != nil {
-		l.clearCatalog()
-		return &Error{Kind: ErrorTransport, Op: "observe ChatGPT models", Cause: err, Retry: true}
+		if !l.requireObservedModel && strings.Contains(err.Error(), chatGPTActiveModelNotObservableText) {
+			catalog = chatGPTProviderDefaultCatalog()
+		} else {
+			l.clearCatalog()
+			return &Error{Kind: ErrorTransport, Op: "observe ChatGPT models", Cause: err, Retry: true}
+		}
 	}
 	if catalog.ActiveModelID == "" || catalog.Revision == "" || len(catalog.Models) == 0 {
 		l.clearCatalog()
@@ -280,6 +297,18 @@ func (l *ChatGPTLane) observeModels(ctx context.Context, snap SessionSnapshot) e
 	l.catalog = cloneSiteModelCatalog(catalog)
 	l.mu.Unlock()
 	return nil
+}
+
+func chatGPTProviderDefaultCatalog() sites.ModelCatalogSnapshot {
+	return sites.ModelCatalogSnapshot{
+		Models: []sites.ModelOption{{
+			ID:        chatGPTProviderDefaultModelID,
+			Label:     chatGPTProviderDefaultModelLabel,
+			Available: true,
+		}},
+		ActiveModelID: chatGPTProviderDefaultModelID,
+		Revision:      chatGPTProviderDefaultCatalogRev,
+	}
 }
 
 func (l *ChatGPTLane) clearCatalog() {
