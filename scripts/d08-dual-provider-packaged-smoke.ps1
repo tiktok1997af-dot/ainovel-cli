@@ -135,9 +135,15 @@ function Read-SessionProviderEvidence([string]$SessionDir) {
         foreach ($line in Get-Content -LiteralPath $file.FullName -Encoding UTF8) {
             if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
             try { $entry = [string]$line | ConvertFrom-Json } catch { continue }
-            if ($null -eq $entry._meta) { continue }
-            $provider = ([string]$entry._meta.provider).Trim().ToLowerInvariant()
-            $model = ([string]$entry._meta.model).Trim().ToLowerInvariant()
+
+            $metaProperty = $entry.PSObject.Properties['_meta']
+            if ($null -eq $metaProperty -or $null -eq $metaProperty.Value) { continue }
+            $meta = $metaProperty.Value
+            $providerProperty = $meta.PSObject.Properties['provider']
+            $modelProperty = $meta.PSObject.Properties['model']
+            $provider = if ($null -eq $providerProperty) { '' } else { ([string]$providerProperty.Value).Trim().ToLowerInvariant() }
+            $model = if ($null -eq $modelProperty) { '' } else { ([string]$modelProperty.Value).Trim().ToLowerInvariant() }
+
             if ($isArchitect -and $provider -eq 'chatgpt-web') {
                 $result.architect_chatgpt = $true
             }
