@@ -212,6 +212,8 @@ const chatGPTReadinessExpression = `(() => {
   const account = firstVisible([
     'button[data-testid="profile-button"]',
     'button[data-testid*="profile" i]',
+    '[data-testid*="profile" i]',
+    '[data-testid*="account" i]',
     '[data-testid*="user-menu" i]',
     'button[aria-label*="profile" i]',
     'button[aria-label*="account" i]',
