@@ -36,7 +36,7 @@ func TestD08ChatGPTSubmitUsesTrustedProseMirrorReplacementThenOneSendClick(t *te
 	}
 }
 
-func TestD08ChatGPTComposerReadbackCanonicalizesVisibleProseMirrorWithoutWeakeningEquality(t *testing.T) {
+func TestD08ChatGPTComposerReadbackCanonicalizesVisibleProseMirrorWithoutWeakeningNonLineBreakEquality(t *testing.T) {
 	expr := chatGPTVerifyPromptExpressionTemplate
 	for _, want := range []string{
 		`div.ProseMirror[contenteditable="true"]`,
@@ -44,10 +44,12 @@ func TestD08ChatGPTComposerReadbackCanonicalizesVisibleProseMirrorWithoutWeakeni
 		`.replace(/\r/g, '\n')`,
 		`.replace(/\u00a0/g, ' ')`,
 		`blockTags`,
+		`stripLineBreaks`,
+		`lineBreakEquivalent`,
+		`actual !== expected && !lineBreakEquivalent`,
 		`composer_line_breaks`,
 		`expected_line_breaks`,
 		`composer_kind`,
-		`actual !== expected`,
 	} {
 		if !strings.Contains(expr, want) {
 			t.Fatalf("ChatGPT readback invariant missing %q", want)
