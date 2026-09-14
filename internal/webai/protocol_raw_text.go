@@ -215,20 +215,13 @@ func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) 
 		return rawToolCallMetadata{}, strictErr
 	}
 
-	var properties map[string]any
+	var properties map[string]struct{}
 	for _, tool := range tools {
 		if tool.Name != name {
 			continue
 		}
-		parameters, valid := tool.Parameters.(map[string]any)
-		if !valid {
-			return rawToolCallMetadata{}, strictErr
-		}
-		rawProperties, exists := parameters["properties"]
-		if !exists {
-			return rawToolCallMetadata{}, strictErr
-		}
-		properties, valid = rawProperties.(map[string]any)
+		var valid bool
+		properties, valid = declaredToolPropertyNames(tool.Parameters)
 		if !valid {
 			return rawToolCallMetadata{}, strictErr
 		}
@@ -260,6 +253,34 @@ func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) 
 		Arguments:      arguments,
 		RawStringField: field,
 	}, nil
+}
+
+// declaredToolPropertyNames normalizes any JSON-marshalable ToolSpec.Parameters
+// representation before reading its declared properties. Runtime registries may
+// carry schemas as maps, json.RawMessage, or typed structs; recovery must behave
+// identically for all of them without ever accepting an undeclared metadata key.
+func declaredToolPropertyNames(parameters any) (map[string]struct{}, bool) {
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return nil, false
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &schema); err != nil || schema == nil {
+		return nil, false
+	}
+	rawProperties, ok := schema["properties"]
+	if !ok {
+		return nil, false
+	}
+	var properties map[string]json.RawMessage
+	if err := json.Unmarshal(rawProperties, &properties); err != nil || properties == nil {
+		return nil, false
+	}
+	names := make(map[string]struct{}, len(properties))
+	for name := range properties {
+		names[name] = struct{}{}
+	}
+	return names, true
 }
 
 func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
