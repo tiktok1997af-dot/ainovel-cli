@@ -97,7 +97,7 @@ func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) err
 		select {
 		case ev, ok := <-eng.Events():
 			if !ok {
-				return nil
+				return completionError(eng.Snapshot())
 			}
 			writeEvent(stderr, ev)
 		case delta, ok := <-eng.Stream():
@@ -122,11 +122,41 @@ func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) err
 			roundHasContent = true
 		case _, ok := <-eng.Done():
 			if !ok {
-				return nil
+				return completionError(eng.Snapshot())
 			}
-			return drainPending(eng, stdout, stderr, roundHasContent)
+			if err := drainPending(eng, stdout, stderr, roundHasContent); err != nil {
+				return err
+			}
+			return completionError(eng.Snapshot())
 		}
 	}
+}
+
+// completionError makes the headless process fail closed when Host.Done only
+// means the engine loop stopped, rather than the book actually reached the
+// persisted Complete phase. Interactive surfaces may legitimately pause and
+// resume; a non-interactive headless invocation has no such control path, so an
+// incomplete stop must be visible to callers as a non-zero process exit.
+func completionError(snap host.UISnapshot) error {
+	if snap.RuntimeState == "completed" && snap.Phase == string(domain.PhaseComplete) {
+		return nil
+	}
+	phase := strings.TrimSpace(snap.Phase)
+	if phase == "" {
+		phase = "unknown"
+	}
+	runtimeState := strings.TrimSpace(snap.RuntimeState)
+	if runtimeState == "" {
+		runtimeState = "unknown"
+	}
+	return fmt.Errorf(
+		"headless run stopped before completion: runtime=%s phase=%s current=%d completed=%d total=%d",
+		runtimeState,
+		phase,
+		snap.CurrentChapter,
+		snap.CompletedCount,
+		snap.TotalChapters,
+	)
 }
 
 func drainPending(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
