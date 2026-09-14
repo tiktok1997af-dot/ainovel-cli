@@ -38,6 +38,7 @@ type Runtime struct {
 	coCreate      *coCreateRuntimeAdapter
 	dualWeb       *dualWebProviderRuntime
 	chatGPTLane   chatGPTLaneRuntime
+	parallel      *dualWebParallelAuthority
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -64,6 +65,7 @@ func New(core *host.Host) (*Runtime, error) {
 		return nil, normalizeAppError(fmt.Errorf("initialize ChatGPT Web lane projection: %w", err))
 	}
 	rt.run = newRunCoordinator(reviewBackend, lanes)
+	rt.parallel = newDualWebParallelAuthority(runtimeDualWebLanes{rt: rt}, reviewBackend)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
 		return nil, normalizeAppError(fmt.Errorf("recover multi-run runtime: %w", err))
 	}
@@ -247,11 +249,20 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.reviewBackend != nil {
 			r.reviewBackend.close()
 		}
+		if r.parallel != nil {
+			if err := r.parallel.shutdown(ctx); err != nil {
+				r.closeErr = fmt.Errorf("shutdown dual-web parallel authority: %w", err)
+			}
+		}
 		if r.run != nil {
 			r.run.close()
 		}
 		if err := r.stopChatGPTLane(); err != nil {
-			r.closeErr = fmt.Errorf("stop ChatGPT Web lane: %w", err)
+			if r.closeErr != nil {
+				r.closeErr = fmt.Errorf("%v; stop ChatGPT Web lane: %w", r.closeErr, err)
+			} else {
+				r.closeErr = fmt.Errorf("stop ChatGPT Web lane: %w", err)
+			}
 		}
 		r.core.Close()
 		r.commandWG.Wait()
