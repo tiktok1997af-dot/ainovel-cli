@@ -26,6 +26,10 @@ type chatGPTPromptReadback struct {
 	Focused            bool   `json:"focused"`
 }
 
+type chatGPTEnterEvaluator interface {
+	PressEnter(context.Context) error
+}
+
 func (ChatGPT) Conversation(ctx context.Context, evaluator Evaluator) (ConversationSnapshot, error) {
 	raw, err := evaluator.Eval(ctx, chatGPTConversationExpression)
 	if err != nil {
@@ -110,8 +114,13 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 		return fmt.Errorf("chatgpt submit: verified composer is empty")
 	}
 
-	deadline := time.Now().Add(chatGPTSendWait)
+	return submitVerifiedChatGPTPrompt(ctx, evaluator, input, chatGPTSendWait)
+}
+
+func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input TextInputEvaluator, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
 	lastReason := "send control is not ready"
+	sawExplicitSend := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -123,6 +132,7 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 		var result struct {
 			OK     bool    `json:"ok"`
 			Retry  bool    `json:"retry"`
+			Found  bool    `json:"found"`
 			Reason string  `json:"reason"`
 			X      float64 `json:"x"`
 			Y      float64 `json:"y"`
@@ -130,6 +140,9 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
 			return fmt.Errorf("chatgpt resolve send result: %w", err)
+		}
+		if result.Found {
+			sawExplicitSend = true
 		}
 		if result.OK {
 			if result.X < 0 || result.Y < 0 {
@@ -143,7 +156,17 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
 			lastReason = reason
 		}
-		if !result.Retry || time.Now().After(deadline) {
+		if !result.Retry || !time.Now().Before(deadline) {
+			if !sawExplicitSend {
+				enter, ok := evaluator.(chatGPTEnterEvaluator)
+				if !ok {
+					return fmt.Errorf("chatgpt submit: %s; evaluator does not support trusted Enter fallback", lastReason)
+				}
+				if err := enter.PressEnter(ctx); err != nil {
+					return fmt.Errorf("chatgpt trusted Enter fallback: %w", err)
+				}
+				return nil
+			}
 			return fmt.Errorf("chatgpt submit: %s", lastReason)
 		}
 		timer := time.NewTimer(chatGPTSendPoll)
@@ -304,23 +327,26 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b\ufeff]/g, '')
     .trim();
   const lineBreakCount = (value) => (String(value || '').match(/\n/g) || []).length;
-  const readComposer = (composer) => {
+  const readCandidates = (composer) => {
     if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
-      return String(composer.value || '');
+      return [String(composer.value || '')];
     }
+    const candidates = [];
+    const add = (value) => {
+      const raw = String(value || '');
+      if (raw !== '' && !candidates.includes(raw)) candidates.push(raw);
+    };
+    add(composer.innerText);
+    add(composer.textContent);
     if (composer.children && composer.children.length > 0) {
       const blocks = Array.from(composer.children);
-      const blockTags = new Set(['P','DIV','LI','PRE','BLOCKQUOTE']);
-      if (blocks.some((block) => blockTags.has(String(block.tagName || '').toUpperCase()))) {
-        return blocks.map((block) => {
-          if (String(block.tagName || '').toUpperCase() === 'BR') return '';
-          return String(block.innerText || block.textContent || '');
-        }).join('\n');
-      }
+      add(blocks.map((block) => String(block.innerText || block.textContent || '')).join('\n'));
+      add(blocks.map((block) => String(block.textContent || '')).join('\n'));
     }
-    return String(composer.innerText || composer.textContent || '');
+    return candidates;
   };
   const expected = normalize(prompt);
   const composer = firstVisible(['#prompt-textarea','textarea[data-testid*="prompt" i]','div.ProseMirror[contenteditable="true"]','[contenteditable="true"][role="textbox"]']);
@@ -334,14 +360,19 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     composer_kind:'missing',
     focused:false
   };
-  const actual = normalize(readComposer(composer));
+  const candidates = readCandidates(composer).map(normalize);
+  const matched = candidates.find((value) => value === expected) || '';
+  const diagnostic = matched || candidates.reduce((best, value) => {
+    if (best === '') return value;
+    return Math.abs(value.length - expected.length) < Math.abs(best.length - expected.length) ? value : best;
+  }, '');
   const active = document.activeElement;
   const focused = Boolean(active && (active === composer || composer.contains(active) || (active.shadowRoot && active.shadowRoot.activeElement === composer)));
   const composerKind = kindOf(composer);
-  const composerLength = actual.length;
-  const composerLineBreaks = lineBreakCount(actual);
+  const composerLength = diagnostic.length;
+  const composerLineBreaks = lineBreakCount(diagnostic);
   const expectedLineBreaks = lineBreakCount(expected);
-  if (actual !== expected) return {
+  if (!matched) return {
     ok:false,
     reason:'composer text mismatch',
     composer_length:composerLength,
@@ -351,7 +382,7 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     composer_kind:composerKind,
     focused
   };
-  if (composerLength === 0) return {
+  if (matched.length === 0) return {
     ok:false,
     reason:'composer is empty after trusted input',
     composer_length:0,
@@ -364,9 +395,9 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
   return {
     ok:true,
     reason:'',
-    composer_length:composerLength,
+    composer_length:matched.length,
     expected_length:expected.length,
-    composer_line_breaks:composerLineBreaks,
+    composer_line_breaks:lineBreakCount(matched),
     expected_line_breaks:expectedLineBreaks,
     composer_kind:composerKind,
     focused
@@ -374,10 +405,38 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
 })()`
 
 const chatGPTResolveSendExpression = `(() => {
-  const visible = (el) => { if (!el) return false; const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-  const selectors = ['button[data-testid="send-button"]','button[aria-label*="send" i]','button[aria-label*="gửi" i]'];
-  for (const selector of selectors) for (const el of document.querySelectorAll(selector)) if (visible(el)) { const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true'; const r = el.getBoundingClientRect(); return {ok:!disabled,retry:disabled,reason:disabled?'send button disabled':'',x:r.left+r.width/2,y:r.top+r.height/2,action:'button'}; }
-  return {ok:false,retry:true,reason:'send button not found',x:0,y:0,action:''};
+  const visible = (el) => {
+    if (!el) return false;
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+  };
+  const selectors = [
+    'button[data-testid="send-button"]',
+    'button[data-testid*="send" i]',
+    'button[aria-label*="send" i]',
+    'button[aria-label*="submit" i]',
+    'button[aria-label*="gửi" i]',
+    'button[title*="send" i]',
+    'button[title*="gửi" i]'
+  ];
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (!visible(el)) continue;
+      const disabled = el.disabled || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+      const r = el.getBoundingClientRect();
+      return {
+        ok: !disabled,
+        retry: disabled,
+        found: true,
+        reason: disabled ? 'send button disabled' : '',
+        x: r.left + r.width / 2,
+        y: r.top + r.height / 2,
+        action: 'button'
+      };
+    }
+  }
+  return {ok:false,retry:true,found:false,reason:'send button not found',x:0,y:0,action:''};
 })()`
 
 const chatGPTResolveCancelExpression = `(() => {
