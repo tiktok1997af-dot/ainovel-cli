@@ -85,16 +85,22 @@ func browserLaunchArgs(cfg BrowserLaunchConfig) ([]string, error) {
 	// The W5E restart boundary deliberately terminates owned Chrome processes.
 	// Chrome therefore sees the persistent profile as having an unclean exit on
 	// the next launch. Suppress only Chrome's crash-restore UI so it cannot cover
-	// the Gemini composer/send controls; the profile, cookies and login storage
-	// remain untouched and Chrome still starts the requested Gemini URL normally.
+	// the Gemini/ChatGPT composer controls; the profile, cookies and login storage
+	// remain untouched and Chrome still starts the requested WEB-only URL normally.
 	args := []string{
 		"--user-data-dir=" + cfg.ProfileDir,
 		"--hide-crash-restore-bubble",
 	}
 	if cfg.DisableDevTools {
-		// Manual Google sign-in must happen in an ordinary visible Chrome session.
-		// Do not add remote-debugging or automation flags in this phase.
-		args = append(args, "--new-window")
+		// Manual Google/OpenAI sign-in must happen in an ordinary visible Chrome
+		// session. Keep automation/debugging disabled, while suppressing first-run
+		// and default-app/browser promotion UI that can cover the auth surface.
+		args = append(args,
+			"--no-first-run",
+			"--no-default-browser-check",
+			"--disable-background-mode",
+			"--new-window",
+		)
 	} else {
 		args = append(args,
 			"--remote-debugging-address=127.0.0.1",
