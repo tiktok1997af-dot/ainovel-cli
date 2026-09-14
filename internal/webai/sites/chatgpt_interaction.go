@@ -343,8 +343,10 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     add(composer.textContent);
     if (composer.children && composer.children.length > 0) {
       const blocks = Array.from(composer.children);
-      add(blocks.map((block) => String(block.innerText || block.textContent || '')).join('\n'));
-      add(blocks.map((block) => String(block.textContent || '')).join('\n'));
+      const blockTags = new Set(['P','DIV','LI','PRE','BLOCKQUOTE']);
+      const separator = blocks.some((block) => blockTags.has(String(block.tagName || '').toUpperCase())) ? '\n' : '';
+      add(blocks.map((block) => String(block.innerText || block.textContent || '')).join(separator));
+      add(blocks.map((block) => String(block.textContent || '')).join(separator));
     }
     return candidates;
   };
