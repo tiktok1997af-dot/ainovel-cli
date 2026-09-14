@@ -54,6 +54,49 @@ function Assert-NoProfileChrome([string]$ProfileDir, [string]$Label) {
     }
 }
 
+function Stop-PackagedProduction([string]$ExecutablePath) {
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return }
+    $target = [IO.Path]::GetFullPath($ExecutablePath)
+    Get-CimInstance Win32_Process -Filter "Name='ainovel-cli.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            try {
+                $_.ExecutablePath -and ([IO.Path]::GetFullPath([string]$_.ExecutablePath) -eq $target)
+            } catch {
+                $false
+            }
+        } |
+        ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { }
+        }
+}
+
+function Get-SanitizedDiagnosticTail([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return '<stderr-missing>' }
+
+    $diagnosticPattern = '(?i)(error|fail|fatal|panic|auth|required|config|browser|chrome|web|headless|host|engine|invalid|missing|not found|timeout|exit|cannot|unable|ready|denied|refused|unexpected)'
+    $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8 -Tail 80 -ErrorAction SilentlyContinue)
+    $safe = New-Object System.Collections.Generic.List[string]
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+
+    foreach ($raw in $lines) {
+        $line = [string]$raw
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -notmatch $diagnosticPattern) { continue }
+
+        if (-not [string]::IsNullOrWhiteSpace($userHome)) {
+            $line = $line.Replace($userHome, '<USERPROFILE>')
+        }
+        $line = [regex]::Replace($line, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<redacted-email>')
+        $line = [regex]::Replace($line, '(?i)\b(cookie|authorization|bearer|token|password|secret|api[_-]?key)\b\s*[:=]\s*[^\s,;]+', '$1=<redacted>')
+        $line = [regex]::Replace($line, '(?i)(https?://[^\s?#]+)(?:\?[^\s#]*)?(?:#[^\s]*)?', '$1')
+        if ($line.Length -gt 600) { $line = $line.Substring(0, 600) + '<truncated>' }
+        $safe.Add($line)
+    }
+
+    if ($safe.Count -eq 0) { return '<no-sanitized-diagnostic-lines>' }
+    return (($safe | Select-Object -Last 12) -join ' | ')
+}
+
 function Verify-ArchiveChecksum([string]$ArchivePath, [string]$ManifestPath) {
     $archiveName = [IO.Path]::GetFileName($ArchivePath)
     $matches = New-Object System.Collections.Generic.List[string]
@@ -178,14 +221,52 @@ Hãy tạo một truyện ngắn thử nghiệm bằng tiếng Việt, chính x�
 
 $stdoutPath = Join-Path $EvidenceDir 'd08-packaged.stdout.log'
 $stderrPath = Join-Path $EvidenceDir 'd08-packaged.stderr.log'
-$process = Start-Process -FilePath $productionExe -ArgumentList @('--headless','--prompt-file',$promptPath) -WorkingDirectory $RuntimeDir -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+$runExitCodePath = Join-Path $RuntimeDir 'd08-packaged.exitcode.txt'
+$runWrapperPath = Join-Path $RuntimeDir 'd08-packaged-wrapper.cmd'
+$cmdLines = @(
+    '@echo off',
+    '"%D08_PRODUCTION_EXE%" --headless --prompt-file "%D08_PROMPT_PATH%"',
+    'set "D08_EXIT_CODE=%ERRORLEVEL%"',
+    '> "%D08_EXIT_CODE_PATH%" echo %D08_EXIT_CODE%',
+    'exit /b %D08_EXIT_CODE%'
+)
+[System.IO.File]::WriteAllLines($runWrapperPath, $cmdLines, [System.Text.Encoding]::ASCII)
+Remove-Item -LiteralPath $runExitCodePath -Force -ErrorAction SilentlyContinue
+
+$cmdExe = [string]$env:ComSpec
+if ([string]::IsNullOrWhiteSpace($cmdExe) -or -not (Test-Path -LiteralPath $cmdExe)) {
+    Fail 'cmd.exe is required for reliable packaged exit-code capture'
+}
+$env:D08_PRODUCTION_EXE = $productionExe
+$env:D08_PROMPT_PATH = $promptPath
+$env:D08_EXIT_CODE_PATH = $runExitCodePath
+$process = Start-Process -FilePath $cmdExe -ArgumentList @('/d', '/s', '/c', ('"' + $runWrapperPath + '"')) -WorkingDirectory $RuntimeDir -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+Remove-Item Env:D08_PRODUCTION_EXE -ErrorAction SilentlyContinue
+Remove-Item Env:D08_PROMPT_PATH -ErrorAction SilentlyContinue
+Remove-Item Env:D08_EXIT_CODE_PATH -ErrorAction SilentlyContinue
+
 try {
     if (-not $process.WaitForExit($RunTimeoutSeconds * 1000)) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Stop-PackagedProduction $productionExe
         Fail 'packaged strict-role run timed out'
     }
     try { $process.WaitForExit() } catch { }
-    if ($process.ExitCode -ne 0) { Fail "packaged strict-role run exited with code $($process.ExitCode)" }
+
+    if (-not (Test-Path -LiteralPath $runExitCodePath)) {
+        Stop-PackagedProduction $productionExe
+        Fail ("packaged strict-role exit-code sidecar missing; stderr=" + (Get-SanitizedDiagnosticTail $stderrPath))
+    }
+    $runExitRaw = (Get-Content -LiteralPath $runExitCodePath -Raw -Encoding UTF8).Trim()
+    $runExitCode = 0
+    if (-not [int]::TryParse($runExitRaw, [ref]$runExitCode)) {
+        Stop-PackagedProduction $productionExe
+        Fail ("packaged strict-role exit-code sidecar is invalid: " + $runExitRaw)
+    }
+    if ($runExitCode -ne 0) {
+        Fail ("packaged strict-role run exited with code " + $runExitCode + "; stderr=" + (Get-SanitizedDiagnosticTail $stderrPath))
+    }
+
     Start-Sleep -Seconds 2
     Assert-NoProfileChrome $geminiProfileDir 'Gemini packaged runtime'
     Assert-NoProfileChrome $chatgptProfileDir 'ChatGPT packaged runtime'
