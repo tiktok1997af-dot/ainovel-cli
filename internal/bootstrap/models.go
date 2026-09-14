@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
@@ -10,9 +11,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/webai"
 )
 
-// SwappableModel keeps the historical wrapper name because Engine/Host code
-// consumes its identity/capability projection. C4 removed every mutation
-// method: the wrapped browser model is fixed for the lifetime of the Host.
 type SwappableModel struct {
 	*agentcore.SwappableModel
 	provider string
@@ -20,19 +18,10 @@ type SwappableModel struct {
 }
 
 func NewSwappableModel(provider, name string, model agentcore.ChatModel, _ *bool) *SwappableModel {
-	return &SwappableModel{
-		SwappableModel: agentcore.NewSwappableModel(model),
-		provider:       provider,
-		name:           name,
-	}
+	return &SwappableModel{SwappableModel: agentcore.NewSwappableModel(model), provider: provider, name: name}
 }
-
 func (m *SwappableModel) ProviderName() string { return m.provider }
-
-func (m *SwappableModel) Info() llm.ModelInfo {
-	return m.StructuredOutputFacts().Info
-}
-
+func (m *SwappableModel) Info() llm.ModelInfo  { return m.StructuredOutputFacts().Info }
 func (m *SwappableModel) StructuredOutputFacts() llmcontract.ModelFacts {
 	if m == nil || m.SwappableModel == nil {
 		return llmcontract.ModelFacts{}
@@ -47,22 +36,17 @@ func (m *SwappableModel) StructuredOutputFacts() llmcontract.ModelFacts {
 		if modelInfo.Name == "" {
 			modelInfo.Name = m.name
 		}
-		if modelInfo.Provider == "" {
-			modelInfo.Provider = m.provider
-		}
+		// The role wrapper is the runtime provider authority. Browser Model.Info
+		// intentionally reports generic "web", so preserve the concrete lane here.
+		modelInfo.Provider = m.provider
 		facts.Info = modelInfo
 	}
 	return facts
 }
-
 func (m *SwappableModel) Capabilities() llm.Capabilities {
 	return m.StructuredOutputFacts().Capabilities
 }
-
-// Browser transport uses the prompt contract instead of provider-native JSON
-// schema routing.
 func (m *SwappableModel) JSONSchemaOverride() *bool { return nil }
-
 func (m *SwappableModel) Current() (provider, name string) {
 	if m == nil {
 		return "", ""
@@ -70,15 +54,32 @@ func (m *SwappableModel) Current() (provider, name string) {
 	return m.provider, m.name
 }
 
-// ModelSet is a fixed WEB-only graph. Every role shares the same browser model.
+// ModelSet is the D07 strict-role WEB-only graph. Gemini owns primary writing
+// and ordinary CoCreate; ChatGPT owns architect/review/QA/repair specialist work.
+// There is no provider fallback.
 type ModelSet struct {
-	Default *SwappableModel
-	config  Config
+	Default    *SwappableModel
+	Specialist *SwappableModel
+	chatGPT    *webai.ChatGPTLane
+	config     Config
 }
 
-func (ms *ModelSet) ForRole(_ string) agentcore.ChatModel {
+func specialistRole(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch role {
+	case "architect", "editor", "repair":
+		return true
+	default:
+		return false
+	}
+}
+
+func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 	if ms == nil {
 		return nil
+	}
+	if specialistRole(role) && ms.Specialist != nil {
+		return ms.Specialist
 	}
 	return ms.Default
 }
@@ -87,33 +88,52 @@ func (ms *ModelSet) Summary() string {
 	if ms == nil || ms.Default == nil {
 		return "default=unavailable"
 	}
-	provider, name := ms.Default.Current()
-	return fmt.Sprintf("default=%s/%s", provider, name)
+	p, n := ms.Default.Current()
+	summary := fmt.Sprintf("default=%s/%s", p, n)
+	if ms.Specialist != nil {
+		sp, sn := ms.Specialist.Current()
+		summary += fmt.Sprintf(" specialist=%s/%s", sp, sn)
+	}
+	return summary
 }
-
-// NormalizedLanguage exposes the configured content language to runtime layers
-// without leaking the rest of the model configuration. Co-create uses this to
-// select a language-matched system prompt instead of hard-coding Chinese.
 func (ms *ModelSet) NormalizedLanguage() string {
 	if ms == nil {
 		return "vi"
 	}
 	return ms.config.NormalizedLanguage()
 }
-
-func (ms *ModelSet) CurrentSelection(_ string) (provider, model string, explicit bool) {
-	if ms == nil || ms.Default == nil {
+func (ms *ModelSet) CurrentSelection(role string) (provider, model string, explicit bool) {
+	if ms == nil {
 		return "", "", false
 	}
-	provider, model = ms.Default.Current()
+	selected := ms.ForRole(role)
+	if selected == nil {
+		return "", "", false
+	}
+	if specialistRole(role) && ms.Specialist != nil {
+		provider, model = ms.Specialist.Current()
+	} else if ms.Default != nil {
+		provider, model = ms.Default.Current()
+	}
 	return provider, model, true
 }
-
 func (ms *ModelSet) ResolveContextWindow(provider, model string) (int, ContextWindowSource) {
 	if ms == nil {
 		return DefaultContextWindow, CtxWindowDefault
 	}
 	return ms.config.ResolveContextWindow(provider, model)
+}
+func (ms *ModelSet) ChatGPTLane() *webai.ChatGPTLane {
+	if ms == nil {
+		return nil
+	}
+	return ms.chatGPT
+}
+func (ms *ModelSet) CloseSpecialist() error {
+	if ms == nil || ms.chatGPT == nil {
+		return nil
+	}
+	return ms.chatGPT.Stop()
 }
 
 func ModelName(m agentcore.ChatModel) string {
@@ -122,7 +142,6 @@ func ModelName(m agentcore.ChatModel) string {
 	}
 	return ""
 }
-
 func ModelProvider(m agentcore.ChatModel) string {
 	if info, ok := m.(interface{ Info() llm.ModelInfo }); ok {
 		return info.Info().Provider
@@ -133,7 +152,6 @@ func ModelProvider(m agentcore.ChatModel) string {
 	return ""
 }
 
-// NewWebModelSet builds the only AI model graph over one owned browser session.
 func NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error) {
 	if !cfg.Web.Enabled {
 		return nil, fmt.Errorf("WEB-only runtime is not enabled; enable web.enabled=true: %w", errs.ErrConfig)
@@ -145,19 +163,25 @@ func NewWebModelSet(cfg Config, session *webai.SessionManager) (*ModelSet, error
 	if err != nil {
 		return nil, fmt.Errorf("create Gemini Web transport: %w", err)
 	}
-	transport, err := webai.NewAutoRecoveryTransport(webai.AutoRecoveryConfig{
-		Inner:   baseTransport,
-		Session: session,
-	})
+	transport, err := webai.NewAutoRecoveryTransport(webai.AutoRecoveryConfig{Inner: baseTransport, Session: session})
 	if err != nil {
 		return nil, fmt.Errorf("create Gemini Web auto-recovery watchdog: %w", err)
 	}
-	model, err := webai.NewModel(webai.ModelConfig{Site: WebModelName, Model: WebModelName, Transport: transport})
+	geminiModel, err := webai.NewModel(webai.ModelConfig{Site: WebModelName, Model: WebModelName, Transport: transport})
 	if err != nil {
-		return nil, fmt.Errorf("create WEB ChatModel: %w", err)
+		return nil, fmt.Errorf("create Gemini WEB ChatModel: %w", err)
 	}
+
+	chatGPTLane := webai.NewChatGPTLane(webai.ChatGPTLaneConfig{BrowserPath: cfg.Web.BrowserPath, ProfileName: webai.DefaultChatGPTProfileName})
+	chatGPTModel, err := webai.NewModel(webai.ModelConfig{Site: webai.ChatGPTWebSite, Model: webai.ChatGPTWebSite, Transport: chatGPTLane})
+	if err != nil {
+		return nil, fmt.Errorf("create ChatGPT WEB ChatModel: %w", err)
+	}
+
 	return &ModelSet{
-		Default: NewSwappableModel(WebProviderName, WebModelName, model, nil),
-		config:  cfg,
+		Default:    NewSwappableModel(WebProviderName, WebModelName, geminiModel, nil),
+		Specialist: NewSwappableModel(webai.ChatGPTWebSite, webai.ChatGPTWebSite, chatGPTModel, nil),
+		chatGPT:    chatGPTLane,
+		config:     cfg,
 	}, nil
 }

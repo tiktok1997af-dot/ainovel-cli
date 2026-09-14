@@ -13,15 +13,17 @@ type SettingsIdentityDTO struct {
 }
 
 type SettingsValuesDTO struct {
-	BrowserPath     string   `json:"browser_path,omitempty"`
-	ProfileName     string   `json:"profile_name,omitempty"`
-	StartURL        string   `json:"start_url,omitempty"`
-	Language        string   `json:"language,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Style           string   `json:"style,omitempty"`
-	ContextWindow   int      `json:"context_window,omitempty"`
-	NotifyEnabled   bool     `json:"notify_enabled"`
-	NotifyEvents    []string `json:"notify_events,omitempty"`
+	BrowserPath        string   `json:"browser_path,omitempty"`
+	ProfileName        string   `json:"profile_name,omitempty"`
+	StartURL           string   `json:"start_url,omitempty"`
+	Language           string   `json:"language,omitempty"`
+	ReasoningEffort    string   `json:"reasoning_effort,omitempty"`
+	Style              string   `json:"style,omitempty"`
+	ContextWindow      int      `json:"context_window,omitempty"`
+	PipelineMode       string   `json:"pipeline_mode,omitempty"`
+	CheckpointChapters int      `json:"checkpoint_chapters,omitempty"`
+	NotifyEnabled      bool     `json:"notify_enabled"`
+	NotifyEvents       []string `json:"notify_events,omitempty"`
 }
 
 type SettingsRuntimeDTO struct {

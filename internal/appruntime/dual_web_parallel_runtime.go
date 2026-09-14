@@ -57,6 +57,7 @@ type dualWebActiveJob struct {
 type dualWebParallelAuthority struct {
 	lanes     dualWebLaneAuthority
 	resources dualWebResourceAuthority
+	mode      string
 
 	mu             sync.Mutex
 	active         map[string]*dualWebActiveJob
@@ -67,10 +68,21 @@ type dualWebParallelAuthority struct {
 	wg             sync.WaitGroup
 }
 
-func newDualWebParallelAuthority(lanes dualWebLaneAuthority, resources dualWebResourceAuthority) *dualWebParallelAuthority {
+func newDualWebParallelAuthority(lanes dualWebLaneAuthority, resources dualWebResourceAuthority, modes ...string) *dualWebParallelAuthority {
+	// D04's legacy constructor semantics were parallel. Preserve that for old
+	// tests/internal callers. Production D07 always passes the resolved runtime
+	// mode explicitly from NewD07PipelinePolicy.
+	mode := "turbo"
+	if len(modes) > 0 {
+		mode = strings.ToLower(strings.TrimSpace(modes[0]))
+		if mode != "turbo" {
+			mode = "balanced"
+		}
+	}
 	return &dualWebParallelAuthority{
 		lanes:          lanes,
 		resources:      resources,
+		mode:           mode,
 		active:         make(map[string]*dualWebActiveJob),
 		providerActive: make(map[WebAIProvider]int),
 		resourceRuns:   make(map[domain.RunID]struct{}),
@@ -105,6 +117,14 @@ func (a *dualWebParallelAuthority) begin(ctx context.Context, spec dualWebJobSpe
 		return nil, fmt.Errorf("dual-web active job capacity reached")
 	}
 	if spec.Kind == dualWebJobAI {
+		// Balanced is the conservative D07 production default: AI work is
+		// serialized at D04 admission. Turbo alone may overlap two independent
+		// provider turns, and even then the provider-lane and story-resource
+		// authorities below still decide whether the overlap is actually legal.
+		if a.mode != "turbo" && a.activeAICountLocked() > 0 {
+			a.mu.Unlock()
+			return nil, fmt.Errorf("balanced pipeline serializes AI jobs")
+		}
 		if a.activeAICountLocked() >= DualWebAIConcurrency {
 			a.mu.Unlock()
 			return nil, fmt.Errorf("dual-web AI concurrency reached")

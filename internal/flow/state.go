@@ -13,6 +13,7 @@ import (
 // 在不完整快照上继续派单。
 func LoadState(store *storepkg.Store) (State, error) {
 	var s State
+	s.ReviewInterval = runtimeReviewInterval(store)
 	missing, err := store.FoundationMissing()
 	if err != nil {
 		return s, fmt.Errorf("load foundation state: %w", err)
@@ -108,9 +109,13 @@ func LoadState(store *storepkg.Store) (State, error) {
 		}
 	}
 
-	// 非分层全局审阅事实:仅在触发点读盘(其余组合 Route 不消费该字段)。
+	// 非分层全局审阅事实：按运行时 checkpoint cadence 查缺失审阅。
 	if !progress.Layered && s.LastCompleted > 0 {
-		for completed := domain.ReviewInterval; completed <= len(progress.CompletedChapters); completed += domain.ReviewInterval {
+		interval := s.ReviewInterval
+		if interval <= 0 {
+			interval = domain.ReviewInterval
+		}
+		for completed := interval; completed <= len(progress.CompletedChapters); completed += interval {
 			chapter := progress.CompletedChapters[completed-1]
 			hasReview, err := store.World.HasGlobalReview(chapter)
 			if err != nil {
@@ -121,7 +126,7 @@ func LoadState(store *storepkg.Store) (State, error) {
 				break
 			}
 		}
-		if due, _ := domain.ShouldReview(len(progress.CompletedChapters)); due {
+		if due, _ := domain.ShouldReviewEvery(len(progress.CompletedChapters), interval); due {
 			s.HasGlobalReview, err = store.World.HasGlobalReview(s.LastCompleted)
 			if err != nil {
 				return s, fmt.Errorf("load global review: %w", err)

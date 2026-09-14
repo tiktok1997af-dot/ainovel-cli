@@ -15,9 +15,6 @@ const (
 	DefaultChatGPTProfileName = "ainovel-chatgpt-web"
 )
 
-// ChatGPTLaneConfig owns one isolated persistent ChatGPT browser profile. D03
-// deliberately keeps capacity fixed at one; Run Center scheduling across the
-// Gemini and ChatGPT lanes belongs to D04.
 type ChatGPTLaneConfig struct {
 	BrowserPath string
 	ProfileDir  string
@@ -30,9 +27,6 @@ type ChatGPTLaneConfig struct {
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 }
 
-// ChatGPTLaneSnapshot is sanitized provider state suitable for AppRuntime/D02
-// projection. It never contains profile paths, PIDs, cookies, tokens, account
-// identity, prompt text, or conversation text.
 type ChatGPTLaneSnapshot struct {
 	LaneID        string                     `json:"lane_id"`
 	State         SessionState               `json:"state"`
@@ -43,16 +37,19 @@ type ChatGPTLaneSnapshot struct {
 }
 
 // ChatGPTLane owns exactly one visible ChatGPT web session and at most one
-// active model turn. The actual prompt execution/scheduler handoff is opened in
-// D04; D03 establishes the live browser/profile/readiness/model boundary.
+// active model turn. D07 also makes the same lane a WEB-only Transport so role
+// routing never creates a second ChatGPT profile/session/tab.
 type ChatGPTLane struct {
 	mu               sync.Mutex
 	session          *SessionManager
 	adapter          sites.ModelCatalogObserver
+	transport        *GeminiWebTransport
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 	turnActive       bool
 	catalog          sites.ModelCatalogSnapshot
 }
+
+var _ Transport = (*ChatGPTLane)(nil)
 
 func NewChatGPTLane(cfg ChatGPTLaneConfig) *ChatGPTLane {
 	profileName := strings.TrimSpace(cfg.ProfileName)
@@ -75,9 +72,16 @@ func NewChatGPTLane(cfg ChatGPTLaneConfig) *ChatGPTLane {
 	if factory == nil {
 		factory = openInteractionEvaluator
 	}
+	interaction := sites.ChatGPT{}
+	transport, _ := NewGeminiWebTransport(GeminiWebTransportConfig{
+		Session:          session,
+		adapter:          interaction,
+		evaluatorFactory: factory,
+	})
 	return &ChatGPTLane{
 		session:          session,
-		adapter:          sites.ChatGPT{},
+		adapter:          interaction,
+		transport:        transport,
 		evaluatorFactory: factory,
 	}
 }
@@ -149,9 +153,6 @@ func (l *ChatGPTLane) Snapshot() ChatGPTLaneSnapshot {
 	}
 }
 
-// BeginTurn is a capacity lease only. D03 does not submit a prompt. It prevents
-// a second caller from claiming the ChatGPT lane before D04 scheduler ownership
-// is wired.
 func (l *ChatGPTLane) BeginTurn() error {
 	if l == nil || l.session == nil {
 		return fmt.Errorf("webai: ChatGPT lane is unavailable")
@@ -178,6 +179,39 @@ func (l *ChatGPTLane) EndTurn() {
 	l.mu.Lock()
 	l.turnActive = false
 	l.mu.Unlock()
+}
+
+// RoundTrip executes one prompt through the same authenticated lane. It first
+// revalidates readiness/model observation, then holds the lane-local turn lease
+// for the entire DOM round trip. There is no provider fallback.
+func (l *ChatGPTLane) RoundTrip(ctx context.Context, prompt string) (string, error) {
+	if l == nil || l.session == nil || l.transport == nil {
+		return "", fmt.Errorf("webai: ChatGPT transport is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	snap := l.Snapshot()
+	if snap.TurnActive {
+		return "", fmt.Errorf("webai: ChatGPT lane already has an active turn")
+	}
+	var err error
+	if snap.State == SessionStopped {
+		snap, err = l.Start(ctx)
+	} else if !snap.Ready {
+		snap, err = l.Refresh(ctx)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !snap.Ready {
+		return "", fmt.Errorf("webai: ChatGPT lane is not verified READY")
+	}
+	if err := l.BeginTurn(); err != nil {
+		return "", err
+	}
+	defer l.EndTurn()
+	return l.transport.RoundTrip(ctx, prompt)
 }
 
 func (l *ChatGPTLane) observeModels(ctx context.Context, snap SessionSnapshot) error {

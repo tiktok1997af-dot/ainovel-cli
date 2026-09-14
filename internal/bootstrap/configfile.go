@@ -46,9 +46,6 @@ func projectConfigPath() string {
 	return filepath.Join(configDirName, "config.json")
 }
 
-// EffectiveConfigPath is the browser/creative settings write target. Existing
-// project configuration wins over the global file; no project file is created
-// implicitly.
 func EffectiveConfigPath() string {
 	rel := projectConfigPath()
 	if _, err := os.Stat(rel); err == nil {
@@ -60,10 +57,6 @@ func EffectiveConfigPath() string {
 	return DefaultConfigPath()
 }
 
-// LoadConfig loads global then project WEB-only configuration. A malformed or
-// legacy global file may be ignored when a valid project file exists. If the
-// legacy global file is the only config, its migration error is returned so the
-// user receives actionable guidance rather than a generic missing-config error.
 func LoadConfig() (Config, error) {
 	var cfg Config
 	var globalErr error
@@ -115,13 +108,10 @@ var forbiddenLegacyTopLevelKeys = []string{
 
 var forbiddenLegacyRoleKeys = []string{"provider", "model", "fallbacks"}
 
-// detectLegacyAPIConfig runs before decoding into Config. This is essential:
-// after C4 removed API-era struct fields, encoding/json would otherwise ignore
-// old keys and silently reinterpret an old file as WEB-only configuration.
 func detectLegacyAPIConfig(data []byte) error {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
-		return nil // the normal decode path will return the syntax error
+		return nil
 	}
 	for _, key := range forbiddenLegacyTopLevelKeys {
 		if _, ok := root[key]; ok {
@@ -163,7 +153,6 @@ func loadJSONFile(path string) (Config, error) {
 	return cfg, nil
 }
 
-// mergeConfig merges browser and provider-neutral creative settings only.
 func mergeConfig(base, overlay Config) Config {
 	if overlay.Web != (WebAIConfig{}) {
 		if overlay.Web.Enabled {
@@ -181,6 +170,12 @@ func mergeConfig(base, overlay Config) Config {
 		if overlay.Web.StartURL != "" {
 			base.Web.StartURL = overlay.Web.StartURL
 		}
+	}
+	if overlay.Pipeline.Mode != "" {
+		base.Pipeline.Mode = overlay.Pipeline.Mode
+	}
+	if overlay.Pipeline.CheckpointChapters > 0 {
+		base.Pipeline.CheckpointChapters = overlay.Pipeline.CheckpointChapters
 	}
 	if overlay.ReasoningEffort != "" {
 		base.ReasoningEffort = overlay.ReasoningEffort
@@ -284,8 +279,6 @@ func WriteStartupError(msg string) string {
 	return path
 }
 
-// SaveConfig persists only a validated WEB-only configuration. Runtime
-// Provider/ModelName aliases are json:"-" and therefore cannot leak to disk.
 func SaveConfig(path string, cfg Config) error {
 	persist := CloneConfig(cfg)
 	persist.FillDefaults()

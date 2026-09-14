@@ -5,12 +5,24 @@ import (
 	"unicode/utf8"
 )
 
-// ReviewInterval 全局审阅间隔（每 N 章触发一次）。
+// ReviewInterval is the legacy/default global review interval. D07 production
+// routing may supply a validated runtime checkpoint interval instead.
 const ReviewInterval = 5
 
-// ShouldReview 根据已完成章节数判断是否需要全局审阅（短篇/中篇模式）。
+// ShouldReview preserves the historical default cadence for callers that do
+// not carry D07 pipeline configuration.
 func ShouldReview(completedCount int) (bool, string) {
-	if completedCount > 0 && completedCount%ReviewInterval == 0 {
+	return ShouldReviewEvery(completedCount, ReviewInterval)
+}
+
+// ShouldReviewEvery evaluates the global-review checkpoint using an explicit
+// positive interval. A non-positive interval falls back to ReviewInterval so
+// old/recovery snapshots fail safe instead of dividing by zero.
+func ShouldReviewEvery(completedCount, interval int) (bool, string) {
+	if interval <= 0 {
+		interval = ReviewInterval
+	}
+	if completedCount > 0 && completedCount%interval == 0 {
 		return true, fmt.Sprintf("已完成 %d 章，触发全局审阅", completedCount)
 	}
 	return false, ""

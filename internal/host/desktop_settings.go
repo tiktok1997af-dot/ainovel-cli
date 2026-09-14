@@ -18,27 +18,31 @@ var ErrDesktopSettingsStale = errors.New("host: desktop settings stale")
 const DesktopSettingsApplyNextProcess = "next_process_start"
 
 type DesktopSettingsValues struct {
-	BrowserPath     string
-	ProfileName     string
-	StartURL        string
-	Language        string
-	ReasoningEffort string
-	Style           string
-	ContextWindow   int
-	NotifyEnabled   bool
-	NotifyEvents    []string
+	BrowserPath        string
+	ProfileName        string
+	StartURL           string
+	Language           string
+	ReasoningEffort    string
+	Style              string
+	ContextWindow      int
+	PipelineMode       string
+	CheckpointChapters int
+	NotifyEnabled      bool
+	NotifyEvents       []string
 }
 
 type DesktopSettingsRuntimeSnapshot struct {
-	BrowserPath     string
-	ProfileName     string
-	StartURL        string
-	Language        string
-	ReasoningEffort string
-	Style           string
-	ContextWindow   int
-	NotifyEnabled   bool
-	NotifyEvents    []string
+	BrowserPath        string
+	ProfileName        string
+	StartURL           string
+	Language           string
+	ReasoningEffort    string
+	Style              string
+	ContextWindow      int
+	PipelineMode       string
+	CheckpointChapters int
+	NotifyEnabled      bool
+	NotifyEvents       []string
 }
 
 type DesktopSettingsSnapshot struct {
@@ -54,15 +58,17 @@ type DesktopSettingsSnapshot struct {
 }
 
 type DesktopSettingsUpdate struct {
-	BrowserPath     string
-	ProfileName     string
-	StartURL        string
-	Language        string
-	ReasoningEffort string
-	Style           string
-	ContextWindow   int
-	NotifyEnabled   bool
-	NotifyEvents    []string
+	BrowserPath        string
+	ProfileName        string
+	StartURL           string
+	Language           string
+	ReasoningEffort    string
+	Style              string
+	ContextWindow      int
+	PipelineMode       string
+	CheckpointChapters int
+	NotifyEnabled      bool
+	NotifyEvents       []string
 }
 
 func (h *Host) DesktopSettingsRead() (DesktopSettingsSnapshot, error) {
@@ -100,6 +106,8 @@ func (h *Host) DesktopSettingsSave(expectedFingerprint string, update DesktopSet
 	candidate.ReasoningEffort = strings.TrimSpace(update.ReasoningEffort)
 	candidate.Style = strings.TrimSpace(update.Style)
 	candidate.ContextWindow = update.ContextWindow
+	candidate.Pipeline.Mode = strings.ToLower(strings.TrimSpace(update.PipelineMode))
+	candidate.Pipeline.CheckpointChapters = update.CheckpointChapters
 	enabled := update.NotifyEnabled
 	candidate.Notify.Enabled = &enabled
 	candidate.Notify.Events = append([]string(nil), update.NotifyEvents...)
@@ -170,30 +178,34 @@ func desktopSettingsFingerprint(cfg bootstrap.Config, scope string) (string, err
 
 func desktopSettingsValuesFromConfig(cfg bootstrap.Config) DesktopSettingsValues {
 	return DesktopSettingsValues{
-		BrowserPath:     cfg.Web.BrowserPath,
-		ProfileName:     cfg.Web.ProfileName,
-		StartURL:        cfg.Web.StartURL,
-		Language:        cfg.Language,
-		ReasoningEffort: cfg.ReasoningEffort,
-		Style:           cfg.Style,
-		ContextWindow:   cfg.ContextWindow,
-		NotifyEnabled:   cfg.Notify.IsEnabled(),
-		NotifyEvents:    append([]string(nil), cfg.Notify.Events...),
+		BrowserPath:        cfg.Web.BrowserPath,
+		ProfileName:        cfg.Web.ProfileName,
+		StartURL:           cfg.Web.StartURL,
+		Language:           cfg.Language,
+		ReasoningEffort:    cfg.ReasoningEffort,
+		Style:              cfg.Style,
+		ContextWindow:      cfg.ContextWindow,
+		PipelineMode:       cfg.Pipeline.Mode,
+		CheckpointChapters: cfg.Pipeline.CheckpointChapters,
+		NotifyEnabled:      cfg.Notify.IsEnabled(),
+		NotifyEvents:       append([]string(nil), cfg.Notify.Events...),
 	}
 }
 
 func desktopSettingsRuntimeFromConfig(cfg bootstrap.Config) DesktopSettingsRuntimeSnapshot {
 	cfg.FillDefaults()
 	return DesktopSettingsRuntimeSnapshot{
-		BrowserPath:     cfg.Web.BrowserPath,
-		ProfileName:     cfg.Web.ProfileName,
-		StartURL:        cfg.Web.StartURL,
-		Language:        cfg.Language,
-		ReasoningEffort: cfg.ReasoningEffort,
-		Style:           cfg.Style,
-		ContextWindow:   cfg.ContextWindow,
-		NotifyEnabled:   cfg.Notify.IsEnabled(),
-		NotifyEvents:    append([]string(nil), cfg.Notify.Events...),
+		BrowserPath:        cfg.Web.BrowserPath,
+		ProfileName:        cfg.Web.ProfileName,
+		StartURL:           cfg.Web.StartURL,
+		Language:           cfg.Language,
+		ReasoningEffort:    cfg.ReasoningEffort,
+		Style:              cfg.Style,
+		ContextWindow:      cfg.ContextWindow,
+		PipelineMode:       cfg.Pipeline.Mode,
+		CheckpointChapters: cfg.Pipeline.CheckpointChapters,
+		NotifyEnabled:      cfg.Notify.IsEnabled(),
+		NotifyEvents:       append([]string(nil), cfg.Notify.Events...),
 	}
 }
 
@@ -205,6 +217,8 @@ func desktopSettingsEqualRuntime(saved DesktopSettingsValues, runtime DesktopSet
 		saved.ReasoningEffort == runtime.ReasoningEffort &&
 		saved.Style == runtime.Style &&
 		saved.ContextWindow == runtime.ContextWindow &&
+		saved.PipelineMode == runtime.PipelineMode &&
+		saved.CheckpointChapters == runtime.CheckpointChapters &&
 		saved.NotifyEnabled == runtime.NotifyEnabled &&
 		slices.Equal(saved.NotifyEvents, runtime.NotifyEvents)
 }
