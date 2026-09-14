@@ -66,7 +66,12 @@ type ModelSet struct {
 
 func specialistRole(role string) bool {
 	role = strings.ToLower(strings.TrimSpace(role))
-	return role == "architect" || role == "editor"
+	switch role {
+	case "architect", "editor", "repair":
+		return true
+	default:
+		return false
+	}
 }
 
 func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
