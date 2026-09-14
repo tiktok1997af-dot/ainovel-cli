@@ -16,6 +16,7 @@ import (
 type Runtime struct {
 	core             *host.Host
 	closeOnce        sync.Once
+	closeErr         error
 	closed           atomic.Bool
 	snapshotRevision atomic.Uint64
 
@@ -36,6 +37,7 @@ type Runtime struct {
 	reviewBackend *reviewAwareRunBackend
 	coCreate      *coCreateRuntimeAdapter
 	dualWeb       *dualWebProviderRuntime
+	chatGPTLane   chatGPTLaneRuntime
 }
 
 var _ AppRuntime = (*Runtime)(nil)
@@ -56,6 +58,10 @@ func New(core *host.Host) (*Runtime, error) {
 		reviewBackend:  reviewBackend,
 		coCreate:       newCoCreateRuntimeAdapter(core),
 		dualWeb:        newDualWebProviderRuntime(),
+		chatGPTLane:    newAppRuntimeChatGPTLane(core),
+	}
+	if err := rt.syncChatGPTProviderSnapshot(); err != nil {
+		return nil, normalizeAppError(fmt.Errorf("initialize ChatGPT Web lane projection: %w", err))
 	}
 	rt.run = newRunCoordinator(reviewBackend, lanes)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
@@ -96,6 +102,8 @@ func (r *Runtime) Query(ctx context.Context, req QueryRequest) (QueryResult, err
 	} else if isDualWebQueryKind(req.Kind) {
 		if r.dualWeb == nil {
 			err = ErrRuntimeUnavailable
+		} else if syncErr := r.syncChatGPTProviderSnapshot(); syncErr != nil {
+			err = syncErr
 		} else {
 			data, err = r.dualWeb.query(req)
 		}
@@ -135,6 +143,9 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 		if r.dualWeb == nil {
 			out = result
 			err = ErrRuntimeUnavailable
+		} else if syncErr := r.syncChatGPTProviderSnapshot(); syncErr != nil {
+			out = result
+			err = syncErr
 		} else {
 			out, err = r.dualWeb.dispatch(cmd)
 		}
@@ -239,9 +250,15 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.run != nil {
 			r.run.close()
 		}
+		if err := r.stopChatGPTLane(); err != nil {
+			r.closeErr = fmt.Errorf("stop ChatGPT Web lane: %w", err)
+		}
 		r.core.Close()
 		r.commandWG.Wait()
 	})
+	if r.closeErr != nil {
+		return normalizeAppError(r.closeErr)
+	}
 	return nil
 }
 
