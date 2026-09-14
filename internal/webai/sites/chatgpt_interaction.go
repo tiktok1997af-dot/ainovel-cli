@@ -368,13 +368,14 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     if (best === '') return value;
     return Math.abs(value.length - expected.length) < Math.abs(best.length - expected.length) ? value : best;
   }, '');
+  const actual = matched || diagnostic;
   const active = document.activeElement;
   const focused = Boolean(active && (active === composer || composer.contains(active) || (active.shadowRoot && active.shadowRoot.activeElement === composer)));
   const composerKind = kindOf(composer);
-  const composerLength = diagnostic.length;
-  const composerLineBreaks = lineBreakCount(diagnostic);
+  const composerLength = actual.length;
+  const composerLineBreaks = lineBreakCount(actual);
   const expectedLineBreaks = lineBreakCount(expected);
-  if (!matched) return {
+  if (actual !== expected) return {
     ok:false,
     reason:'composer text mismatch',
     composer_length:composerLength,
@@ -384,7 +385,7 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     composer_kind:composerKind,
     focused
   };
-  if (matched.length === 0) return {
+  if (actual.length === 0) return {
     ok:false,
     reason:'composer is empty after trusted input',
     composer_length:0,
@@ -397,9 +398,9 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
   return {
     ok:true,
     reason:'',
-    composer_length:matched.length,
+    composer_length:actual.length,
     expected_length:expected.length,
-    composer_line_breaks:lineBreakCount(matched),
+    composer_line_breaks:lineBreakCount(actual),
     expected_line_breaks:expectedLineBreaks,
     composer_kind:composerKind,
     focused
