@@ -2,6 +2,7 @@ package desktopui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -60,9 +61,9 @@ func (c *Controller) SelectModelProvider(provider appruntime.WebAIProvider) erro
 	return nil
 }
 
-// ExecuteSelectedStart is the D05 START wiring. The selected provider is sent
-// through CommandRequest.Resource, a field already present in desktop contract
-// v1, leaving the frozen StartCommandPayload unchanged.
+// ExecuteSelectedStart is the D05 START wiring. Provider selection is carried
+// in the D05 payload envelope; RunID/TaskID/Resource remain untouched for their
+// separately locked G05 ownership boundary.
 func (c *Controller) ExecuteSelectedStart(ctx context.Context) (appruntime.CommandResult, error) {
 	if c == nil || c.runtime == nil {
 		return appruntime.CommandResult{}, ErrNilRuntime
@@ -99,7 +100,10 @@ func (c *Controller) ExecuteSelectedStart(ctx context.Context) (appruntime.Comma
 	if err != nil {
 		return appruntime.CommandResult{}, err
 	}
-	payload, err := lifecycleCommandPayload(LifecycleStart)
+	payload, err := json.Marshal(appruntime.DesktopStartCommandPayload{
+		StartCommandPayload: appruntime.StartCommandPayload{Mode: appruntime.StartModeResume},
+		Provider:            provider,
+	})
 	if err != nil {
 		c.finishLifecycleFailure(commandID, "", viewErrorFromError(err))
 		return appruntime.CommandResult{}, err
@@ -108,7 +112,6 @@ func (c *Controller) ExecuteSelectedStart(ctx context.Context) (appruntime.Comma
 		ContractVersion: appruntime.ContractVersion,
 		ID:              commandID,
 		Kind:            appruntime.CommandStart,
-		Resource:        string(provider),
 		Payload:         payload,
 	}
 	result, dispatchErr := c.runtime.Dispatch(ctx, request)
