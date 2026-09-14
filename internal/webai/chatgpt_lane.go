@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	ChatGPTWebSite           = "chatgpt-web"
-	ChatGPTWebLaneID         = "chatgpt-web"
+	ChatGPTWebSite            = "chatgpt-web"
+	ChatGPTWebLaneID          = "chatgpt-web"
 	DefaultChatGPTProfileName = "ainovel-chatgpt-web"
 )
 
