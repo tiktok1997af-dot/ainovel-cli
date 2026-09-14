@@ -105,8 +105,11 @@ func (r *providerResilienceLayer) recordSuccess(provider WebAIProvider) {
 	circuit.lastSuccessAt = r.nowLocked()
 }
 
-// recordNeutral releases a HALF_OPEN probe for outcomes that are not provider
-// health failures (auth required, caller cancellation, capacity contention).
+// recordNeutral completes an admission whose outcome says nothing about
+// provider health (auth required, caller cancellation, capacity contention).
+// A HALF_OPEN probe therefore returns to OPEN without incrementing failures;
+// otherwise an unrelated neutral request could accidentally close/degrade the
+// circuit and release a provider for immediate browser churn.
 func (r *providerResilienceLayer) recordNeutral(provider WebAIProvider) {
 	if r == nil {
 		return
@@ -115,11 +118,9 @@ func (r *providerResilienceLayer) recordNeutral(provider WebAIProvider) {
 	defer r.mu.Unlock()
 	circuit := r.circuitLocked(provider)
 	if circuit.state == providerCircuitHalfOpen {
-		circuit.state = providerCircuitDegraded
+		circuit.state = providerCircuitOpen
 		circuit.probeInFlight = false
-		if circuit.consecutiveFailures >= d06ProviderFailureThreshold {
-			circuit.consecutiveFailures = d06ProviderFailureThreshold - 1
-		}
+		circuit.openedAt = r.nowLocked()
 	}
 }
 
@@ -207,8 +208,19 @@ func (a *resilientDualWebLaneAuthority) Acquire(ctx context.Context, provider We
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		a.health.recordNeutral(provider)
+		// This request never acquired circuit admission, so it must not mutate a
+		// HALF_OPEN probe that may belong to another request.
 		return err
+	}
+	switch provider {
+	case ProviderGeminiWeb:
+		if a.rt.run.lanes == nil {
+			return ErrRuntimeUnavailable
+		}
+	case ProviderChatGPTWeb:
+		if a.rt.chatGPTLane == nil || a.rt.dualWeb == nil {
+			return ErrRuntimeUnavailable
+		}
 	}
 	if err := a.health.beginAdmission(provider); err != nil {
 		return fmt.Errorf("%w: %s", ErrMutationPrecondition, err)
@@ -220,7 +232,6 @@ func (a *resilientDualWebLaneAuthority) Acquire(ctx context.Context, provider We
 	case ProviderChatGPTWeb:
 		return a.acquireChatGPT(ctx)
 	default:
-		a.health.recordNeutral(provider)
 		return fmt.Errorf("unsupported provider lane %q", provider)
 	}
 }
