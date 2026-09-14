@@ -2,6 +2,7 @@ package webai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,6 +51,16 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 	if err := os.MkdirAll(cfg.ProfileDir, 0o700); err != nil {
 		return nil, fmt.Errorf("webai: create browser profile: %w", err)
 	}
+	// Chrome leaves DevToolsActivePort behind after a forced/unclean shutdown.
+	// With --remote-debugging-port=0 that stale file can point the next readiness
+	// probe at the previous process' dead port before the new Chrome rewrites it.
+	// Remove only this ephemeral locator before an owned DevTools launch; cookies,
+	// login state and the rest of the persistent profile stay untouched.
+	if !cfg.DisableDevTools {
+		if err := clearStaleDevToolsActivePort(cfg.ProfileDir); err != nil {
+			return nil, err
+		}
+	}
 
 	args, err := browserLaunchArgs(cfg)
 	if err != nil {
@@ -65,6 +76,14 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 		close(p.done)
 	}()
 	return p, nil
+}
+
+func clearStaleDevToolsActivePort(profileDir string) error {
+	path := filepath.Join(profileDir, devToolsActivePortFile)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("webai: clear stale Chrome DevTools locator: %w", err)
+	}
+	return nil
 }
 
 func browserLaunchArgs(cfg BrowserLaunchConfig) ([]string, error) {
