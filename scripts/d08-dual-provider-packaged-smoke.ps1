@@ -279,12 +279,32 @@ $progressPath = Join-Path $outputRoot 'meta\progress.json'
 if (-not (Test-Path -LiteralPath $progressPath)) { Fail 'progress.json missing after packaged run' }
 $progress = Get-Content -LiteralPath $progressPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $completed = @($progress.completed_chapters | ForEach-Object { [int]$_ })
-if ($completed -notcontains 1 -or $completed -contains 2) { Fail 'packaged run did not stop at exact one-chapter boundary' }
-
 $chapters = @(Get-ChildItem -LiteralPath (Join-Path $outputRoot 'chapters') -Filter '*.md' -File -ErrorAction SilentlyContinue)
-if ($chapters.Count -ne 1 -or $chapters[0].Length -lt 100) { Fail 'expected exactly one non-trivial committed chapter' }
-
 $providerEvidence = Read-SessionProviderEvidence (Join-Path $outputRoot 'meta\sessions\agents')
+
+$boundaryDiagnostic = [ordered]@{
+    schema = 'ainovel-d08-boundary-diagnostic/1'
+    git_sha = $ExpectedGitSha
+    phase = [string]$progress.phase
+    current_chapter = [int]$progress.current_chapter
+    in_progress_chapter = [int]$progress.in_progress_chapter
+    total_chapters = [int]$progress.total_chapters
+    completed_chapters = $completed
+    chapter_file_count = [int]$chapters.Count
+    architect_session_files = [int]$providerEvidence.architect_files
+    writer_session_files = [int]$providerEvidence.writer_files
+    architect_chatgpt = [bool]$providerEvidence.architect_chatgpt
+    writer_gemini = [bool]$providerEvidence.writer_gemini
+}
+$boundaryDiagnosticPath = Join-Path $EvidenceDir 'd08-boundary-diagnostic.json'
+[System.IO.File]::WriteAllText($boundaryDiagnosticPath, (($boundaryDiagnostic | ConvertTo-Json -Depth 4) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+$completedText = if ($completed.Count -eq 0) { '<empty>' } else { ($completed -join ',') }
+$boundarySummary = "completed=$completedText phase=$($boundaryDiagnostic.phase) current=$($boundaryDiagnostic.current_chapter) in_progress=$($boundaryDiagnostic.in_progress_chapter) total=$($boundaryDiagnostic.total_chapters) chapter_files=$($boundaryDiagnostic.chapter_file_count) architect_files=$($boundaryDiagnostic.architect_session_files) writer_files=$($boundaryDiagnostic.writer_session_files) architect_chatgpt=$($boundaryDiagnostic.architect_chatgpt) writer_gemini=$($boundaryDiagnostic.writer_gemini)"
+Write-Host "D08 sanitized boundary diagnostic: $boundarySummary"
+
+if ($completed -notcontains 1 -or $completed -contains 2) { Fail ("packaged run did not stop at exact one-chapter boundary; " + $boundarySummary) }
+if ($chapters.Count -ne 1 -or $chapters[0].Length -lt 100) { Fail ("expected exactly one non-trivial committed chapter; " + $boundarySummary) }
+
 if (-not [bool]$providerEvidence.architect_chatgpt) { Fail 'no architect assistant session entry proved ChatGPT specialist execution' }
 if (-not [bool]$providerEvidence.writer_gemini) { Fail 'no writer assistant session entry proved Gemini primary execution' }
 
