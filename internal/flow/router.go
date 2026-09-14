@@ -59,6 +59,9 @@ type State struct {
 	// 已完成章节中的最大章节号；为 0 表示尚未开始写作。
 	LastCompleted int
 
+	// 非分层全局审阅的运行时 checkpoint cadence。零值保留旧默认。
+	ReviewInterval int
+
 	// 上一章的弧边界信息；IsArcEnd=false 时其他字段无意义。
 	// 当 LastCompleted=0 或非 Layered 模式时应为 nil。
 	ArcBoundary *storepkg.ArcBoundary
@@ -238,11 +241,10 @@ func Route(s State) *Instruction {
 		}
 	}
 
-	// 11. 非分层全局审阅：每 ReviewInterval 章一次(事实:该章的 global review 未落盘)。
-	//     原为 commit_chapter 返回值里的 review_required 信号,现按事实推导——
-	//     返回值只是事实的镜像,Route 从 store 直接看同一事实。
+	// 11. 非分层全局审阅：按 State.ReviewInterval 章一次
+	// （零值由 ShouldReviewEvery 回退旧 ReviewInterval）。
 	if !p.Layered && s.LastCompleted > 0 {
-		if due, reason := domain.ShouldReview(len(p.CompletedChapters)); due && !s.HasGlobalReview {
+		if due, reason := domain.ShouldReviewEvery(len(p.CompletedChapters), s.ReviewInterval); due && !s.HasGlobalReview {
 			return &Instruction{
 				Agent:  "editor",
 				Task:   fmt.Sprintf("对前 %d 章做全局审阅（save_review scope=global, chapter=%d）", s.LastCompleted, s.LastCompleted),
