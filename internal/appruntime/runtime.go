@@ -65,7 +65,7 @@ func New(core *host.Host) (*Runtime, error) {
 		return nil, normalizeAppError(fmt.Errorf("initialize ChatGPT Web lane projection: %w", err))
 	}
 	rt.run = newRunCoordinator(reviewBackend, lanes)
-	rt.parallel = newDualWebParallelAuthority(runtimeDualWebLanes{rt: rt}, reviewBackend)
+	rt.parallel = newDualWebParallelAuthority(newResilientDualWebLaneAuthority(rt), reviewBackend)
 	if err := rt.run.recoverRestart(context.Background()); err != nil {
 		return nil, normalizeAppError(fmt.Errorf("recover multi-run runtime: %w", err))
 	}
