@@ -1,0 +1,131 @@
+package webai
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"github.com/voocel/ainovel-cli/internal/webai/sites"
+)
+
+type fixedChatGPTEvaluator struct {
+	payload json.RawMessage
+	closed  bool
+}
+
+func (e *fixedChatGPTEvaluator) Eval(context.Context, string) (json.RawMessage, error) {
+	return append(json.RawMessage(nil), e.payload...), nil
+}
+
+func (e *fixedChatGPTEvaluator) Close() error {
+	e.closed = true
+	return nil
+}
+
+func chatGPTModelEvaluatorFactory(payload string) func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
+	return func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
+		return &fixedChatGPTEvaluator{payload: json.RawMessage(payload)}, nil
+	}
+}
+
+func TestD03ChatGPTLaneIsLazyIsolatedAndSingleTurn(t *testing.T) {
+	launcher := &fakeBrowserLauncher{}
+	profileDir := filepath.Join(t.TempDir(), "chatgpt-profile")
+	lane := NewChatGPTLane(ChatGPTLaneConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  profileDir,
+		Launcher:    launcher,
+		Probe: fixedReadinessProbe{result: ReadinessResult{
+			State:  SessionReady,
+			Reason: "authenticated ChatGPT test session",
+		}},
+		evaluatorFactory: chatGPTModelEvaluatorFactory(`{
+			"active_label":"GPT Test",
+			"models":[{"label":"GPT Test","available":true},{"label":"GPT Alt","available":true}]
+		}`),
+	})
+
+	if got := lane.Snapshot(); got.State != SessionStopped || got.Ready || got.Authenticated {
+		t.Fatalf("lazy lane initial snapshot = %+v", got)
+	}
+	if len(launcher.configs) != 0 {
+		t.Fatalf("lazy lane launched browser during construction: %d launches", len(launcher.configs))
+	}
+
+	snap, err := lane.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer lane.Stop()
+	if !snap.Authenticated || !snap.Ready || snap.Catalog.ActiveModelID == "" || snap.Catalog.Revision == "" {
+		t.Fatalf("ready lane snapshot = %+v", snap)
+	}
+	if snap.LaneID != ChatGPTWebLaneID {
+		t.Fatalf("lane id = %q, want %q", snap.LaneID, ChatGPTWebLaneID)
+	}
+	if len(launcher.configs) != 1 || launcher.lastConfig().ProfileDir != profileDir {
+		t.Fatalf("isolated launch config = %+v", launcher.configs)
+	}
+
+	if err := lane.BeginTurn(); err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	if err := lane.BeginTurn(); err == nil {
+		t.Fatal("second concurrent ChatGPT turn was accepted")
+	}
+	if got := lane.Snapshot(); got.Ready || !got.TurnActive {
+		t.Fatalf("active-turn snapshot = %+v", got)
+	}
+	lane.EndTurn()
+	if got := lane.Snapshot(); !got.Ready || got.TurnActive {
+		t.Fatalf("post-turn snapshot = %+v", got)
+	}
+
+	if err := lane.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := lane.Snapshot(); got.State != SessionStopped || got.Ready || got.Authenticated || got.Catalog.ActiveModelID != "" || len(got.Catalog.Models) != 0 {
+		t.Fatalf("stopped lane leaked readiness/catalog state: %+v", got)
+	}
+}
+
+func TestD03ChatGPTLaneFailsClosedWhenActiveModelCannotBeObserved(t *testing.T) {
+	lane := NewChatGPTLane(ChatGPTLaneConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  filepath.Join(t.TempDir(), "chatgpt-profile"),
+		Launcher:    &fakeBrowserLauncher{},
+		Probe: fixedReadinessProbe{result: ReadinessResult{
+			State: SessionReady,
+		}},
+		evaluatorFactory: chatGPTModelEvaluatorFactory(`{"active_label":"","models":[]}`),
+	})
+
+	snap, err := lane.Start(context.Background())
+	defer lane.Stop()
+	if err == nil {
+		t.Fatal("missing active model observation unexpectedly succeeded")
+	}
+	if !snap.Authenticated || snap.Ready || snap.Catalog.ActiveModelID != "" || snap.Catalog.Revision != "" {
+		t.Fatalf("model-observation failure did not fail closed: %+v", snap)
+	}
+	if err := lane.BeginTurn(); err == nil {
+		t.Fatal("turn admitted without verified ChatGPT model observation")
+	}
+}
+
+func TestD03ChatGPTLaneDefaultProfileIsProviderSpecific(t *testing.T) {
+	lane := NewChatGPTLane(ChatGPTLaneConfig{})
+	if lane.session == nil {
+		t.Fatal("ChatGPT lane session is nil")
+	}
+	if lane.session.cfg.Site != ChatGPTWebSite {
+		t.Fatalf("site = %q", lane.session.cfg.Site)
+	}
+	if lane.session.cfg.ProfileName != DefaultChatGPTProfileName {
+		t.Fatalf("profile = %q, want %q", lane.session.cfg.ProfileName, DefaultChatGPTProfileName)
+	}
+	if lane.session.cfg.StartURL != "https://chatgpt.com/" {
+		t.Fatalf("start URL = %q", lane.session.cfg.StartURL)
+	}
+}
