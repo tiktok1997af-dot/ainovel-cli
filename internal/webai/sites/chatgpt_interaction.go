@@ -120,7 +120,6 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input TextInputEvaluator, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	lastReason := "send control is not ready"
-	sawExplicitSend := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -141,33 +140,28 @@ func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input
 		if err := json.Unmarshal(raw, &result); err != nil {
 			return fmt.Errorf("chatgpt resolve send result: %w", err)
 		}
-		if result.Found {
-			sawExplicitSend = true
-		}
 		if result.OK {
 			if result.X < 0 || result.Y < 0 {
-				return fmt.Errorf("chatgpt submit: resolved send coordinates are invalid")
+				lastReason = "resolved send coordinates are invalid"
+			} else {
+				if err := input.Click(ctx, result.X, result.Y); err != nil {
+					return fmt.Errorf("chatgpt trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
+				}
+				return nil
 			}
-			if err := input.Click(ctx, result.X, result.Y); err != nil {
-				return fmt.Errorf("chatgpt trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
-			}
-			return nil
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
 			lastReason = reason
 		}
 		if !result.Retry || !time.Now().Before(deadline) {
-			if !sawExplicitSend {
-				enter, ok := evaluator.(chatGPTEnterEvaluator)
-				if !ok {
-					return fmt.Errorf("chatgpt submit: %s; evaluator does not support trusted Enter fallback", lastReason)
-				}
-				if err := enter.PressEnter(ctx); err != nil {
-					return fmt.Errorf("chatgpt trusted Enter fallback: %w", err)
-				}
-				return nil
+			enter, ok := evaluator.(chatGPTEnterEvaluator)
+			if !ok {
+				return fmt.Errorf("chatgpt submit: %s; evaluator does not support trusted Enter fallback", lastReason)
 			}
-			return fmt.Errorf("chatgpt submit: %s", lastReason)
+			if err := enter.PressEnter(ctx); err != nil {
+				return fmt.Errorf("chatgpt trusted Enter fallback after %s: %w", lastReason, err)
+			}
+			return nil
 		}
 		timer := time.NewTimer(chatGPTSendPoll)
 		select {
@@ -421,7 +415,8 @@ const chatGPTResolveSendExpression = `(() => {
     'button[aria-label*="submit" i]',
     'button[aria-label*="gửi" i]',
     'button[title*="send" i]',
-    'button[title*="gửi" i]'
+    'button[title*="gửi" i]',
+    'form button[type="submit"]'
   ];
   for (const selector of selectors) {
     for (const el of document.querySelectorAll(selector)) {
