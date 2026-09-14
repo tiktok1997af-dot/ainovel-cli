@@ -28,20 +28,10 @@ func agentToRole(name string) string {
 	return name
 }
 
-// subagentMaxRetries 是所有 Worker 的 LLM retry 上限。
-// 退避策略：指数退避（受 maxDelay 上限约束），优先服从 server Retry-After。
-// 工具只在完整 Assistant 消息提交后启动，因此 stream-idle / 503 /
-// 短暂网络抖动可以在 Worker 内安全重试，不会重放工具副作用。
 const subagentMaxRetries = 7
 
-// ApplyThinking 把某具体角色的推理强度应用到 Worker（运行时 /model 调整用）。
-// architect → 两个 architect_* 子代理；writer/editor → 对应子代理。
-// 空 level = 沿用模型/provider 默认。其它 role 名忽略。
 type ApplyThinking func(role string, level agentcore.ThinkingLevel)
 
-// ParseThinkingLevel 把配置字符串转 agentcore.ThinkingLevel。
-// "" 合法（= 不覆盖/继承）；其余须是 off/low/medium/high/xhigh/max 之一，
-// 否则返回 error（启动时降级当空并 warn，运行时把 error 回显给用户）。
 func ParseThinkingLevel(s string) (agentcore.ThinkingLevel, error) {
 	lv := agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(s))
 	switch lv {
@@ -55,7 +45,6 @@ func ParseThinkingLevel(s string) (agentcore.ThinkingLevel, error) {
 
 func ResolveThinkingForModel(model agentcore.ChatModel, level agentcore.ThinkingLevel) (agentcore.ThinkingLevel, bool) {
 	level = agentcore.NormalizeThinkingLevel(level)
-	// 对不支持 thinking 的普通 chat 模型，显式 off 不是 no-op，而是非法参数。
 	if cp, ok := model.(llm.CapabilityProvider); ok && cp.Capabilities().Thinking.Supported == llm.SupportNo {
 		return agentcore.ThinkingAuto, level == agentcore.ThinkingAuto
 	}
@@ -69,7 +58,6 @@ func AvailableThinkingForModel(model agentcore.ChatModel) []agentcore.ThinkingLe
 	return llm.ThinkingPolicyFor(model).Available
 }
 
-// roleThinking 解析某角色生效的推理强度；非法值降级为空（不覆盖）并 warn。
 func roleThinking(cfg bootstrap.Config, role string) agentcore.ThinkingLevel {
 	lv, err := ParseThinkingLevel(cfg.ResolveReasoningEffort(role))
 	if err != nil {
@@ -84,12 +72,6 @@ func resolvedRoleThinking(model agentcore.ChatModel, cfg bootstrap.Config, role 
 	return resolved
 }
 
-// BuildWorkers 组装三个 Worker(architect_short/long、writer、editor)为可程序化
-// 调用的 subagent.Runner。Engine 直接调用其类型化入口，无 LLM 工具层
-// (docs/engine-rfc.md §1)。
-// 返回 Runner、WriterRestorePack 与 ApplyThinking(运行时 /model 联动各角色推理强度;
-// writer/architect/editor 的 ContextManager 走工厂自动重建)。
-// onGuardBlock 可选(nil 安全):各 Worker StopGuard 的拦截/升级审计回调。
 func BuildWorkers(
 	cfg bootstrap.Config,
 	store *store.Store,
@@ -98,7 +80,6 @@ func BuildWorkers(
 	bundle assets.Bundle,
 	onGuardBlock guard.BlockHook,
 ) (*subagent.Runner, *ctxpack.WriterRestorePack, ApplyThinking) {
-	// 共享工具
 	contextTool := tools.NewContextTool(store, bundle.References, cfg.Style, styleStats)
 	readChapter := tools.NewReadChapterTool(store)
 
@@ -127,18 +108,15 @@ func BuildWorkers(
 		tools.NewSaveVolumeSummaryTool(store),
 	}
 
-	// WEB-only: every worker uses the same browser-backed model. There is no
-	// cross-provider fallback or provider/model resubmission.
 	architectModel := models.ForRole("architect")
 	writerModel := models.ForRole("writer")
+	repairModel := models.ForRole("repair")
 	editorModel := models.ForRole("editor")
 
-	// Writer 的 ContextManager 由工厂每次调用重建；窗口来自 WEB-only 本地配置。
 	writerProvider, writerModelName, _ := models.CurrentSelection("writer")
 	writerContextWindow, writerSource := cfg.ResolveContextWindow(writerProvider, writerModelName)
 	bootstrap.LogContextWindowChoice("writer", writerModelName, writerContextWindow, writerSource)
 
-	// modelLookup 只给 session 写固定 WEB runtime identity，便于离线 provenance/replay。
 	modelLookup := func(agentName string) (string, string) {
 		role := agentToRole(agentName)
 		provider, name, _ := models.CurrentSelection(role)
@@ -179,36 +157,18 @@ func BuildWorkers(
 		StopGuardFactory:    architectStopGuardFactory,
 	}
 
-	// 唯一组装路径:协议模板 {{VOICE}} 原位回填文风段,再追加风格预设。
-	// eval 的 voice A/B 走同一函数,保证两臂等价(docs/voice-layer.md §3.2)。
 	writerPrompt := assets.BuildWriterPrompt(bundle.Prompts.Writer, bundle.Voice, bundle.Styles[cfg.Style])
-
 	restore := &ctxpack.WriterRestorePack{}
 	restore.Refresh(store)
 
-	writer := subagent.Config{
-		Name:           "writer",
-		Description:    "创作者：自主完成一章的构思、写作、自审和提交",
-		Model:          writerModel,
-		SystemPrompt:   writerPrompt,
-		Tools:          writerTools,
-		MaxTurns:       30,
-		MaxRetries:     subagentMaxRetries,
-		ThinkingLevel:  resolvedRoleThinking(writerModel, cfg, "writer"),
-		StopAfterTools: []string{"commit_chapter"},
-		OnMessage:      onMsg,
-		StopGuardFactory: func(_, _ string) agentcore.StopGuard {
-			return guard.NewWriterStopGuard(store, onGuardBlock)
-		},
-		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
-			// 每章按当前 writer 模型重建上下文管理器。
+	writerContextFactory := func(agentName string) func(agentcore.ChatModel) agentcore.ContextManager {
+		return func(model agentcore.ChatModel) agentcore.ContextManager {
 			window, _ := models.ResolveContextWindow(bootstrap.ModelProvider(model), bootstrap.ModelName(model))
 			return newContextManager(contextManagerConfig{
-				Model:         model,
-				ContextWindow: window,
-				ReserveTokens: bootstrap.CompactReserveTokens(window),
-				Agent:         "writer",
-				// 提交投影，避免后续轮次反复改写请求前缀。
+				Model:           model,
+				ContextWindow:   window,
+				ReserveTokens:   bootstrap.CompactReserveTokens(window),
+				Agent:           agentName,
 				CommitProjected: true,
 				ToolMicrocompact: &corecontext.ToolResultMicrocompactConfig{
 					MinResultTokens: 200,
@@ -227,7 +187,44 @@ func BuildWorkers(
 					TurnPrefixPrompt:    ctxpack.WriterTurnPrefixPrompt,
 				},
 			})
+		}
+	}
+
+	writer := subagent.Config{
+		Name:           "writer",
+		Description:    "创作者：自主完成一章的构思、写作、自审和提交",
+		Model:          writerModel,
+		SystemPrompt:   writerPrompt,
+		Tools:          writerTools,
+		MaxTurns:       30,
+		MaxRetries:     subagentMaxRetries,
+		ThinkingLevel:  resolvedRoleThinking(writerModel, cfg, "writer"),
+		StopAfterTools: []string{"commit_chapter"},
+		OnMessage:      onMsg,
+		StopGuardFactory: func(_, _ string) agentcore.StopGuard {
+			return guard.NewWriterStopGuard(store, onGuardBlock)
 		},
+		ContextManagerFactory: writerContextFactory("writer"),
+	}
+
+	// D07 repair reuses the exact writer tool/commit contract but is a distinct
+	// worker identity so bounded review repair executes on the ChatGPT specialist
+	// lane without moving ordinary drafting away from Gemini.
+	repair := subagent.Config{
+		Name:           "repair",
+		Description:    "返工专家：只处理 Review 已授权章节的重写或打磨并提交修订",
+		Model:          repairModel,
+		SystemPrompt:   writerPrompt,
+		Tools:          writerTools,
+		MaxTurns:       30,
+		MaxRetries:     subagentMaxRetries,
+		ThinkingLevel:  resolvedRoleThinking(repairModel, cfg, "repair"),
+		StopAfterTools: []string{"commit_chapter"},
+		OnMessage:      onMsg,
+		StopGuardFactory: func(_, _ string) agentcore.StopGuard {
+			return guard.NewWriterStopGuard(store, onGuardBlock)
+		},
+		ContextManagerFactory: writerContextFactory("repair"),
 	}
 
 	editor := subagent.Config{
@@ -240,9 +237,6 @@ func BuildWorkers(
 		MaxRetries:    subagentMaxRetries,
 		ThinkingLevel: resolvedRoleThinking(editorModel, cfg, "editor"),
 		OnMessage:     onMsg,
-		// 终态产物命中即停。终态退出仍会咨询 StopGuard（契约测试 TestContract_
-		// TerminalToolExitConsultsStopGuard），任务感知的 NewEditorStopGuard 负责
-		// 否决"被派生成摘要却只做了复核"的提前退出，所以 save_review 可以安全硬停。
 		StopAfterToolResult: func(toolName string, _ json.RawMessage) bool {
 			return toolName == "save_review" || toolName == "save_arc_summary" || toolName == "save_volume_summary"
 		},
@@ -251,16 +245,15 @@ func BuildWorkers(
 		},
 	}
 
-	runner := subagent.NewRunner(architectShort, architectLong, writer, editor)
+	runner := subagent.NewRunner(architectShort, architectLong, writer, repair, editor)
 
-	// 运行时联动各角色推理强度（/model 调整用）。
 	applyThinking := func(role string, level agentcore.ThinkingLevel) {
 		switch role {
 		case "architect":
 			level, _ = ResolveThinkingForModel(models.ForRole("architect"), level)
 			runner.SetThinkingLevel("architect_short", level)
 			runner.SetThinkingLevel("architect_long", level)
-		case "writer", "editor":
+		case "writer", "editor", "repair":
 			level, _ = ResolveThinkingForModel(models.ForRole(role), level)
 			runner.SetThinkingLevel(role, level)
 		}
