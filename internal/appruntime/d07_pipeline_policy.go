@@ -10,13 +10,13 @@ const D07MaxAutoRepairAttempts = 1
 type D07PipelineRole string
 
 const (
-	D07RoleWriter       D07PipelineRole = "writer"
-	D07RoleCoCreate     D07PipelineRole = "cocreate"
-	D07RoleArchitect    D07PipelineRole = "architect"
-	D07RoleReview       D07PipelineRole = "review"
-	D07RoleContinuity   D07PipelineRole = "continuity"
-	D07RoleRepair       D07PipelineRole = "repair"
-	D07RoleQA           D07PipelineRole = "qa"
+	D07RoleWriter     D07PipelineRole = "writer"
+	D07RoleCoCreate   D07PipelineRole = "cocreate"
+	D07RoleArchitect  D07PipelineRole = "architect"
+	D07RoleReview     D07PipelineRole = "review"
+	D07RoleContinuity D07PipelineRole = "continuity"
+	D07RoleRepair     D07PipelineRole = "repair"
+	D07RoleQA         D07PipelineRole = "qa"
 )
 
 // D07PipelinePolicy resolves only the AUTHOR-frozen execution policy. It does
