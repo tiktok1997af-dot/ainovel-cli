@@ -17,6 +17,12 @@ const (
 	MinCompactReserve    = 8000
 	WebProviderName      = "web"
 	WebModelName         = "gemini-web"
+
+	PipelineModeBalanced       = "balanced"
+	PipelineModeTurbo          = "turbo"
+	PipelineCheckpointMin      = 5
+	PipelineCheckpointMax      = 10
+	PipelineCheckpointDefault  = 10
 )
 
 func CompactReserveTokens(window int) int {
@@ -30,8 +36,6 @@ func CompactReserveTokens(window int) int {
 	return reserve
 }
 
-// WebAIConfig is the browser-owned AI runtime configuration. It contains no
-// account credential: login state remains inside the visible Chrome profile.
 type WebAIConfig struct {
 	Enabled     bool   `json:"enabled,omitempty"`
 	Site        string `json:"site,omitempty"`
@@ -49,8 +53,40 @@ func (w *WebAIConfig) fillDefaults() {
 	}
 }
 
-// RoleConfig contains provider-neutral per-role intent only. Every role uses
-// the same owned browser model; provider/model/fallback routing was removed.
+type PipelineConfig struct {
+	Mode               string `json:"mode,omitempty"`
+	CheckpointChapters int    `json:"checkpoint_chapters,omitempty"`
+}
+
+func (p *PipelineConfig) fillDefaults() {
+	if strings.TrimSpace(p.Mode) == "" {
+		p.Mode = PipelineModeBalanced
+	} else {
+		p.Mode = strings.ToLower(strings.TrimSpace(p.Mode))
+	}
+	if p.CheckpointChapters == 0 {
+		p.CheckpointChapters = PipelineCheckpointDefault
+	}
+}
+
+func (p PipelineConfig) validate() error {
+	mode := strings.ToLower(strings.TrimSpace(p.Mode))
+	if mode == "" {
+		mode = PipelineModeBalanced
+	}
+	if mode != PipelineModeBalanced && mode != PipelineModeTurbo {
+		return fmt.Errorf("pipeline.mode must be balanced or turbo: %w", errs.ErrConfig)
+	}
+	checkpoint := p.CheckpointChapters
+	if checkpoint == 0 {
+		checkpoint = PipelineCheckpointDefault
+	}
+	if checkpoint < PipelineCheckpointMin || checkpoint > PipelineCheckpointMax {
+		return fmt.Errorf("pipeline.checkpoint_chapters must be between %d and %d: %w", PipelineCheckpointMin, PipelineCheckpointMax, errs.ErrConfig)
+	}
+	return nil
+}
+
 type RoleConfig struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
@@ -59,19 +95,18 @@ var knownRoles = map[string]bool{
 	"architect":         true,
 	"writer":            true,
 	"editor":            true,
+	"repair":            true,
 	"import_segment":    true,
 	"import_analyze":    true,
 	"import_synthesize": true,
 }
 
-// Config is the WEB-only application configuration.
 type Config struct {
 	OutputDir string `json:"-"`
 
-	Web WebAIConfig `json:"web,omitzero"`
+	Web      WebAIConfig  `json:"web,omitzero"`
+	Pipeline PipelineConfig `json:"pipeline,omitzero"`
 
-	// Provider and ModelName are runtime identity aliases used by historical
-	// metadata/session code. They are never loaded from or written to JSON.
 	Provider  string `json:"-"`
 	ModelName string `json:"-"`
 
@@ -93,9 +128,6 @@ type NotifyConfig struct {
 
 func (n NotifyConfig) IsEnabled() bool { return n.Enabled == nil || *n.Enabled }
 
-// LegacyAPIMigrationHint is stable and user-facing. JSON loading detects old
-// API-era keys before decoding so deleting those fields can never silently
-// turn an old configuration into a different runtime.
 const LegacyAPIMigrationHint = "legacy AI provider/API configuration is no longer supported; set web.enabled=true and web.site=gemini-web, then remove provider/providers/api_key/base_url, budget, and role provider/model/fallback routing"
 
 func (c *Config) ValidateBase() error {
@@ -114,6 +146,9 @@ func (c *Config) validateWebOnly() error {
 	}
 	if site != WebModelName {
 		return fmt.Errorf("web.site %q is not supported; W5 currently supports gemini-web only: %w", c.Web.Site, errs.ErrConfig)
+	}
+	if err := c.Pipeline.validate(); err != nil {
+		return err
 	}
 
 	for _, field := range []struct{ name, value string }{
@@ -171,6 +206,7 @@ func (c *Config) FillDefaults() {
 		c.Provider = WebProviderName
 		c.ModelName = WebModelName
 	}
+	c.Pipeline.fillDefaults()
 	if c.Roles == nil {
 		c.Roles = make(map[string]RoleConfig)
 	}
@@ -199,8 +235,6 @@ const (
 	CtxWindowDefault ContextWindowSource = "default"
 )
 
-// ResolveContextWindow is entirely local in WEB-only mode. No provider model
-// registry is consulted and no remote context-window metadata is refreshed.
 func (c Config) ResolveContextWindow(_, _ string) (int, ContextWindowSource) {
 	if c.ContextWindow > 0 {
 		return c.ContextWindow, CtxWindowConfig
