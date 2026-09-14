@@ -18,11 +18,11 @@ const (
 	WebProviderName      = "web"
 	WebModelName         = "gemini-web"
 
-	PipelineModeBalanced       = "balanced"
-	PipelineModeTurbo          = "turbo"
-	PipelineCheckpointMin      = 5
-	PipelineCheckpointMax      = 10
-	PipelineCheckpointDefault  = 10
+	PipelineModeBalanced      = "balanced"
+	PipelineModeTurbo         = "turbo"
+	PipelineCheckpointMin     = 5
+	PipelineCheckpointMax     = 10
+	PipelineCheckpointDefault = 10
 )
 
 func CompactReserveTokens(window int) int {
@@ -104,7 +104,7 @@ var knownRoles = map[string]bool{
 type Config struct {
 	OutputDir string `json:"-"`
 
-	Web      WebAIConfig  `json:"web,omitzero"`
+	Web      WebAIConfig    `json:"web,omitzero"`
 	Pipeline PipelineConfig `json:"pipeline,omitzero"`
 
 	Provider  string `json:"-"`
