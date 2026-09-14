@@ -155,6 +155,35 @@ function Read-SessionProviderEvidence([string]$SessionDir) {
     return $result
 }
 
+function Get-SanitizedBoundarySummary([string]$RuntimeRoot) {
+    $outputRoot = Join-Path $RuntimeRoot 'output\novel'
+    $progressPath = Join-Path $outputRoot 'meta\progress.json'
+    if (-not (Test-Path -LiteralPath $progressPath)) { return 'progress=<missing>' }
+
+    try {
+        $progress = Get-Content -LiteralPath $progressPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $progressFields = @{}
+        foreach ($name in @('completed_chapters', 'phase', 'current_chapter', 'in_progress_chapter', 'total_chapters')) {
+            $property = $progress.PSObject.Properties[$name]
+            $progressFields[$name] = if ($null -eq $property) { $null } else { $property.Value }
+        }
+        $completed = @()
+        if ($null -ne $progressFields['completed_chapters']) {
+            $completed = @($progressFields['completed_chapters'] | ForEach-Object { [int]$_ })
+        }
+        $chapters = @(Get-ChildItem -LiteralPath (Join-Path $outputRoot 'chapters') -Filter '*.md' -File -ErrorAction SilentlyContinue)
+        $providerEvidence = Read-SessionProviderEvidence (Join-Path $outputRoot 'meta\sessions\agents')
+        $completedText = if ($completed.Count -eq 0) { '<empty>' } else { ($completed -join ',') }
+        $phase = if ($null -eq $progressFields['phase']) { '' } else { [string]$progressFields['phase'] }
+        $current = if ($null -eq $progressFields['current_chapter']) { 0 } else { [int]$progressFields['current_chapter'] }
+        $inProgress = if ($null -eq $progressFields['in_progress_chapter']) { 0 } else { [int]$progressFields['in_progress_chapter'] }
+        $total = if ($null -eq $progressFields['total_chapters']) { 0 } else { [int]$progressFields['total_chapters'] }
+        return "completed=$completedText phase=$phase current=$current in_progress=$inProgress total=$total chapter_files=$($chapters.Count) architect_files=$($providerEvidence.architect_files) writer_files=$($providerEvidence.writer_files) architect_chatgpt=$([bool]$providerEvidence.architect_chatgpt) writer_gemini=$([bool]$providerEvidence.writer_gemini)"
+    } catch {
+        return 'progress=<unreadable>'
+    }
+}
+
 if ($env:OS -ne 'Windows_NT') { Fail 'real interactive Windows is required' }
 $gitBash = Resolve-GitBash
 
@@ -255,7 +284,11 @@ try {
     if (-not $process.WaitForExit($RunTimeoutSeconds * 1000)) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         Stop-PackagedProduction $productionExe
-        Fail 'packaged strict-role run timed out'
+        Start-Sleep -Milliseconds 250
+        $timeoutBoundary = Get-SanitizedBoundarySummary $RuntimeDir
+        $timeoutStderr = Get-SanitizedDiagnosticTail $stderrPath
+        $timeoutStdout = Get-SanitizedDiagnosticTail $stdoutPath
+        Fail ("packaged strict-role run timed out; boundary=" + $timeoutBoundary + "; stderr=" + $timeoutStderr + "; stdout=" + $timeoutStdout)
     }
     try { $process.WaitForExit() } catch { }
 
