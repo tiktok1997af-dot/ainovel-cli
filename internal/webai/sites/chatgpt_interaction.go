@@ -16,11 +16,14 @@ const (
 )
 
 type chatGPTPromptReadback struct {
-	OK             bool   `json:"ok"`
-	Reason         string `json:"reason"`
-	ComposerLength int    `json:"composer_length"`
-	ExpectedLength int    `json:"expected_length"`
-	Focused        bool   `json:"focused"`
+	OK                 bool   `json:"ok"`
+	Reason             string `json:"reason"`
+	ComposerLength     int    `json:"composer_length"`
+	ExpectedLength     int    `json:"expected_length"`
+	ComposerLineBreaks int    `json:"composer_line_breaks"`
+	ExpectedLineBreaks int    `json:"expected_line_breaks"`
+	ComposerKind       string `json:"composer_kind"`
+	Focused            bool   `json:"focused"`
 }
 
 func (ChatGPT) Conversation(ctx context.Context, evaluator Evaluator) (ConversationSnapshot, error) {
@@ -64,6 +67,7 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 		Found bool    `json:"found"`
 		X     float64 `json:"x"`
 		Y     float64 `json:"y"`
+		Kind  string  `json:"kind"`
 	}
 	if err := json.Unmarshal(raw, &composer); err != nil {
 		return fmt.Errorf("chatgpt resolve composer result: %w", err)
@@ -79,12 +83,31 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 	if err != nil {
 		return err
 	}
-	if !prepared.OK || prepared.ComposerLength <= 0 {
+	if !prepared.OK {
 		reason := strings.TrimSpace(prepared.Reason)
 		if reason == "" {
 			reason = "prompt composer did not retain trusted input"
 		}
-		return fmt.Errorf("chatgpt submit: %s after bounded settle (expected_length=%d actual_length=%d focused=%t)", reason, prepared.ExpectedLength, prepared.ComposerLength, prepared.Focused)
+		kind := strings.TrimSpace(prepared.ComposerKind)
+		if kind == "" {
+			kind = strings.TrimSpace(composer.Kind)
+		}
+		if kind == "" {
+			kind = "unknown"
+		}
+		return fmt.Errorf(
+			"chatgpt submit: %s after bounded settle (expected_length=%d actual_length=%d expected_line_breaks=%d actual_line_breaks=%d composer_kind=%s focused=%t)",
+			reason,
+			prepared.ExpectedLength,
+			prepared.ComposerLength,
+			prepared.ExpectedLineBreaks,
+			prepared.ComposerLineBreaks,
+			kind,
+			prepared.Focused,
+		)
+	}
+	if prepared.ComposerLength <= 0 {
+		return fmt.Errorf("chatgpt submit: verified composer is empty")
 	}
 
 	deadline := time.Now().Add(chatGPTSendWait)
@@ -148,6 +171,7 @@ func waitForChatGPTPromptReadback(ctx context.Context, evaluator Evaluator, expr
 		if err := json.Unmarshal(raw, &current); err != nil {
 			return last, fmt.Errorf("chatgpt verify prompt result: %w", err)
 		}
+		current.ComposerKind = strings.TrimSpace(current.ComposerKind)
 		last = current
 		if current.OK || time.Now().After(deadline) {
 			return current, nil
@@ -222,26 +246,136 @@ const chatGPTConversationExpression = `(() => {
 })()`
 
 const chatGPTResolveComposerExpression = `(() => {
-  const visible = (el) => { if (!el) return false; const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-  const selectors = ['#prompt-textarea','textarea[data-testid*="prompt" i]','[contenteditable="true"][role="textbox"]'];
-  for (const selector of selectors) for (const el of document.querySelectorAll(selector)) if (visible(el)) { const r = el.getBoundingClientRect(); return {found:true,x:r.left+r.width/2,y:r.top+r.height/2}; }
-  return {found:false,x:0,y:0};
+  const visible = (el) => {
+    if (!el) return false;
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+  };
+  const kindOf = (composer) => {
+    if (composer instanceof HTMLTextAreaElement) return 'textarea';
+    if (composer instanceof HTMLInputElement) return 'input';
+    if (composer.classList && composer.classList.contains('ProseMirror')) return 'prosemirror';
+    if (composer.getAttribute('contenteditable') === 'true') return 'contenteditable';
+    return 'other';
+  };
+  const selectors = ['#prompt-textarea','textarea[data-testid*="prompt" i]','div.ProseMirror[contenteditable="true"]','[contenteditable="true"][role="textbox"]'];
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (!visible(el)) continue;
+      const r = el.getBoundingClientRect();
+      const maxX = Math.max(0, window.innerWidth - 1);
+      const maxY = Math.max(0, window.innerHeight - 1);
+      return {
+        found: true,
+        x: Math.min(maxX, Math.max(0, r.left + Math.min(r.width / 2, 48))),
+        y: Math.min(maxY, Math.max(0, r.top + r.height / 2)),
+        kind: kindOf(el)
+      };
+    }
+  }
+  return {found:false,x:0,y:0,kind:'missing'};
 })()`
 
 const chatGPTVerifyPromptExpressionTemplate = `(() => {
-  const expected = %s;
-  const visible = (el) => { if (!el) return false; const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-  const selectors = ['#prompt-textarea','textarea[data-testid*="prompt" i]','[contenteditable="true"][role="textbox"]'];
-  let composer = null;
-  for (const selector of selectors) { composer = Array.from(document.querySelectorAll(selector)).find(visible); if (composer) break; }
-  if (!composer) return {ok:false,reason:'composer not found',composer_length:0,expected_length:expected.length,focused:false};
-  const actual = String(('value' in composer ? composer.value : composer.innerText) || '');
-  return {ok:actual===expected,reason:actual===expected?'':'composer text mismatch',composer_length:actual.length,expected_length:expected.length,focused:document.activeElement===composer};
+  const prompt = %s;
+  const visible = (el) => {
+    if (!el) return false;
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const firstVisible = (selectors) => {
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (visible(el)) return el;
+      }
+    }
+    return null;
+  };
+  const kindOf = (composer) => {
+    if (composer instanceof HTMLTextAreaElement) return 'textarea';
+    if (composer instanceof HTMLInputElement) return 'input';
+    if (composer.classList && composer.classList.contains('ProseMirror')) return 'prosemirror';
+    if (composer.getAttribute('contenteditable') === 'true') return 'contenteditable';
+    return 'other';
+  };
+  const normalize = (value) => String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+  const lineBreakCount = (value) => (String(value || '').match(/\n/g) || []).length;
+  const readComposer = (composer) => {
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      return String(composer.value || '');
+    }
+    if (composer.children && composer.children.length > 0) {
+      const blocks = Array.from(composer.children);
+      const blockTags = new Set(['P','DIV','LI','PRE','BLOCKQUOTE']);
+      if (blocks.some((block) => blockTags.has(String(block.tagName || '').toUpperCase()))) {
+        return blocks.map((block) => {
+          if (String(block.tagName || '').toUpperCase() === 'BR') return '';
+          return String(block.innerText || block.textContent || '');
+        }).join('\n');
+      }
+    }
+    return String(composer.innerText || composer.textContent || '');
+  };
+  const expected = normalize(prompt);
+  const composer = firstVisible(['#prompt-textarea','textarea[data-testid*="prompt" i]','div.ProseMirror[contenteditable="true"]','[contenteditable="true"][role="textbox"]']);
+  if (!composer) return {
+    ok:false,
+    reason:'composer not found',
+    composer_length:0,
+    expected_length:expected.length,
+    composer_line_breaks:0,
+    expected_line_breaks:lineBreakCount(expected),
+    composer_kind:'missing',
+    focused:false
+  };
+  const actual = normalize(readComposer(composer));
+  const active = document.activeElement;
+  const focused = Boolean(active && (active === composer || composer.contains(active) || (active.shadowRoot && active.shadowRoot.activeElement === composer)));
+  const composerKind = kindOf(composer);
+  const composerLength = actual.length;
+  const composerLineBreaks = lineBreakCount(actual);
+  const expectedLineBreaks = lineBreakCount(expected);
+  if (actual !== expected) return {
+    ok:false,
+    reason:'composer text mismatch',
+    composer_length:composerLength,
+    expected_length:expected.length,
+    composer_line_breaks:composerLineBreaks,
+    expected_line_breaks:expectedLineBreaks,
+    composer_kind:composerKind,
+    focused
+  };
+  if (composerLength === 0) return {
+    ok:false,
+    reason:'composer is empty after trusted input',
+    composer_length:0,
+    expected_length:expected.length,
+    composer_line_breaks:0,
+    expected_line_breaks:expectedLineBreaks,
+    composer_kind:composerKind,
+    focused
+  };
+  return {
+    ok:true,
+    reason:'',
+    composer_length:composerLength,
+    expected_length:expected.length,
+    composer_line_breaks:composerLineBreaks,
+    expected_line_breaks:expectedLineBreaks,
+    composer_kind:composerKind,
+    focused
+  };
 })()`
 
 const chatGPTResolveSendExpression = `(() => {
   const visible = (el) => { if (!el) return false; const s = getComputedStyle(el); const r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-  const selectors = ['button[data-testid="send-button"]','button[aria-label*="send" i]'];
+  const selectors = ['button[data-testid="send-button"]','button[aria-label*="send" i]','button[aria-label*="gửi" i]'];
   for (const selector of selectors) for (const el of document.querySelectorAll(selector)) if (visible(el)) { const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true'; const r = el.getBoundingClientRect(); return {ok:!disabled,retry:disabled,reason:disabled?'send button disabled':'',x:r.left+r.width/2,y:r.top+r.height/2,action:'button'}; }
   return {ok:false,retry:true,reason:'send button not found',x:0,y:0,action:''};
 })()`
