@@ -15,7 +15,6 @@ const (
 	DefaultChatGPTProfileName = "ainovel-chatgpt-web"
 )
 
-// ChatGPTLaneConfig owns one isolated persistent ChatGPT browser profile.
 type ChatGPTLaneConfig struct {
 	BrowserPath string
 	ProfileDir  string
@@ -44,7 +43,6 @@ type ChatGPTLane struct {
 	mu               sync.Mutex
 	session          *SessionManager
 	adapter          sites.ModelCatalogObserver
-	interaction      sites.InteractionAdapter
 	transport        *GeminiWebTransport
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 	turnActive       bool
@@ -76,14 +74,13 @@ func NewChatGPTLane(cfg ChatGPTLaneConfig) *ChatGPTLane {
 	}
 	interaction := sites.ChatGPT{}
 	transport, _ := NewGeminiWebTransport(GeminiWebTransportConfig{
-		Session:           session,
-		adapter:           interaction,
+		Session:          session,
+		adapter:          interaction,
 		evaluatorFactory: factory,
 	})
 	return &ChatGPTLane{
 		session:          session,
 		adapter:          interaction,
-		interaction:      interaction,
 		transport:        transport,
 		evaluatorFactory: factory,
 	}
