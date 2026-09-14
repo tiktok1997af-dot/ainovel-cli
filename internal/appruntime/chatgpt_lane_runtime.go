@@ -42,43 +42,63 @@ func projectChatGPTProviderSnapshot(snapshot webai.ChatGPTLaneSnapshot) webAIPro
 		catalog.Models = append(catalog.Models, WebAIModelOptionDTO{ID: model.ID, Label: model.Label, Available: model.Available})
 	}
 	laneID := snapshot.LaneID
-	if laneID == "" { laneID = webai.ChatGPTWebLaneID }
+	if laneID == "" {
+		laneID = webai.ChatGPTWebLaneID
+	}
 	return webAIProviderSnapshot{Provider: ProviderChatGPTWeb, LaneID: laneID, Authenticated: snapshot.Authenticated, Ready: snapshot.Ready, ActiveModelID: snapshot.Catalog.ActiveModelID, Catalog: catalog}
 }
 
 func (r *Runtime) startChatGPTLane(ctx context.Context) (webai.ChatGPTLaneSnapshot, error) {
-	if r == nil || r.chatGPTLane == nil || r.dualWeb == nil { return webai.ChatGPTLaneSnapshot{}, ErrRuntimeUnavailable }
+	if r == nil || r.chatGPTLane == nil || r.dualWeb == nil {
+		return webai.ChatGPTLaneSnapshot{}, ErrRuntimeUnavailable
+	}
 	snapshot, laneErr := r.chatGPTLane.Start(ctx)
 	syncErr := r.dualWeb.updateProvider(projectChatGPTProviderSnapshot(snapshot))
 	if syncErr != nil {
-		if laneErr != nil { return snapshot, errors.Join(laneErr, syncErr) }
+		if laneErr != nil {
+			return snapshot, errors.Join(laneErr, syncErr)
+		}
 		return snapshot, syncErr
 	}
 	return snapshot, laneErr
 }
 
 func (r *Runtime) refreshChatGPTLane(ctx context.Context) (webai.ChatGPTLaneSnapshot, error) {
-	if r == nil || r.chatGPTLane == nil || r.dualWeb == nil { return webai.ChatGPTLaneSnapshot{}, ErrRuntimeUnavailable }
+	if r == nil || r.chatGPTLane == nil || r.dualWeb == nil {
+		return webai.ChatGPTLaneSnapshot{}, ErrRuntimeUnavailable
+	}
 	snapshot, laneErr := r.chatGPTLane.Refresh(ctx)
 	syncErr := r.dualWeb.updateProvider(projectChatGPTProviderSnapshot(snapshot))
 	if syncErr != nil {
-		if laneErr != nil { return snapshot, errors.Join(laneErr, syncErr) }
+		if laneErr != nil {
+			return snapshot, errors.Join(laneErr, syncErr)
+		}
 		return snapshot, syncErr
 	}
 	return snapshot, laneErr
 }
 
 func (r *Runtime) stopChatGPTLane() error {
-	if r == nil || r.chatGPTLane == nil { return nil }
+	if r == nil || r.chatGPTLane == nil {
+		return nil
+	}
 	stopErr := r.chatGPTLane.Stop()
-	if r.dualWeb == nil { return stopErr }
+	if r.dualWeb == nil {
+		return stopErr
+	}
 	syncErr := r.dualWeb.updateProvider(projectChatGPTProviderSnapshot(r.chatGPTLane.Snapshot()))
-	if stopErr != nil || syncErr != nil { return errors.Join(stopErr, syncErr) }
+	if stopErr != nil || syncErr != nil {
+		return errors.Join(stopErr, syncErr)
+	}
 	return nil
 }
 
 func validateProjectedChatGPTSnapshot(snapshot webAIProviderSnapshot) error {
-	if snapshot.Provider != ProviderChatGPTWeb { return fmt.Errorf("ChatGPT provider projection mismatch") }
-	if snapshot.LaneID != webai.ChatGPTWebLaneID { return fmt.Errorf("ChatGPT lane projection mismatch") }
+	if snapshot.Provider != ProviderChatGPTWeb {
+		return fmt.Errorf("ChatGPT provider projection mismatch")
+	}
+	if snapshot.LaneID != webai.ChatGPTWebLaneID {
+		return fmt.Errorf("ChatGPT lane projection mismatch")
+	}
 	return snapshot.Catalog.Validate()
 }
