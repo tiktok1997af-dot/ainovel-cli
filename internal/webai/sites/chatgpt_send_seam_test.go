@@ -61,7 +61,7 @@ func TestD08ChatGPTVerifiedPromptUsesExactlyOneVisibleSendClick(t *testing.T) {
 	}
 }
 
-func TestD08ChatGPTVerifiedPromptFallsBackToExactlyOneTrustedEnterOnlyWhenSendAbsent(t *testing.T) {
+func TestD08ChatGPTVerifiedPromptFallsBackToExactlyOneTrustedEnterWhenSendAbsent(t *testing.T) {
 	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
 		json.RawMessage(`{"ok":false,"retry":true,"found":false,"reason":"send button not found","action":""}`),
 	}}
@@ -74,17 +74,16 @@ func TestD08ChatGPTVerifiedPromptFallsBackToExactlyOneTrustedEnterOnlyWhenSendAb
 	}
 }
 
-func TestD08ChatGPTDisabledExplicitSendNeverFallsBackToEnter(t *testing.T) {
+func TestD08ChatGPTDisabledVisibleSendFallsBackToExactlyOneTrustedEnter(t *testing.T) {
 	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
 		json.RawMessage(`{"ok":false,"retry":true,"found":true,"reason":"send button disabled","x":100,"y":200,"action":"button"}`),
 	}}
 
-	err := submitVerifiedChatGPTPrompt(context.Background(), e, e, 0)
-	if err == nil || !strings.Contains(err.Error(), "send button disabled") {
-		t.Fatalf("error = %v, want disabled-send fail-closed error", err)
+	if err := submitVerifiedChatGPTPrompt(context.Background(), e, e, 0); err != nil {
+		t.Fatalf("submitVerifiedChatGPTPrompt: %v", err)
 	}
-	if e.clicks != 0 || e.enters != 0 {
-		t.Fatalf("clicks=%d enters=%d, disabled explicit Send must not click or Enter", e.clicks, e.enters)
+	if e.clicks != 0 || e.enters != 1 {
+		t.Fatalf("clicks=%d enters=%d, want disabled Send to fall back to exactly one trusted Enter", e.clicks, e.enters)
 	}
 }
 
@@ -139,6 +138,7 @@ func TestD08ChatGPTSendResolverCoversCurrentSendControls(t *testing.T) {
 		`button[aria-label*="send" i]`,
 		`button[aria-label*="submit" i]`,
 		`button[aria-label*="gửi" i]`,
+		`form button[type="submit"]`,
 		"found: true",
 	} {
 		if !strings.Contains(chatGPTResolveSendExpression, want) {
