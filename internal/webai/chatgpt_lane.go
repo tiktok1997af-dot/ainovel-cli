@@ -181,6 +181,61 @@ func (l *ChatGPTLane) EndTurn() {
 	l.mu.Unlock()
 }
 
+// ensureVerifiedReady re-establishes the ChatGPT session + model-catalog proof
+// before a model turn. Fresh packaged runtimes can briefly report AUTH_REQUIRED
+// or DEGRADED while the visible Chrome renderer/DevTools target settles. Reuse
+// the transport's existing bounded readiness grace rather than failing after a
+// single Refresh. A persistent AUTH_REQUIRED verdict still fails closed through
+// ErrorAuthRequired; no prompt is submitted before both proofs are READY.
+func (l *ChatGPTLane) ensureVerifiedReady(ctx context.Context) (ChatGPTLaneSnapshot, error) {
+	if l == nil || l.session == nil || l.transport == nil {
+		return ChatGPTLaneSnapshot{}, fmt.Errorf("webai: ChatGPT transport is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return l.Snapshot(), err
+	}
+
+	snap := l.Snapshot()
+	if snap.Ready {
+		return snap, nil
+	}
+	if snap.TurnActive {
+		return snap, fmt.Errorf("webai: ChatGPT lane already has an active turn")
+	}
+
+	if snap.State == SessionStopped {
+		started, startErr := l.Start(ctx)
+		if started.Ready {
+			return started, nil
+		}
+		// STARTING can transiently land in AUTH_REQUIRED/DEGRADED while Chrome
+		// finishes loading. Those states are handled below by bounded readiness
+		// recovery. Hard lifecycle failures remain fail-closed immediately.
+		if startErr != nil && started.State != SessionAuthRequired && started.State != SessionDegraded && started.State != SessionReady {
+			return started, startErr
+		}
+	}
+
+	sessionSnap, err := l.transport.ensureReady(ctx)
+	if err != nil {
+		l.clearCatalog()
+		return l.Snapshot(), err
+	}
+	if sessionSnap.State != SessionReady {
+		l.clearCatalog()
+		return l.Snapshot(), fmt.Errorf("webai: ChatGPT lane is not verified READY")
+	}
+	if err := l.observeModels(ctx, sessionSnap); err != nil {
+		return l.Snapshot(), err
+	}
+
+	snap = l.Snapshot()
+	if !snap.Ready {
+		return snap, fmt.Errorf("webai: ChatGPT lane is not verified READY")
+	}
+	return snap, nil
+}
+
 // RoundTrip executes one prompt through the same authenticated lane. It first
 // revalidates readiness/model observation, then holds the lane-local turn lease
 // for the entire DOM round trip. There is no provider fallback.
@@ -191,21 +246,8 @@ func (l *ChatGPTLane) RoundTrip(ctx context.Context, prompt string) (string, err
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	snap := l.Snapshot()
-	if snap.TurnActive {
-		return "", fmt.Errorf("webai: ChatGPT lane already has an active turn")
-	}
-	var err error
-	if snap.State == SessionStopped {
-		snap, err = l.Start(ctx)
-	} else if !snap.Ready {
-		snap, err = l.Refresh(ctx)
-	}
-	if err != nil {
+	if _, err := l.ensureVerifiedReady(ctx); err != nil {
 		return "", err
-	}
-	if !snap.Ready {
-		return "", fmt.Errorf("webai: ChatGPT lane is not verified READY")
 	}
 	if err := l.BeginTurn(); err != nil {
 		return "", err

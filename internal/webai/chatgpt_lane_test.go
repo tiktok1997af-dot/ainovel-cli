@@ -3,8 +3,10 @@ package webai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/webai/sites"
 )
@@ -27,6 +29,23 @@ func chatGPTModelEvaluatorFactory(payload string) func(context.Context, SessionS
 	return func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error) {
 		return &fixedChatGPTEvaluator{payload: json.RawMessage(payload)}, nil
 	}
+}
+
+type sequenceReadinessProbe struct {
+	results []ReadinessResult
+	calls   int
+}
+
+func (p *sequenceReadinessProbe) Probe(context.Context, SessionSnapshot) (ReadinessResult, error) {
+	if len(p.results) == 0 {
+		return ReadinessResult{State: SessionFailed, Reason: "empty readiness sequence"}, nil
+	}
+	index := p.calls
+	if index >= len(p.results) {
+		index = len(p.results) - 1
+	}
+	p.calls++
+	return p.results[index], nil
 }
 
 func TestD03ChatGPTLaneIsLazyIsolatedAndSingleTurn(t *testing.T) {
@@ -127,5 +146,70 @@ func TestD03ChatGPTLaneDefaultProfileIsProviderSpecific(t *testing.T) {
 	}
 	if lane.session.cfg.StartURL != "https://chatgpt.com/" {
 		t.Fatalf("start URL = %q", lane.session.cfg.StartURL)
+	}
+}
+
+func TestD08ChatGPTLaneBoundedRevalidatesFreshSessionBeforeDispatch(t *testing.T) {
+	probe := &sequenceReadinessProbe{results: []ReadinessResult{
+		{State: SessionAuthRequired, Reason: "renderer still settling"},
+		{State: SessionReady, Reason: "persisted ChatGPT login ready"},
+	}}
+	lane := NewChatGPTLane(ChatGPTLaneConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  filepath.Join(t.TempDir(), "chatgpt-profile"),
+		Launcher:    &fakeBrowserLauncher{},
+		Probe:       probe,
+		evaluatorFactory: chatGPTModelEvaluatorFactory(`{
+			"active_label":"GPT Test",
+			"models":[{"label":"GPT Test","available":true}]
+		}`),
+	})
+	lane.transport.authRequiredGrace = 100 * time.Millisecond
+	lane.transport.readinessPollInterval = time.Millisecond
+
+	snap, err := lane.ensureVerifiedReady(context.Background())
+	defer lane.Stop()
+	if err != nil {
+		t.Fatalf("ensureVerifiedReady: %v", err)
+	}
+	if !snap.Authenticated || !snap.Ready || snap.State != SessionReady {
+		t.Fatalf("revalidated lane snapshot = %+v", snap)
+	}
+	if probe.calls < 2 {
+		t.Fatalf("readiness probe calls = %d, want at least 2", probe.calls)
+	}
+	if snap.Catalog.ActiveModelID == "" || snap.Catalog.Revision == "" {
+		t.Fatalf("revalidated model catalog = %+v", snap.Catalog)
+	}
+}
+
+func TestD08ChatGPTLanePersistentAuthRequiredStillFailsClosed(t *testing.T) {
+	lane := NewChatGPTLane(ChatGPTLaneConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  filepath.Join(t.TempDir(), "chatgpt-profile"),
+		Launcher:    &fakeBrowserLauncher{},
+		Probe: fixedReadinessProbe{result: ReadinessResult{
+			State:  SessionAuthRequired,
+			Reason: "manual login required",
+		}},
+		evaluatorFactory: chatGPTModelEvaluatorFactory(`{
+			"active_label":"GPT Test",
+			"models":[{"label":"GPT Test","available":true}]
+		}`),
+	})
+	lane.transport.authRequiredGrace = 10 * time.Millisecond
+	lane.transport.readinessPollInterval = time.Millisecond
+
+	_, err := lane.ensureVerifiedReady(context.Background())
+	defer lane.Stop()
+	if err == nil {
+		t.Fatal("persistent AUTH_REQUIRED unexpectedly became READY")
+	}
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr.Kind != ErrorAuthRequired {
+		t.Fatalf("error = %v, want ErrorAuthRequired", err)
+	}
+	if got := lane.Snapshot(); got.Ready || got.Authenticated || got.Catalog.ActiveModelID != "" || got.Catalog.Revision != "" {
+		t.Fatalf("AUTH_REQUIRED lane did not fail closed: %+v", got)
 	}
 }
