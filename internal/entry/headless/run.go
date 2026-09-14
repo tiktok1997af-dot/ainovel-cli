@@ -37,6 +37,15 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	if err != nil {
 		return err
 	}
+	// D08 packaged/headless lifecycle: Host.Close owns deterministic engine/Gemini
+	// shutdown first; the strict-role ChatGPT specialist lane is then stopped on
+	// the same normal-return path. AppRuntime already owns this teardown for the
+	// desktop path, so this closes the remaining packaged CLI lifecycle seam.
+	defer func() {
+		if lane := eng.DesktopChatGPTLane(); lane != nil {
+			_ = lane.Stop()
+		}
+	}()
 	defer eng.Close()
 	if logErr := eng.FileLogError(); logErr != nil {
 		fmt.Fprintf(stderr, "警告：文件日志不可用，继续使用终端日志：%v\n", logErr)
