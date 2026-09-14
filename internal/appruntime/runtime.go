@@ -165,6 +165,13 @@ func (r *Runtime) Dispatch(ctx context.Context, cmd CommandRequest) (CommandResu
 	case isReviewCommandKind(cmd.Kind):
 		out, err = r.dispatchReviewCommand(ctx, cmd)
 	case isLifecycleCommand(cmd.Kind):
+		if cmd.Kind == CommandStart {
+			if gateErr := r.enforceDesktopStartModelGate(ctx, cmd); gateErr != nil {
+				out = result
+				err = gateErr
+				break
+			}
+		}
 		if r.run != nil && r.run.hasActiveRun() {
 			out = result
 			err = fmt.Errorf("%w: active Run Center execution owns lifecycle control", ErrCommandNotAllowed)
