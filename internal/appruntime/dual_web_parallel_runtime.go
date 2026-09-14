@@ -29,12 +29,12 @@ type dualWebJobSpec struct {
 }
 
 type dualWebParallelSnapshot struct {
-	ActiveJobs     int
-	ActiveAI       int
-	ActiveLocal    int
-	GeminiActive   int
-	ChatGPTActive  int
-	ShuttingDown   bool
+	ActiveJobs    int
+	ActiveAI      int
+	ActiveLocal   int
+	GeminiActive  int
+	ChatGPTActive int
+	ShuttingDown  bool
 }
 
 type dualWebLaneAuthority interface {
