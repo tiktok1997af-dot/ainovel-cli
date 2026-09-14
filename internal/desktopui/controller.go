@@ -23,6 +23,7 @@ type Controller struct {
 	nextID    uint64
 	lifecycle lifecycleControlPlane
 	write     writeControlPlane
+	model     ModelSelectionState
 	creative  CreativeWorkspaceState
 	cocreate  CoCreateWorkspaceState
 	review    ReviewWorkspaceState
@@ -34,6 +35,7 @@ func NewController(runtime RuntimeClient, width int) *Controller {
 	return &Controller{
 		runtime:   runtime,
 		shell:     NewShell(width),
+		model:     NewModelSelectionState(),
 		creative:  NewCreativeWorkspaceState(),
 		cocreate:  NewCoCreateWorkspaceState(),
 		review:    NewReviewWorkspaceState(),
