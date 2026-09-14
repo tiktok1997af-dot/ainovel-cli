@@ -18,6 +18,22 @@ function Fail([string]$Message) {
     throw "D08 dual-provider packaged smoke FAIL: $Message"
 }
 
+function Resolve-GitBash {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $git -or [string]::IsNullOrWhiteSpace([string]$git.Source)) {
+        Fail 'required command unavailable: git'
+    }
+    $gitCmdDir = Split-Path -Parent $git.Source
+    $gitRoot = Split-Path -Parent $gitCmdDir
+    foreach ($candidate in @(
+        (Join-Path $gitRoot 'bin\bash.exe'),
+        (Join-Path $gitRoot 'usr\bin\bash.exe')
+    )) {
+        if (Test-Path -LiteralPath $candidate) { return (Resolve-Path $candidate).Path }
+    }
+    Fail "Git for Windows bash.exe was not found under $gitRoot"
+}
+
 function Get-ProfileChrome([string]$ProfileDir) {
     if ([string]::IsNullOrWhiteSpace($ProfileDir)) { return @() }
     $needle = "--user-data-dir=$ProfileDir"
@@ -91,9 +107,7 @@ function Read-SessionProviderEvidence([string]$SessionDir) {
 }
 
 if ($env:OS -ne 'Windows_NT') { Fail 'real interactive Windows is required' }
-foreach ($required in @('git','bash')) {
-    if (-not (Get-Command $required -ErrorAction SilentlyContinue)) { Fail "required command unavailable: $required" }
-}
+$gitBash = Resolve-GitBash
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $PackageArchivePath = (Resolve-Path $PackageArchivePath).Path
@@ -112,7 +126,7 @@ Push-Location $RepoRoot
 try {
     $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
     if ($LASTEXITCODE -ne 0 -or $head -ne $ExpectedGitSha) { Fail "candidate drift: $head" }
-    & bash scripts/w55-no-api-audit.sh
+    & $gitBash scripts/w55-no-api-audit.sh
     if ($LASTEXITCODE -ne 0) { Fail 'exact-head W5.5 NO-API audit failed' }
 } finally { Pop-Location }
 
