@@ -30,8 +30,14 @@ type evidence struct {
 func main() {
 	var timeout time.Duration
 	var evidencePath string
+	var siteOverride string
+	var profileOverride string
+	var startURLOverride string
 	flag.DurationVar(&timeout, "timeout", 45*time.Second, "maximum time to wait for each READY transition")
 	flag.StringVar(&evidencePath, "evidence", "w5e-readiness-evidence.json", "sanitized JSON evidence output path")
+	flag.StringVar(&siteOverride, "site", "", "optional WEB site override: gemini-web or chatgpt-web")
+	flag.StringVar(&profileOverride, "profile-name", "", "optional persistent browser profile override")
+	flag.StringVar(&startURLOverride, "start-url", "", "optional WEB start URL override")
 	flag.Parse()
 
 	if timeout <= 0 {
@@ -47,29 +53,46 @@ func main() {
 		fatalf("validate WEB-only config: %v", err)
 	}
 
-	profileName := strings.TrimSpace(cfg.Web.ProfileName)
+	site := normalizeSite(siteOverride)
+	if site == "" {
+		site = normalizeSite(cfg.Web.Site)
+	}
+	if site != bootstrap.WebModelName && site != webai.ChatGPTWebSite {
+		fatalf("unsupported WEB site %q", site)
+	}
+
+	profileName := strings.TrimSpace(profileOverride)
 	if profileName == "" {
-		profileName = "default"
+		if site == webai.ChatGPTWebSite {
+			profileName = webai.DefaultChatGPTProfileName
+		} else {
+			profileName = strings.TrimSpace(cfg.Web.ProfileName)
+			if profileName == "" {
+				profileName = "default"
+			}
+		}
+	}
+
+	startURL := strings.TrimSpace(startURLOverride)
+	if startURL == "" && site == normalizeSite(cfg.Web.Site) {
+		startURL = strings.TrimSpace(cfg.Web.StartURL)
 	}
 
 	mgr := webai.NewSessionManager(webai.SessionConfig{
-		Site:        cfg.Web.Site,
+		Site:        site,
 		BrowserPath: cfg.Web.BrowserPath,
 		ProfileName: profileName,
-		StartURL:    cfg.Web.StartURL,
+		StartURL:    startURL,
 	})
 	defer func() { _ = mgr.Stop() }()
 
 	ev := evidence{
 		Schema:      evidenceSchema,
-		Site:        strings.TrimSpace(cfg.Web.Site),
+		Site:        site,
 		ProfileName: profileName,
 	}
-	if ev.Site == "" {
-		ev.Site = bootstrap.WebModelName
-	}
 
-	first, err := requireReady(mgr, timeout)
+	first, err := requireReady(mgr, site, timeout)
 	if err != nil {
 		fatalf("first READY verification failed: %v", err)
 	}
@@ -82,7 +105,7 @@ func main() {
 	ev.States = append(ev.States, string(webai.SessionStopped))
 	time.Sleep(time.Second)
 
-	restarted, err := requireReady(mgr, timeout)
+	restarted, err := requireReady(mgr, site, timeout)
 	if err != nil {
 		fatalf("restart READY verification failed: %v", err)
 	}
@@ -93,10 +116,21 @@ func main() {
 	if err := writeEvidence(evidencePath, ev); err != nil {
 		fatalf("write evidence: %v", err)
 	}
-	fmt.Printf("W5E readiness PASS: %s -> %s using persistent profile %q\n", first.State, restarted.State, profileName)
+	fmt.Printf("W5E readiness PASS: %s %s -> %s using persistent profile %q\n", site, first.State, restarted.State, profileName)
 }
 
-func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.SessionSnapshot, error) {
+func normalizeSite(site string) string {
+	switch strings.ToLower(strings.TrimSpace(site)) {
+	case "gemini", "gemini-web":
+		return bootstrap.WebModelName
+	case "chatgpt", "chatgpt-web":
+		return webai.ChatGPTWebSite
+	default:
+		return strings.ToLower(strings.TrimSpace(site))
+	}
+}
+
+func requireReady(mgr *webai.SessionManager, site string, timeout time.Duration) (webai.SessionSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -120,7 +154,7 @@ func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.Sessi
 				if reason == "" {
 					reason = "no sanitized readiness reason"
 				}
-				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED after %s (%s); complete normal visible Gemini login outside this verifier, then rerun", authRequiredGrace, reason)
+				return snap, fmt.Errorf("existing Chrome profile is AUTH_REQUIRED after %s for %s (%s); complete normal visible login outside this verifier, then rerun", authRequiredGrace, site, reason)
 			}
 		} else {
 			authSince = time.Time{}
@@ -128,7 +162,7 @@ func requireReady(mgr *webai.SessionManager, timeout time.Duration) (webai.Sessi
 
 		select {
 		case <-ctx.Done():
-			return snap, fmt.Errorf("READY timeout after %s (last state %s, reason %q): %w", timeout, snap.State, strings.TrimSpace(snap.Reason), ctx.Err())
+			return snap, fmt.Errorf("READY timeout after %s for %s (last state %s, reason %q): %w", timeout, site, snap.State, strings.TrimSpace(snap.Reason), ctx.Err())
 		case <-ticker.C:
 			var err error
 			snap, err = mgr.Refresh(ctx)

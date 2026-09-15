@@ -60,9 +60,10 @@ func (c *Controller) Lifecycle() LifecycleCommandState {
 	return out
 }
 
-// ExecuteLifecycle binds only the six G02 lifecycle commands. The global Start
-// control uses G02's safe resume mode for an already opened project; creating a
-// new project/workspace is intentionally not opened by G04.6.
+// ExecuteLifecycle binds only the six G02 lifecycle commands. START keeps the
+// G02 lifecycle/error contract but is forward-ported through the D05 desktop
+// provider envelope so the AppRuntime model gate remains the fail-closed
+// authority for Gemini/ChatGPT readiness and verified model selection.
 func (c *Controller) ExecuteLifecycle(ctx context.Context, action LifecycleAction) (appruntime.CommandResult, error) {
 	if c.runtime == nil {
 		return appruntime.CommandResult{}, ErrNilRuntime
@@ -101,7 +102,7 @@ func (c *Controller) ExecuteLifecycle(ctx context.Context, action LifecycleActio
 		return appruntime.CommandResult{}, err
 	}
 
-	payload, err := lifecycleCommandPayload(action)
+	payload, err := c.lifecycleCommandPayload(action)
 	if err != nil {
 		c.finishLifecycleFailure(commandID, "", viewErrorFromError(err))
 		return appruntime.CommandResult{}, err
@@ -320,11 +321,14 @@ func lifecycleCommandKind(action LifecycleAction) (appruntime.CommandKind, bool)
 	}
 }
 
-func lifecycleCommandPayload(action LifecycleAction) (json.RawMessage, error) {
+func (c *Controller) lifecycleCommandPayload(action LifecycleAction) (json.RawMessage, error) {
 	if action != LifecycleStart {
 		return nil, nil
 	}
-	payload, err := json.Marshal(appruntime.StartCommandPayload{Mode: appruntime.StartModeResume})
+	payload, err := json.Marshal(appruntime.DesktopStartCommandPayload{
+		StartCommandPayload: appruntime.StartCommandPayload{Mode: appruntime.StartModeResume},
+		Provider:            c.model.Selected,
+	})
 	if err != nil {
 		return nil, lifecycleAppError(
 			appruntime.ErrorCodeInvalidArgument,

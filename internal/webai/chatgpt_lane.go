@@ -13,6 +13,11 @@ const (
 	ChatGPTWebSite            = "chatgpt-web"
 	ChatGPTWebLaneID          = "chatgpt-web"
 	DefaultChatGPTProfileName = "ainovel-chatgpt-web"
+
+	chatGPTProviderDefaultModelID       = "provider-default"
+	chatGPTProviderDefaultModelLabel    = "ChatGPT provider default"
+	chatGPTProviderDefaultCatalogRev    = "provider-default/chatgpt-web/v1"
+	chatGPTActiveModelNotObservableText = "chatgpt active model is not observable"
 )
 
 type ChatGPTLaneConfig struct {
@@ -23,6 +28,12 @@ type ChatGPTLaneConfig struct {
 	Launcher    BrowserLauncher
 	Probe       ReadinessProbe
 	Session     *SessionManager
+
+	// RequireObservedModel keeps model-specific routing fail-closed. The current
+	// D08 specialist graph requests only the ChatGPT provider default, so its zero
+	// value permits a deterministic provider-default catalog when the authenticated
+	// ChatGPT UI hides its marketing model label.
+	RequireObservedModel bool
 
 	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
 }
@@ -40,13 +51,14 @@ type ChatGPTLaneSnapshot struct {
 // active model turn. D07 also makes the same lane a WEB-only Transport so role
 // routing never creates a second ChatGPT profile/session/tab.
 type ChatGPTLane struct {
-	mu               sync.Mutex
-	session          *SessionManager
-	adapter          sites.ModelCatalogObserver
-	transport        *GeminiWebTransport
-	evaluatorFactory func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
-	turnActive       bool
-	catalog          sites.ModelCatalogSnapshot
+	mu                   sync.Mutex
+	session              *SessionManager
+	adapter              sites.ModelCatalogObserver
+	transport            *GeminiWebTransport
+	evaluatorFactory     func(context.Context, SessionSnapshot, sites.Adapter) (interactionEvaluator, error)
+	requireObservedModel bool
+	turnActive           bool
+	catalog              sites.ModelCatalogSnapshot
 }
 
 var _ Transport = (*ChatGPTLane)(nil)
@@ -79,10 +91,11 @@ func NewChatGPTLane(cfg ChatGPTLaneConfig) *ChatGPTLane {
 		evaluatorFactory: factory,
 	})
 	return &ChatGPTLane{
-		session:          session,
-		adapter:          interaction,
-		transport:        transport,
-		evaluatorFactory: factory,
+		session:              session,
+		adapter:              interaction,
+		transport:            transport,
+		evaluatorFactory:     factory,
+		requireObservedModel: cfg.RequireObservedModel,
 	}
 }
 
@@ -181,6 +194,61 @@ func (l *ChatGPTLane) EndTurn() {
 	l.mu.Unlock()
 }
 
+// ensureVerifiedReady re-establishes the ChatGPT session + model-catalog proof
+// before a model turn. Fresh packaged runtimes can briefly report AUTH_REQUIRED
+// or DEGRADED while the visible Chrome renderer/DevTools target settles. Reuse
+// the transport's existing bounded readiness grace rather than failing after a
+// single Refresh. A persistent AUTH_REQUIRED verdict still fails closed through
+// ErrorAuthRequired; no prompt is submitted before both proofs are READY.
+func (l *ChatGPTLane) ensureVerifiedReady(ctx context.Context) (ChatGPTLaneSnapshot, error) {
+	if l == nil || l.session == nil || l.transport == nil {
+		return ChatGPTLaneSnapshot{}, fmt.Errorf("webai: ChatGPT transport is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return l.Snapshot(), err
+	}
+
+	snap := l.Snapshot()
+	if snap.Ready {
+		return snap, nil
+	}
+	if snap.TurnActive {
+		return snap, fmt.Errorf("webai: ChatGPT lane already has an active turn")
+	}
+
+	if snap.State == SessionStopped {
+		started, startErr := l.Start(ctx)
+		if started.Ready {
+			return started, nil
+		}
+		// STARTING can transiently land in AUTH_REQUIRED/DEGRADED while Chrome
+		// finishes loading. Those states are handled below by bounded readiness
+		// recovery. Hard lifecycle failures remain fail-closed immediately.
+		if startErr != nil && started.State != SessionAuthRequired && started.State != SessionDegraded && started.State != SessionReady {
+			return started, startErr
+		}
+	}
+
+	sessionSnap, err := l.transport.ensureReady(ctx)
+	if err != nil {
+		l.clearCatalog()
+		return l.Snapshot(), err
+	}
+	if sessionSnap.State != SessionReady {
+		l.clearCatalog()
+		return l.Snapshot(), fmt.Errorf("webai: ChatGPT lane is not verified READY")
+	}
+	if err := l.observeModels(ctx, sessionSnap); err != nil {
+		return l.Snapshot(), err
+	}
+
+	snap = l.Snapshot()
+	if !snap.Ready {
+		return snap, fmt.Errorf("webai: ChatGPT lane is not verified READY")
+	}
+	return snap, nil
+}
+
 // RoundTrip executes one prompt through the same authenticated lane. It first
 // revalidates readiness/model observation, then holds the lane-local turn lease
 // for the entire DOM round trip. There is no provider fallback.
@@ -191,21 +259,8 @@ func (l *ChatGPTLane) RoundTrip(ctx context.Context, prompt string) (string, err
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	snap := l.Snapshot()
-	if snap.TurnActive {
-		return "", fmt.Errorf("webai: ChatGPT lane already has an active turn")
-	}
-	var err error
-	if snap.State == SessionStopped {
-		snap, err = l.Start(ctx)
-	} else if !snap.Ready {
-		snap, err = l.Refresh(ctx)
-	}
-	if err != nil {
+	if _, err := l.ensureVerifiedReady(ctx); err != nil {
 		return "", err
-	}
-	if !snap.Ready {
-		return "", fmt.Errorf("webai: ChatGPT lane is not verified READY")
 	}
 	if err := l.BeginTurn(); err != nil {
 		return "", err
@@ -227,8 +282,12 @@ func (l *ChatGPTLane) observeModels(ctx context.Context, snap SessionSnapshot) e
 	defer evaluator.Close()
 	catalog, err := l.adapter.ObserveModels(ctx, evaluator)
 	if err != nil {
-		l.clearCatalog()
-		return &Error{Kind: ErrorTransport, Op: "observe ChatGPT models", Cause: err, Retry: true}
+		if !l.requireObservedModel && strings.Contains(err.Error(), chatGPTActiveModelNotObservableText) {
+			catalog = chatGPTProviderDefaultCatalog()
+		} else {
+			l.clearCatalog()
+			return &Error{Kind: ErrorTransport, Op: "observe ChatGPT models", Cause: err, Retry: true}
+		}
 	}
 	if catalog.ActiveModelID == "" || catalog.Revision == "" || len(catalog.Models) == 0 {
 		l.clearCatalog()
@@ -238,6 +297,18 @@ func (l *ChatGPTLane) observeModels(ctx context.Context, snap SessionSnapshot) e
 	l.catalog = cloneSiteModelCatalog(catalog)
 	l.mu.Unlock()
 	return nil
+}
+
+func chatGPTProviderDefaultCatalog() sites.ModelCatalogSnapshot {
+	return sites.ModelCatalogSnapshot{
+		Models: []sites.ModelOption{{
+			ID:        chatGPTProviderDefaultModelID,
+			Label:     chatGPTProviderDefaultModelLabel,
+			Available: true,
+		}},
+		ActiveModelID: chatGPTProviderDefaultModelID,
+		Revision:      chatGPTProviderDefaultCatalogRev,
+	}
 }
 
 func (l *ChatGPTLane) clearCatalog() {

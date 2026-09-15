@@ -61,6 +61,18 @@ func TestChatGPTProbeFailClosedAndReady(t *testing.T) {
 	}
 }
 
+func TestD08ChatGPTReadinessExpressionCoversCurrentSidebarAccountControls(t *testing.T) {
+	for _, want := range []string{
+		`[data-testid*="profile" i]`,
+		`[data-testid*="account" i]`,
+		`[data-testid*="user-menu" i]`,
+	} {
+		if !strings.Contains(chatGPTReadinessExpression, want) {
+			t.Fatalf("ChatGPT readiness selector coverage missing %q", want)
+		}
+	}
+}
+
 func TestChatGPTObserveModelsDynamicAndDeterministic(t *testing.T) {
 	adapter := ChatGPT{}
 	raw := json.RawMessage(`{"active_label":" Model Alpha ","models":[{"label":"Model Beta","available":true},{"label":"Model Alpha","available":true},{"label":"Model Beta","available":true}]}`)

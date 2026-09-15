@@ -37,9 +37,25 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	if err != nil {
 		return err
 	}
+	// D08 packaged/headless lifecycle: Host.Close owns deterministic engine/Gemini
+	// shutdown first; the strict-role ChatGPT specialist lane is then stopped on
+	// the same normal-return path. AppRuntime already owns this teardown for the
+	// desktop path, so this closes the remaining packaged CLI lifecycle seam.
+	defer func() {
+		if lane := eng.DesktopChatGPTLane(); lane != nil {
+			_ = lane.Stop()
+		}
+	}()
 	defer eng.Close()
 	if logErr := eng.FileLogError(); logErr != nil {
 		fmt.Fprintf(stderr, "警告：文件日志不可用，继续使用终端日志：%v\n", logErr)
+	}
+	// The Host-owned ModelSet is the authority for D07/D08 strict-role routing.
+	// Project that non-sensitive graph into headless stderr so packaged callers
+	// can verify the graph they actually instantiated, rather than inferring it
+	// from configuration or filenames.
+	if err := writeModelGraphProjection(stderr, eng.ModelGraphSummary()); err != nil {
+		return err
 	}
 	// 运行结束 / 出错返回时落一份脱敏诊断，方便 headless 用户贴 issue。
 	// （外部 kill 的挂死不走 defer，仍需在 TUI 里手动 /diag。）
@@ -83,12 +99,24 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	return consume(eng, stdout, stderr, false)
 }
 
+func writeModelGraphProjection(w io.Writer, summary string) error {
+	if w == nil {
+		return fmt.Errorf("headless model graph projection requires a writer")
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" || summary == "default=unavailable" {
+		return fmt.Errorf("headless model graph unavailable")
+	}
+	_, err := fmt.Fprintf(w, "headless model graph: %s\n", summary)
+	return err
+}
+
 func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
 	for {
 		select {
 		case ev, ok := <-eng.Events():
 			if !ok {
-				return nil
+				return completionError(eng.Snapshot())
 			}
 			writeEvent(stderr, ev)
 		case delta, ok := <-eng.Stream():
@@ -113,11 +141,41 @@ func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) err
 			roundHasContent = true
 		case _, ok := <-eng.Done():
 			if !ok {
-				return nil
+				return completionError(eng.Snapshot())
 			}
-			return drainPending(eng, stdout, stderr, roundHasContent)
+			if err := drainPending(eng, stdout, stderr, roundHasContent); err != nil {
+				return err
+			}
+			return completionError(eng.Snapshot())
 		}
 	}
+}
+
+// completionError makes the headless process fail closed when Host.Done only
+// means the engine loop stopped, rather than the book actually reached the
+// persisted Complete phase. Interactive surfaces may legitimately pause and
+// resume; a non-interactive headless invocation has no such control path, so an
+// incomplete stop must be visible to callers as a non-zero process exit.
+func completionError(snap host.UISnapshot) error {
+	if snap.RuntimeState == "completed" && snap.Phase == string(domain.PhaseComplete) {
+		return nil
+	}
+	phase := strings.TrimSpace(snap.Phase)
+	if phase == "" {
+		phase = "unknown"
+	}
+	runtimeState := strings.TrimSpace(snap.RuntimeState)
+	if runtimeState == "" {
+		runtimeState = "unknown"
+	}
+	return fmt.Errorf(
+		"headless run stopped before completion: runtime=%s phase=%s current=%d completed=%d total=%d",
+		runtimeState,
+		phase,
+		snap.CurrentChapter,
+		snap.CompletedCount,
+		snap.TotalChapters,
+	)
 }
 
 func drainPending(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {

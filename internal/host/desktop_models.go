@@ -11,3 +11,13 @@ func (h *Host) DesktopChatGPTLane() *webai.ChatGPTLane {
 	}
 	return h.models.ChatGPTLane()
 }
+
+// ModelGraphSummary returns the authoritative strict-role model graph owned by
+// this Host. It is intentionally read-only and contains provider/model labels
+// only; browser credentials, profile contents, and session data are excluded.
+func (h *Host) ModelGraphSummary() string {
+	if h == nil || h.models == nil {
+		return "default=unavailable"
+	}
+	return h.models.Summary()
+}

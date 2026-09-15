@@ -1,0 +1,52 @@
+name: D09-B Integration Foundation
+
+on:
+  push:
+    branches:
+      - feat/d09b-desktop-stack-reconciliation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d09b-integration-foundation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-runtime-seams:
+    name: Desktop/AppRuntime seam regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(internal/desktopui/lifecycle_controller.go internal/desktopui/d09b_reconciliation_test.go)
+          test -z "$(gofmt -l "${files[@]}")"
+
+      - name: Regress desktop UI reconciliation
+        shell: bash
+        run: go test ./internal/desktopui
+
+      - name: Regress AppRuntime contracts and D05/D07 authority
+        shell: bash
+        run: go test ./internal/appruntime
+
+      - name: Regress host and flow seams
+        shell: bash
+        run: go test ./internal/host ./internal/flow
+
+      - name: Race-check desktop and runtime seam
+        shell: bash
+        run: go test -race ./internal/desktopui ./internal/appruntime
