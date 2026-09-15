@@ -356,7 +356,7 @@ if (-not [bool]$providerEvidence.architect_chatgpt) { Fail 'no architect assista
 if (-not [bool]$providerEvidence.writer_gemini) { Fail 'no writer assistant session entry proved Gemini primary execution' }
 
 $runtimeText = ''
-foreach ($path in @($stdoutPath, $stderrPath, (Join-Path $outputRoot 'headless.log'))) {
+foreach ($path in @($stdoutPath, $stderrPath, (Join-Path $outputRoot 'logs\headless.log'))) {
     if (Test-Path -LiteralPath $path) { $runtimeText += "`n" + (Get-Content -LiteralPath $path -Raw -Encoding UTF8) }
 }
 if ($runtimeText -notmatch 'default=web/gemini-web' -or $runtimeText -notmatch 'specialist=chatgpt-web/chatgpt-web') {
