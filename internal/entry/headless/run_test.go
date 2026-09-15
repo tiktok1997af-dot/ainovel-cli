@@ -54,3 +54,30 @@ func TestCompletionErrorRejectsPhaseCompleteWithoutCompletedLifecycle(t *testing
 		t.Fatal("phase complete without completed lifecycle must fail closed")
 	}
 }
+
+func TestWriteModelGraphProjectionEmitsAuthoritativeStrictRoleGraph(t *testing.T) {
+	t.Parallel()
+
+	const graph = "default=web/gemini-web specialist=chatgpt-web/chatgpt-web"
+	var out strings.Builder
+	if err := writeModelGraphProjection(&out, graph); err != nil {
+		t.Fatalf("writeModelGraphProjection: %v", err)
+	}
+	if got, want := out.String(), "headless model graph: "+graph+"\n"; got != want {
+		t.Fatalf("projection = %q, want %q", got, want)
+	}
+}
+
+func TestWriteModelGraphProjectionRejectsMissingAuthority(t *testing.T) {
+	t.Parallel()
+
+	for _, graph := range []string{"", "   ", "default=unavailable"} {
+		var out strings.Builder
+		if err := writeModelGraphProjection(&out, graph); err == nil {
+			t.Fatalf("graph %q must fail closed", graph)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("graph %q wrote non-authoritative projection %q", graph, out.String())
+		}
+	}
+}
