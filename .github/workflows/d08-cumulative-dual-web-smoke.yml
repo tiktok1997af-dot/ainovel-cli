@@ -1,0 +1,354 @@
+name: D08 Cumulative Dual-Web Packaged Smoke
+
+on:
+  pull_request:
+    branches:
+      - feat/d07-balanced-turbo-pipeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d08-dual-web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  cumulative-regression:
+    name: Cumulative regression / Linux race / NO-API
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Format, vet and full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+      - name: Race regression across D01-D08 critical paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race \
+            ./internal/appruntime \
+            ./internal/bootstrap \
+            ./internal/entry/headless \
+            ./internal/flow \
+            ./internal/host \
+            ./internal/store \
+            ./internal/tools \
+            ./internal/webai
+
+      - name: Repository-wide WEB-only / NO-API audit
+        shell: bash
+        run: bash scripts/w55-no-api-audit.sh
+
+      - name: PowerShell smoke script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile('scripts/d08-dual-provider-packaged-smoke.ps1', [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
+  package-release-input:
+    name: Build exact D08 packaged input
+    needs: cumulative-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify exact candidate and NO-API boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          bash scripts/w55-no-api-audit.sh
+          test -f scripts/d08-dual-provider-packaged-smoke.ps1
+          test -z "$(git status --porcelain)"
+
+      - name: Build exact-candidate GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --snapshot --clean
+
+      - name: Verify snapshot provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/w6a-verify-release-snapshot.py \
+            --dist dist \
+            --expected-sha "$CANDIDATE_SHA" \
+            --evidence dist/d08-snapshot-evidence.json
+          test -z "$(git status --porcelain)"
+
+      - name: Build dual-provider readiness helper outside release package
+        shell: bash
+        env:
+          GOWORK: "off"
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist/d08-helper
+          go build -trimpath -buildvcs=true -o dist/d08-helper/ainovel-w5e-readiness.exe ./cmd/ainovel-w5e-readiness
+          test -s dist/d08-helper/ainovel-w5e-readiness.exe
+
+      - name: Select exact Windows x86_64 release input
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f -name '*_Windows_x86_64.zip' -print | sort)
+          test "${#archives[@]}" -eq 1
+          archive="${archives[0]}"
+          helper='dist/d08-helper/ainovel-w5e-readiness.exe'
+          python3 - "$archive" "$helper" "$CANDIDATE_SHA" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          archive, helper, sha = map(Path, sys.argv[1:3]) + [sys.argv[3]] if False else (Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
+          def digest(path):
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for block in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+          evidence = {
+              'schema': 'ainovel-d08-package-input/1',
+              'candidate_sha': sha,
+              'archive_name': archive.name,
+              'archive_sha256': digest(archive),
+              'readiness_helper_sha256': digest(helper),
+              'no_publish': True,
+              'web_only_no_api': True,
+          }
+          Path('dist/d08-package-provenance.json').write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+
+      - name: Upload exact packaged input
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-d08-package-input-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/*_Windows_x86_64.zip
+            dist/ainovel-cli_checksums.txt
+            dist/d08-snapshot-evidence.json
+            dist/d08-package-provenance.json
+            dist/d08-helper/ainovel-w5e-readiness.exe
+
+  real-windows-dual-provider-smoke:
+    name: Real Windows packaged Gemini + ChatGPT WEB-only smoke
+    needs: package-release-input
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Download exact packaged input
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-d08-package-input-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/ainovel-d08-input-${{ github.run_id }}
+
+      - name: Prepare exact packaged authority inputs
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA) { throw "Candidate drift: $actual" }
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $runnerSession } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'D08 requires an interactive Windows desktop session.' }
+
+          $inputDir = Join-Path $env:RUNNER_TEMP ("ainovel-d08-input-" + $env:GITHUB_RUN_ID)
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("ainovel-d08-evidence-" + $env:GITHUB_RUN_ID)
+          $runtimeDir = Join-Path $env:RUNNER_TEMP ("ainovel-d08-runtime-" + $env:GITHUB_RUN_ID)
+          foreach ($path in @($evidenceDir, $runtimeDir)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
+
+          $provFile = @(Get-ChildItem -LiteralPath $inputDir -Filter 'd08-package-provenance.json' -File -Recurse)
+          $archive = @(Get-ChildItem -LiteralPath $inputDir -Filter '*_Windows_x86_64.zip' -File -Recurse)
+          $manifest = @(Get-ChildItem -LiteralPath $inputDir -Filter 'ainovel-cli_checksums.txt' -File -Recurse)
+          $helper = @(Get-ChildItem -LiteralPath $inputDir -Filter 'ainovel-w5e-readiness.exe' -File -Recurse)
+          if ($provFile.Count -ne 1 -or $archive.Count -ne 1 -or $manifest.Count -ne 1 -or $helper.Count -ne 1) { throw 'D08 package input is incomplete or ambiguous.' }
+          $prov = Get-Content -LiteralPath $provFile[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.schema -ne 'ainovel-d08-package-input/1' -or [string]$prov.candidate_sha -ne $env:CANDIDATE_SHA -or -not [bool]$prov.web_only_no_api) { throw 'D08 package provenance mismatch.' }
+          if ((Get-FileHash -LiteralPath $archive[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$prov.archive_sha256) { throw 'D08 archive transport hash mismatch.' }
+          if ((Get-FileHash -LiteralPath $helper[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$prov.readiness_helper_sha256) { throw 'D08 helper transport hash mismatch.' }
+
+          $envLines = @(
+            "D08_INPUT_DIR=$inputDir",
+            "D08_EVIDENCE_DIR=$evidenceDir",
+            "D08_RUNTIME_DIR=$runtimeDir",
+            "D08_ARCHIVE=$($archive[0].FullName)",
+            "D08_MANIFEST=$($manifest[0].FullName)",
+            "D08_READINESS_EXE=$($helper[0].FullName)"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Stage transient WEB-only config
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          $configDir = Join-Path $userHome '.ainovel'
+          $configPath = Join-Path $configDir 'config.json'
+          $backupPath = Join-Path $env:RUNNER_TEMP ("d08-config-backup-" + $env:GITHUB_RUN_ID + ".json")
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $hadOriginal = Test-Path -LiteralPath $configPath
+          $profileName = 'default'
+          $browserPath = ''
+          $startUrl = ''
+          if ($hadOriginal) {
+            Copy-Item -LiteralPath $configPath -Destination $backupPath -Force
+            try {
+              $existing = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+              if ($null -ne $existing.web) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.profile_name)) { $profileName = [string]$existing.web.profile_name }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.browser_path)) { $browserPath = [string]$existing.web.browser_path }
+                if (-not [string]::IsNullOrWhiteSpace([string]$existing.web.start_url)) { $startUrl = [string]$existing.web.start_url }
+              }
+            } catch { Write-Host 'Existing config parse failed; exact bytes are backed up.' }
+          }
+          $web = [ordered]@{ enabled = $true; site = 'gemini-web'; profile_name = $profileName }
+          if ($browserPath) { $web.browser_path = $browserPath }
+          if ($startUrl) { $web.start_url = $startUrl }
+          $cfg = [ordered]@{
+            web = $web
+            pipeline = [ordered]@{ mode = 'balanced'; checkpoint_chapters = 10 }
+            language = 'vi'
+          }
+          [System.IO.File]::WriteAllText($configPath, (($cfg | ConvertTo-Json -Depth 8) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $envLines = @(
+            "D08_CONFIG_PATH=$configPath",
+            "D08_CONFIG_BACKUP=$backupPath",
+            "D08_CONFIG_HAD_ORIGINAL=$hadOriginal",
+            "D08_GEMINI_PROFILE=$profileName"
+          ) -join "`r`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, $envLines + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Run exact packaged dual-provider smoke
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./scripts/d08-dual-provider-packaged-smoke.ps1 `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -PackageArchivePath $env:D08_ARCHIVE `
+            -ChecksumManifestPath $env:D08_MANIFEST `
+            -ReadinessExe $env:D08_READINESS_EXE `
+            -ExpectedGitSha $env:CANDIDATE_SHA `
+            -EvidenceDir $env:D08_EVIDENCE_DIR `
+            -RuntimeDir $env:D08_RUNTIME_DIR `
+            -ReadinessTimeoutSeconds 60 `
+            -RunTimeoutSeconds 1200
+
+      - name: Validate sanitized D08 evidence
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:D08_EVIDENCE_DIR 'd08-dual-provider-packaged-smoke-evidence.json'
+          if (-not (Test-Path -LiteralPath $path)) { throw 'Missing D08 packaged authority evidence.' }
+          $ev = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$ev.schema -ne 'ainovel-d08-dual-provider-packaged-smoke/1' -or [string]$ev.git_sha -ne $env:CANDIDATE_SHA) { throw 'D08 evidence identity mismatch.' }
+          foreach ($field in @('packaged_commit_verified','gemini_ready','gemini_restart_ready','chatgpt_ready','chatgpt_restart_ready','normal_shutdown_gemini_clean','normal_shutdown_chatgpt_clean')) {
+            if (-not [bool]$ev.$field) { throw "D08 evidence failed: $field" }
+          }
+          if ([string]$ev.strict_role_architect_provider -ne 'chatgpt-web') { throw 'Architect did not execute on ChatGPT specialist lane.' }
+          if ([string]$ev.strict_role_writer_provider -ne 'web' -or [string]$ev.strict_role_writer_model -ne 'gemini-web') { throw 'Writer did not execute on Gemini primary lane.' }
+          if ([string]$ev.static_no_api -ne 'PASS' -or [string]$ev.runtime_no_api -ne 'PASS') { throw 'WEB-only / NO-API evidence failed.' }
+          Write-Host 'D08 CUMULATIVE PACKAGED DUAL-WEB AUTHORITY: PASS'
+
+      - name: Upload sanitized D08 authority evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-d08-dual-web-authority-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.D08_EVIDENCE_DIR }}/d08-dual-provider-packaged-smoke-evidence.json
+            ${{ env.D08_EVIDENCE_DIR }}/d08-gemini-readiness.json
+            ${{ env.D08_EVIDENCE_DIR }}/d08-chatgpt-readiness.json
+
+      - name: Cleanup transient D08 runtime
+        if: always()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $userHome = [Environment]::GetFolderPath('UserProfile')
+          foreach ($profile in @($env:D08_GEMINI_PROFILE, 'ainovel-chatgpt-web')) {
+            if ([string]::IsNullOrWhiteSpace($profile)) { continue }
+            $profileDir = Join-Path $userHome ('.ainovel\browser\profiles\' + $profile)
+            $needle = "--user-data-dir=$profileDir"
+            Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+              Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) } |
+              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
+          }
+          foreach ($path in @($env:D08_RUNTIME_DIR, $env:D08_INPUT_DIR, $env:D08_EVIDENCE_DIR)) {
+            if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Restore local config exactly
+        if: always()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:D08_CONFIG_PATH)) { exit 0 }
+          if ($env:D08_CONFIG_HAD_ORIGINAL -eq 'True') {
+            if (Test-Path -LiteralPath $env:D08_CONFIG_BACKUP) {
+              Copy-Item -LiteralPath $env:D08_CONFIG_BACKUP -Destination $env:D08_CONFIG_PATH -Force
+              Remove-Item -LiteralPath $env:D08_CONFIG_BACKUP -Force -ErrorAction SilentlyContinue
+            } else {
+              Write-Error 'Expected D08 config backup is missing.'
+            }
+          } else {
+            Remove-Item -LiteralPath $env:D08_CONFIG_PATH -Force -ErrorAction SilentlyContinue
+          }

@@ -178,11 +178,13 @@ func decodeRawToolCallMetadataStrict(metadataText string) (rawToolCallMetadata, 
 }
 
 // decodeRawToolCallMetadata keeps TOOL_CALL_RAW metadata fail-closed while
-// tolerating one observed Gemini shape drift: a normal tool-schema argument can
-// be emitted beside "arguments" instead of inside it. Recovery is deliberately
+// tolerating observed Gemini shape drift: normal tool-schema arguments may be
+// emitted beside "arguments", or the "arguments" wrapper may be omitted while
+// those small arguments remain at metadata top level. Recovery is deliberately
 // narrow. A misplaced key is accepted only when it is a declared property of
 // the selected tool, is not the raw string field, and does not duplicate an
-// argument already present. Every other unknown metadata key still fails.
+// argument already present. An explicit malformed arguments value, raw-field
+// leakage, or any undeclared metadata key still fails closed.
 func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) (rawToolCallMetadata, error) {
 	metadata, strictErr := decodeRawToolCallMetadataStrict(metadataText)
 	if strictErr == nil {
@@ -209,10 +211,12 @@ func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) 
 	if !ok || json.Unmarshal(rawField, &field) != nil {
 		return rawToolCallMetadata{}, strictErr
 	}
-	var arguments map[string]json.RawMessage
-	rawArguments, ok := object["arguments"]
-	if !ok || json.Unmarshal(rawArguments, &arguments) != nil || arguments == nil {
-		return rawToolCallMetadata{}, strictErr
+
+	arguments := make(map[string]json.RawMessage)
+	if rawArguments, present := object["arguments"]; present {
+		if json.Unmarshal(rawArguments, &arguments) != nil || arguments == nil {
+			return rawToolCallMetadata{}, strictErr
+		}
 	}
 
 	var properties map[string]struct{}

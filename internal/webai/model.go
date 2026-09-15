@@ -121,6 +121,17 @@ Preserve the intended raw prose/content verbatim if it was already composed. The
 Do not append a closing delimiter, outer response wrapper, Markdown fence, or TEXT response.
 Do not claim the tool ran. This is a transport-format repair only.`
 
+// rawValueStartRepairPrompt is used only when a TOOL_CALL_RAW response reached
+// the strict raw-tool parser but omitted the required raw-value start delimiter.
+// No local tool has executed, so the same intended call can be repaired safely
+// inside the existing bounded protocol-repair budget.
+const rawValueStartRepairPrompt = `Your previous TOOL_CALL_RAW answer was rejected because the required raw-value start delimiter <<<AINOVEL_RAW_VALUE>>> was missing. No local tool from that answer has been executed.
+Do not redo the user's task, change the intended tool, change any intended argument value, summarize, or add commentary.
+Re-emit the same intended tool call and preserve the same intended raw string value.
+Use exactly this structure: TOOL_CALL_RAW on its own first line, then the same metadata JSON object on the next line, then exactly one line containing <<<AINOVEL_RAW_VALUE>>>, then the complete raw string value verbatim until the end of the assistant message.
+The metadata arguments object must still omit the field named by raw_string_field. Do not place raw prose before the delimiter, do not omit the delimiter, and do not append a closing delimiter, outer response wrapper, Markdown fence, or TEXT response.
+Do not claim the tool ran. This is a transport-format repair only.`
+
 // toolRequiredRepairPrompt is narrower than the generic format repair. It is
 // used only after a StopGuard-injected machine marker proves that the worker
 // still owes a persisted artifact, yet the web model returned a valid TEXT-only
@@ -197,6 +208,17 @@ func emptyRawStringArgumentProtocolError(err error) bool {
 		webErr.Cause.Error() == "raw string argument is empty"
 }
 
+func missingRawValueStartProtocolError(err error) bool {
+	var webErr *Error
+	if !errors.As(err, &webErr) || webErr == nil {
+		return false
+	}
+	return webErr.Kind == ErrorProtocol &&
+		webErr.Op == "parse raw tool call" &&
+		webErr.Cause != nil &&
+		webErr.Cause.Error() == "missing raw value start marker"
+}
+
 func jsonSyntaxProtocolError(err error) bool {
 	var webErr *Error
 	if !errors.As(err, &webErr) || webErr == nil || webErr.Kind != ErrorProtocol || webErr.Op != "decode response" {
@@ -212,6 +234,9 @@ func repairPromptForProtocolError(err error) string {
 	}
 	if emptyRawStringArgumentProtocolError(err) {
 		return rawStringValueRepairPrompt
+	}
+	if missingRawValueStartProtocolError(err) {
+		return rawValueStartRepairPrompt
 	}
 	if jsonSyntaxProtocolError(err) {
 		return jsonSyntaxRepairPrompt

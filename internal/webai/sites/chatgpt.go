@@ -30,6 +30,12 @@ func (ChatGPT) TargetScore(rawURL string) int {
 		return 100
 	case "auth.openai.com", "login.openai.com", "auth0.openai.com":
 		return 80
+	case "accounts.google.com":
+		path := strings.ToLower(strings.TrimSpace(u.Path))
+		if strings.Contains(path, "/signin/") || strings.Contains(path, "/o/oauth2/") {
+			return 70
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -77,7 +83,7 @@ func (ChatGPT) Probe(ctx context.Context, evaluator Evaluator) (Result, error) {
 
 func isChatGPTAuthHost(host string) bool {
 	switch strings.ToLower(strings.TrimSpace(host)) {
-	case "auth.openai.com", "login.openai.com", "auth0.openai.com":
+	case "auth.openai.com", "login.openai.com", "auth0.openai.com", "accounts.google.com":
 		return true
 	default:
 		return false
@@ -206,6 +212,8 @@ const chatGPTReadinessExpression = `(() => {
   const account = firstVisible([
     'button[data-testid="profile-button"]',
     'button[data-testid*="profile" i]',
+    '[data-testid*="profile" i]',
+    '[data-testid*="account" i]',
     '[data-testid*="user-menu" i]',
     'button[aria-label*="profile" i]',
     'button[aria-label*="account" i]',

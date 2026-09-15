@@ -78,8 +78,9 @@ func (s *SessionStore) Log(rel string, msg agentcore.AgentMessage) error {
 
 // sessionLogEntry 嵌入 agentcore.Message + 可选 _meta。
 // agentcore.Message 是 plain struct（无 MarshalJSON），嵌入后 json marshal
-// 自动展开到顶层；_meta 通过 omitempty 控制——只有 assistant + Usage != nil
-// 时才注入，user/tool 消息不带 _meta，旧 jsonl 解析时 _meta=nil 是 noop。
+// 自动展开到顶层；_meta 通过 omitempty 控制——assistant 优先使用 Usage
+// provider/model，Usage 不携带 provenance 时退回 logger 的 ModelLookup；user/tool
+// 消息不带 _meta，旧 jsonl 解析时 _meta=nil 是 noop。
 type sessionLogEntry struct {
 	agentcore.Message
 	Meta *sessionLogMeta `json:"_meta,omitempty"`
@@ -91,8 +92,8 @@ type sessionLogMeta struct {
 }
 
 // logEntry 序列化消息并按需附加 _meta。lookupMeta 已计算好的 meta 传进来；
-// 函数内部判断只对"产生了 LLM 用量"的消息（assistant + Usage != nil）写入 meta，
-// 其它消息保持纯净 agentcore.Message 序列化形态。
+// assistant 优先采用 Usage 中的 runtime provenance；浏览器模型没有 Usage 时退回
+// 当时生效的 ModelLookup。其它角色保持纯净 agentcore.Message 序列化形态。
 func (s *SessionStore) logEntry(rel string, msg agentcore.AgentMessage, meta *sessionLogMeta) error {
 	m, ok := msg.(agentcore.Message)
 	if !ok {
@@ -100,7 +101,7 @@ func (s *SessionStore) logEntry(rel string, msg agentcore.AgentMessage, meta *se
 	}
 	compacted := compactMessage(m)
 	entry := sessionLogEntry{Message: compacted}
-	if compacted.Role == agentcore.RoleAssistant && compacted.Usage != nil {
+	if compacted.Role == agentcore.RoleAssistant {
 		entry.Meta = usageMeta(compacted.Usage)
 		if entry.Meta == nil {
 			entry.Meta = meta
