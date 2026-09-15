@@ -12,7 +12,7 @@ permissions:
 env:
   PRODUCT_REPOSITORY: tiktok1997af-dot/ainovel-cli
   RELEASE_TAG: v0.1.0
-  LOCKED_W6C_SHA: c3a08d1069345900e0fc5bbb39cfea5e732c3924
+  LOCKED_W6C_SHA: 95ffc80a90f8bf4a014c70ea7cc8bf47c51df31e
 
 jobs:
   prepublication:
