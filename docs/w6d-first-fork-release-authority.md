@@ -3,10 +3,12 @@
 Status: OPEN / AUTHORIZED / NOT LOCKED
 
 Prerequisites:
-- W6A = LOCKED
-- W6B = LOCKED
-- W6C = LOCKED
-- exact W6C authority ancestor = `c3a08d1069345900e0fc5bbb39cfea5e732c3924`
+- Development roadmap = 100% / FROZEN
+- W6A = PASS
+- W6B = PASS
+- W6C = PASS
+- D08 cumulative dual-provider packaged smoke = PASS
+- exact final D09 authority ancestor = `95ffc80a90f8bf4a014c70ea7cc8bf47c51df31e`
 
 ## First release version authority
 
@@ -14,7 +16,7 @@ The fork currently has no Git tag and no GitHub Release. The first official fork
 
 `v0.1.0`
 
-This is a pre-1.0 semantic version. It does not claim W6/W6.5 or the whole product roadmap is complete.
+This is a pre-1.0 semantic version. The development roadmap itself is already frozen at 100%; W6D is a separate operational release/publication authority gate.
 
 ## Publication authority
 
@@ -22,8 +24,8 @@ The W6D publication workflow MUST fail closed unless all of the following are tr
 
 1. repository identity is exactly `tiktok1997af-dot/ainovel-cli`;
 2. execution is on the authorized W6 branch and the one-shot authorization commit message matches exactly;
-3. the exact publication SHA descends from the locked W6C authority SHA;
-4. the diff since W6C is confined to W6D release-authority files and contains no WebAI/Engine/Workers/Tools/Store product-runtime change;
+3. the exact publication SHA descends from the locked final D09 authority SHA;
+4. the diff since final D09 authority is confined to W6D release-authority files and contains no WebAI/Engine/Workers/Tools/Store product-runtime change;
 5. no remote tag exists and no GitHub Release exists yet;
 6. release tag is exactly `v0.1.0` and passes strict stable SemVer syntax;
 7. normal Go tests, W5.5 NO-API audit, W6B updater integrity tests, deterministic release-note generation and a non-publishing GoReleaser snapshot all pass;
@@ -54,4 +56,4 @@ The live release must prove:
 
 ## Publication boundary
 
-W6D completion does not merge PR #14 or `main`. W6 remains OPEN until W6.5 post-release audit completes.
+W6D completion does not merge `main`. Development authority remains frozen at 100%; release/publication authority is tracked separately until post-release audit completes.
