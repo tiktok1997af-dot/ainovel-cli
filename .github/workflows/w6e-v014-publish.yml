@@ -16,7 +16,7 @@ env:
   PREVIOUS_RELEASE_TAG: v0.1.3
   LOCKED_FINAL_SHA: 95ffc80a90f8bf4a014c70ea7cc8bf47c51df31e
   AUTHORITY_BRANCH: w6e-v0.1.4-publication-authority
-  AUTHORITY_MESSAGE: release(w6e): authorize v0.1.4 from frozen 95ffc80a
+  AUTHORITY_MESSAGE: "release(w6e): authorize v0.1.4 from frozen 95ffc80a"
 
 jobs:
   dry-contract:
