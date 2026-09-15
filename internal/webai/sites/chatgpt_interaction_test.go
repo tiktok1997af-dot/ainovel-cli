@@ -43,6 +43,7 @@ func TestD08ChatGPTComposerReadbackCanonicalizesVisibleProseMirrorWithoutWeakeni
 		`.replace(/\r\n/g, '\n')`,
 		`.replace(/\r/g, '\n')`,
 		`.replace(/\u00a0/g, ' ')`,
+		`.normalize('NFC')`,
 		`blockTags`,
 		`stripLayoutWhitespace`,
 		`layoutWhitespaceEquivalent`,
