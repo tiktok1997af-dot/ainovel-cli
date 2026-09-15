@@ -13,7 +13,7 @@ env:
   PRODUCT_REPOSITORY: tiktok1997af-dot/ainovel-cli
   RELEASE_TAG: v0.1.0
   RELEASE_VERSION: 0.1.0
-  LOCKED_W6C_SHA: c3a08d1069345900e0fc5bbb39cfea5e732c3924
+  LOCKED_W6C_SHA: 95ffc80a90f8bf4a014c70ea7cc8bf47c51df31e
 
 jobs:
   dry-contract:
@@ -112,10 +112,10 @@ jobs:
             git tag "$RELEASE_TAG" "$GITHUB_SHA"
             git push origin "refs/tags/$RELEASE_TAG"
           else
-            test "$ref" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
+            test "$ref" = "$GITHUB_SHA\trefs/tags/$RELEASE_TAG"
             git tag "$RELEASE_TAG" "$GITHUB_SHA" 2>/dev/null || true
           fi
-          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
+          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA\trefs/tags/$RELEASE_TAG"
           echo "W6D TAG AUTHORITY PASS: $RELEASE_TAG -> $GITHUB_SHA"
 
       - name: Generate deterministic official release notes
@@ -149,7 +149,7 @@ jobs:
           mkdir -p published dist/w6d-evidence
           gh api "repos/$PRODUCT_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
           gh release download "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" --dir published
-          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA	refs/tags/$RELEASE_TAG"
+          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$GITHUB_SHA\trefs/tags/$RELEASE_TAG"
           python3 scripts/w6d-verify-published-release.py --release-json /tmp/release.json --assets-dir published --expected-tag "$RELEASE_TAG" --expected-sha "$GITHUB_SHA" --output dist/w6d-evidence/w6d-published-release-evidence.json
 
       - name: Fresh pinned and latest install from live Release
