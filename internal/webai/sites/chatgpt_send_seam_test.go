@@ -43,6 +43,49 @@ func (e *chatGPTSendSeamEvaluator) PressEnter(context.Context) error {
 	return e.enterErr
 }
 
+type chatGPTPersistentMismatchEvaluator struct {
+	exprs        []string
+	replacements int
+	clicks       int
+	enters       int
+	conversation int
+}
+
+func (e *chatGPTPersistentMismatchEvaluator) Eval(_ context.Context, expression string) (json.RawMessage, error) {
+	e.exprs = append(e.exprs, expression)
+	switch {
+	case expression == chatGPTResolveComposerExpression:
+		return json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"prosemirror"}`), nil
+	case expression == chatGPTResolveSendExpression:
+		return json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","x":100,"y":200,"action":"button"}`), nil
+	case expression == chatGPTConversationExpression:
+		e.conversation++
+		if e.conversation == 1 {
+			return json.RawMessage(`{"busy":false,"response_count":1,"user_message_count":1,"composer_present":true,"composer_empty":false,"composer_length":128,"submit_action":"button","last_response":"old","truncated":false}`), nil
+		}
+		return json.RawMessage(`{"busy":true,"response_count":1,"user_message_count":2,"composer_present":true,"composer_empty":true,"composer_length":0,"submit_action":"","last_response":"old","truncated":false}`), nil
+	case strings.Contains(expression, "const prompt ="):
+		return json.RawMessage(`{"ok":false,"reason":"composer text mismatch","composer_length":128,"expected_length":140,"composer_line_breaks":2,"expected_line_breaks":3,"composer_kind":"prosemirror","focused":true}`), nil
+	default:
+		return nil, errors.New("unexpected ChatGPT expression")
+	}
+}
+
+func (e *chatGPTPersistentMismatchEvaluator) Click(context.Context, float64, float64) error {
+	e.clicks++
+	return nil
+}
+
+func (e *chatGPTPersistentMismatchEvaluator) ReplaceText(context.Context, float64, float64, string) error {
+	e.replacements++
+	return nil
+}
+
+func (e *chatGPTPersistentMismatchEvaluator) PressEnter(context.Context) error {
+	e.enters++
+	return nil
+}
+
 func TestD08ChatGPTVerifiedPromptUsesExactlyOneVisibleSendClick(t *testing.T) {
 	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
 		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"prosemirror"}`),
@@ -50,11 +93,8 @@ func TestD08ChatGPTVerifiedPromptUsesExactlyOneVisibleSendClick(t *testing.T) {
 		json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","x":100,"y":200,"action":"button"}`),
 	}}
 
-	if err := (ChatGPT{}).Submit(context.Background(), e, "prompt"); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if e.replacements != 1 {
-		t.Fatalf("trusted replacements = %d, want exactly 1", e.replacements)
+	if err := submitVerifiedChatGPTPrompt(context.Background(), e, e, 0); err != nil {
+		t.Fatalf("submitVerifiedChatGPTPrompt: %v", err)
 	}
 	if e.clicks != 1 || e.enters != 0 {
 		t.Fatalf("clicks=%d enters=%d, want exactly one click and zero Enter fallbacks", e.clicks, e.enters)
@@ -101,6 +141,42 @@ func TestD08ChatGPTAmbiguousClickFailureNeverFallsBackToEnter(t *testing.T) {
 	}
 	if e.clicks != 1 || e.enters != 0 {
 		t.Fatalf("clicks=%d enters=%d, ambiguous click must never be followed by Enter", e.clicks, e.enters)
+	}
+}
+
+func TestD08ChatGPTReadbackMismatchDoesNotSuppressSendWhenComposerIsNonEmpty(t *testing.T) {
+	e := &chatGPTPersistentMismatchEvaluator{}
+	if err := (ChatGPT{}).Submit(context.Background(), e, "prompt with long structured content"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if e.replacements != 1 {
+		t.Fatalf("trusted replacements=%d, want exactly 1", e.replacements)
+	}
+	if e.clicks != 1 || e.enters != 0 {
+		t.Fatalf("clicks=%d enters=%d, non-empty mismatch must still reach one normal Send", e.clicks, e.enters)
+	}
+}
+
+func TestD08ChatGPTDetectsUnsentPromptAndRecoversWithExactlyOneEnter(t *testing.T) {
+	baseline := ConversationSnapshot{
+		ResponseCount:     1,
+		UserMessageCount:  1,
+		ComposerPresent:   true,
+		ComposerEmpty:     false,
+		ComposerLength:    128,
+		LastResponse:      "old",
+	}
+	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
+		json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","x":100,"y":200,"action":"button"}`),
+		json.RawMessage(`{"busy":false,"response_count":1,"user_message_count":1,"composer_present":true,"composer_empty":false,"composer_length":128,"submit_action":"button","last_response":"old","truncated":false}`),
+		json.RawMessage(`{"busy":true,"response_count":1,"user_message_count":2,"composer_present":true,"composer_empty":true,"composer_length":0,"submit_action":"","last_response":"old","truncated":false}`),
+	}}
+
+	if err := submitChatGPTWithAck(context.Background(), e, e, baseline, 0, 0, 0); err != nil {
+		t.Fatalf("submitChatGPTWithAck: %v", err)
+	}
+	if e.clicks != 1 || e.enters != 1 {
+		t.Fatalf("clicks=%d enters=%d, want one initial Send click then exactly one Enter recovery", e.clicks, e.enters)
 	}
 }
 
