@@ -159,12 +159,12 @@ func TestD08ChatGPTReadbackMismatchDoesNotSuppressSendWhenComposerIsNonEmpty(t *
 
 func TestD08ChatGPTDetectsUnsentPromptAndRecoversWithExactlyOneEnter(t *testing.T) {
 	baseline := ConversationSnapshot{
-		ResponseCount:     1,
-		UserMessageCount:  1,
-		ComposerPresent:   true,
-		ComposerEmpty:     false,
-		ComposerLength:    128,
-		LastResponse:      "old",
+		ResponseCount:    1,
+		UserMessageCount: 1,
+		ComposerPresent:  true,
+		ComposerEmpty:    false,
+		ComposerLength:   128,
+		LastResponse:     "old",
 	}
 	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
 		json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","x":100,"y":200,"action":"button"}`),
