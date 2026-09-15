@@ -88,8 +88,6 @@ func (e *chatGPTPersistentMismatchEvaluator) PressEnter(context.Context) error {
 
 func TestD08ChatGPTVerifiedPromptUsesExactlyOneVisibleSendClick(t *testing.T) {
 	e := &chatGPTSendSeamEvaluator{responses: []json.RawMessage{
-		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"prosemirror"}`),
-		json.RawMessage(`{"ok":true,"reason":"","composer_length":6,"expected_length":6,"composer_line_breaks":0,"expected_line_breaks":0,"composer_kind":"prosemirror","focused":true}`),
 		json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","x":100,"y":200,"action":"button"}`),
 	}}
 
