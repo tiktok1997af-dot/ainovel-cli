@@ -10,9 +10,10 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// TestSessionStore_MetaInjected_AssistantWithUsage 验证只有"assistant + has Usage"
-// 的消息才被附加 _meta，这是 replay 路径精确算价的前提。
-func TestSessionStore_MetaInjected_AssistantWithUsage(t *testing.T) {
+// TestSessionStore_MetaInjected_AssistantFallsBackToLookupWithoutUsage verifies
+// that browser-backed assistant messages still persist provider/model provenance
+// even when the model cannot report token Usage.
+func TestSessionStore_MetaInjected_AssistantFallsBackToLookupWithoutUsage(t *testing.T) {
 	dir := t.TempDir()
 	s := NewSessionStore(newIO(dir))
 	lookup := ModelLookup(func(agentName string) (string, string) {
@@ -32,7 +33,7 @@ func TestSessionStore_MetaInjected_AssistantWithUsage(t *testing.T) {
 	})
 	logger("writer", "写第 1 章", agentcore.Message{
 		Role:  agentcore.RoleAssistant,
-		Usage: nil, // assistant 但无 usage（流式未带 final usage chunk）
+		Usage: nil,
 	})
 
 	entries := readJSONL(t, filepath.Join(dir, "meta/sessions/agents/writer-ch01.jsonl"))
@@ -42,15 +43,79 @@ func TestSessionStore_MetaInjected_AssistantWithUsage(t *testing.T) {
 	if _, has := entries[0]["_meta"]; has {
 		t.Errorf("user message should NOT have _meta")
 	}
-	if _, has := entries[2]["_meta"]; has {
-		t.Errorf("assistant without Usage should NOT have _meta")
+	for _, index := range []int{1, 2} {
+		meta, ok := entries[index]["_meta"].(map[string]any)
+		if !ok {
+			t.Fatalf("assistant entry[%d] should have _meta map, got %T %v", index, entries[index]["_meta"], entries[index]["_meta"])
+		}
+		if meta["provider"] != "meme" || meta["model"] != "gpt-5.4" {
+			t.Errorf("entry[%d] _meta = %v want provider=meme model=gpt-5.4", index, meta)
+		}
 	}
-	meta, ok := entries[1]["_meta"].(map[string]any)
+}
+
+func TestSessionStore_UsageProvenanceOverridesLookup(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSessionStore(newIO(dir))
+	logger := s.SubAgentLogger(func(agentName string) (string, string) {
+		return "lookup-provider", "lookup-model"
+	})
+	logger("writer", "写第 1 章", agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Usage: &agentcore.Usage{
+			Provider: "runtime-provider",
+			Model:    "runtime-model",
+			Input:    10,
+			Output:   5,
+		},
+	})
+
+	entries := readJSONL(t, filepath.Join(dir, "meta/sessions/agents/writer-ch01.jsonl"))
+	meta, ok := entries[0]["_meta"].(map[string]any)
 	if !ok {
-		t.Fatalf("assistant+Usage should have _meta map, got %T %v", entries[1]["_meta"], entries[1]["_meta"])
+		t.Fatalf("assistant should have _meta map, got %T %v", entries[0]["_meta"], entries[0]["_meta"])
 	}
-	if meta["provider"] != "meme" || meta["model"] != "gpt-5.4" {
-		t.Errorf("_meta = %v want provider=meme model=gpt-5.4", meta)
+	if meta["provider"] != "runtime-provider" || meta["model"] != "runtime-model" {
+		t.Fatalf("_meta = %v want runtime usage provenance", meta)
+	}
+}
+
+func TestSessionStore_D08WebRoleProvenanceWithoutUsage(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSessionStore(newIO(dir))
+	lookup := ModelLookup(func(agentName string) (string, string) {
+		if agentName == "architect_short" {
+			return "chatgpt-web", "chatgpt-web"
+		}
+		if agentName == "writer" {
+			return "web", "gemini-web"
+		}
+		return "", ""
+	})
+	logger := s.SubAgentLogger(lookup)
+	logger("architect_short", "建立短篇基础", agentcore.Message{Role: agentcore.RoleAssistant})
+	logger("writer", "写第 1 章", agentcore.Message{Role: agentcore.RoleAssistant})
+
+	cases := []struct {
+		path     string
+		provider string
+		model    string
+	}{
+		{filepath.Join(dir, "meta/sessions/agents/architect_short-001.jsonl"), "chatgpt-web", "chatgpt-web"},
+		{filepath.Join(dir, "meta/sessions/agents/writer-ch01.jsonl"), "web", "gemini-web"},
+	}
+	for _, tc := range cases {
+		entries := readJSONL(t, tc.path)
+		if len(entries) != 1 {
+			t.Fatalf("%s entries=%d want 1", tc.path, len(entries))
+		}
+		meta, ok := entries[0]["_meta"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s missing _meta: %v", tc.path, entries[0])
+		}
+		if meta["provider"] != tc.provider || meta["model"] != tc.model {
+			t.Fatalf("%s _meta=%v want provider=%s model=%s", tc.path, meta, tc.provider, tc.model)
+		}
 	}
 }
 
