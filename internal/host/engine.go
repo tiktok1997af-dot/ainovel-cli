@@ -55,6 +55,11 @@ type engine struct {
 	// deferGateForNext 只与 next 同生共灭：hold+dispatch 必须先运行配对的
 	// editor/writer，让它建立返工队列，随后 Gate 才能判断 rewrites_drained。
 	deferGateForNext bool
+	// ownedDispatch* 记录已经从 pending 转入 next/执行中的用户干预派单。
+	// Host 在 enqueue 成功后会清 PendingSteer，因此直到该派单成功完成前，
+	// Engine 必须持有重放责任；任何正常 exit/cancel 都要恢复原始 steer。
+	ownedDispatchKey  string
+	ownedDispatchText string
 
 	// 僵局追踪:上一轮执行后 Route 仍产生同一指令键即累计。
 	// Router 指令是任务后置条件的投影；真正完成会让下一指令改变。
@@ -176,6 +181,10 @@ func (e *engine) run(ctx context.Context) {
 				}
 			}
 		}
+		// pending 之外仍可能有一个干预派单已被边界线程取出，甚至已被 takeNext
+		// 消费，但因 cancel/exit 尚未成功完成。它的重放责任由 ownership token
+		// 持有，必须在 onDone 前恢复。
+		e.restoreOwnedInterventionDispatch()
 		e.onDone()
 	}()
 
@@ -252,6 +261,10 @@ func (e *engine) run(ctx context.Context) {
 		}
 
 		err = e.runWorker(ctx, inst)
+		if err == nil {
+			// 只有这条实际完成的指令才能释放对应干预的重放责任。
+			e.completeOwnedInterventionDispatch(inst)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -783,11 +796,15 @@ func (e *engine) applyControlOp(ctx context.Context, op controlOp) error {
 		// Expect 已在任何配对状态写入前核对。CheckpointSeq 只留审计不参与
 		// 对账：干预到达时 worker 多半正在跑，seq 必然推进。
 		e.mu.Lock()
-		// 已知窗口(best-effort 边界,见 engine-arbiter.md 澄清③):派单自此存于内存,
-		// worker 启动前被硬杀(kill -9,defer 不执行)会丢失本次派单意图——
-		// 正常退出/Abort 由 run 的 defer 回存 PendingSteer 兜底。
-		e.next = &flow.Instruction{Agent: op.dispatch.Agent, Task: interventionDispatchTask(op.dispatch.Task, op.text), Reason: "用户干预裁定"}
+		// 派单自此离开 pending；即使随后被 takeNext 取走，只要尚未成功完成，
+		// ownedDispatch* 就继续代表 Engine 对原始 PendingSteer 的重放责任。
+		inst := &flow.Instruction{Agent: op.dispatch.Agent, Task: interventionDispatchTask(op.dispatch.Task, op.text), Reason: "用户干预裁定"}
+		e.next = inst
 		e.deferGateForNext = op.hold != nil && !op.hold.Cancel
+		if op.text != "" {
+			e.ownedDispatchKey = instructionKey(inst)
+			e.ownedDispatchText = op.text
+		}
 		e.mu.Unlock()
 	}
 	return firstErr
