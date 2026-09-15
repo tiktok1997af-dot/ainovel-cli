@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	chatGPTSendWait        = 6 * time.Second
-	chatGPTSendPoll        = 100 * time.Millisecond
-	chatGPTInputSettleWait = 2 * time.Second
-	chatGPTInputSettlePoll = 75 * time.Millisecond
+	chatGPTSendWait          = 6 * time.Second
+	chatGPTSendPoll          = 100 * time.Millisecond
+	chatGPTInputSettleWait   = 2 * time.Second
+	chatGPTInputSettlePoll   = 75 * time.Millisecond
+	chatGPTSubmitAckWait     = 5 * time.Second
+	chatGPTSubmitAckPoll     = 150 * time.Millisecond
 )
 
 type chatGPTPromptReadback struct {
@@ -82,51 +84,115 @@ func (ChatGPT) Submit(ctx context.Context, evaluator Evaluator, prompt string) e
 	if err := input.ReplaceText(ctx, composer.X, composer.Y, prompt); err != nil {
 		return fmt.Errorf("chatgpt trusted composer input: %w", err)
 	}
+
+	// Readback remains useful as a bounded diagnostic, but current ChatGPT
+	// ProseMirror revisions can expose a DOM text representation that differs
+	// from the trusted CDP input even while the complete prompt is visibly in the
+	// composer. Do not let that representation mismatch suppress Send/Enter.
+	// The minimum fail-closed guard is that the composer must still be non-empty;
+	// actual delivery is proven below by independent conversation-state SEND ACK.
 	verifyExpression := fmt.Sprintf(chatGPTVerifyPromptExpressionTemplate, string(encoded))
 	prepared, err := waitForChatGPTPromptReadback(ctx, evaluator, verifyExpression)
 	if err != nil {
 		return err
 	}
-	if !prepared.OK {
+	if prepared.ComposerLength <= 0 {
 		reason := strings.TrimSpace(prepared.Reason)
 		if reason == "" {
-			reason = "prompt composer did not retain trusted input"
+			reason = "composer is empty after trusted input"
 		}
-		kind := strings.TrimSpace(prepared.ComposerKind)
-		if kind == "" {
-			kind = strings.TrimSpace(composer.Kind)
-		}
-		if kind == "" {
-			kind = "unknown"
-		}
-		return fmt.Errorf(
-			"chatgpt submit: %s after bounded settle (expected_length=%d actual_length=%d expected_line_breaks=%d actual_line_breaks=%d composer_kind=%s focused=%t)",
-			reason,
-			prepared.ExpectedLength,
-			prepared.ComposerLength,
-			prepared.ExpectedLineBreaks,
-			prepared.ComposerLineBreaks,
-			kind,
-			prepared.Focused,
-		)
-	}
-	if prepared.ComposerLength <= 0 {
-		return fmt.Errorf("chatgpt submit: verified composer is empty")
+		return fmt.Errorf("chatgpt submit: %s", reason)
 	}
 
-	return submitVerifiedChatGPTPrompt(ctx, evaluator, input, chatGPTSendWait)
+	baseline, err := (ChatGPT{}).Conversation(ctx, evaluator)
+	if err != nil {
+		return fmt.Errorf("chatgpt submit baseline: %w", err)
+	}
+	if baseline.Busy {
+		return fmt.Errorf("chatgpt submit: conversation became busy before submit")
+	}
+
+	return submitChatGPTWithAck(ctx, evaluator, input, baseline, chatGPTSendWait, chatGPTSubmitAckWait, chatGPTSubmitAckPoll)
+}
+
+// submitChatGPTWithAck performs one normal Send/Enter action, then verifies
+// actual delivery from conversation state rather than trusting the click/key
+// side effect itself. If no ACK is observed and the prompt is still stably
+// pending in the composer, exactly one trusted Enter recovery is allowed. The
+// prompt is never retyped or replayed.
+func submitChatGPTWithAck(
+	ctx context.Context,
+	evaluator Evaluator,
+	input TextInputEvaluator,
+	baseline ConversationSnapshot,
+	sendWait time.Duration,
+	ackWait time.Duration,
+	ackPoll time.Duration,
+) error {
+	action, err := performChatGPTSubmitAction(ctx, evaluator, input, sendWait)
+	if err != nil {
+		return err
+	}
+
+	confirmed, pending, last, err := waitForChatGPTSendAck(ctx, evaluator, baseline, ackWait, ackPoll)
+	if err != nil {
+		return err
+	}
+	if confirmed {
+		return nil
+	}
+	if !pending {
+		return fmt.Errorf(
+			"chatgpt submit: SEND ACK missing after %s (busy=%t user_messages=%d responses=%d composer_present=%t composer_empty=%t)",
+			action,
+			last.Busy,
+			last.UserMessageCount,
+			last.ResponseCount,
+			last.ComposerPresent,
+			last.ComposerEmpty,
+		)
+	}
+
+	enter, ok := evaluator.(chatGPTEnterEvaluator)
+	if !ok {
+		return fmt.Errorf("chatgpt submit: prompt remains unsent after %s; evaluator does not support trusted Enter recovery", action)
+	}
+	if err := enter.PressEnter(ctx); err != nil {
+		return fmt.Errorf("chatgpt trusted Enter recovery after unacknowledged %s: %w", action, err)
+	}
+
+	confirmed, _, last, err = waitForChatGPTSendAck(ctx, evaluator, baseline, ackWait, ackPoll)
+	if err != nil {
+		return err
+	}
+	if confirmed {
+		return nil
+	}
+	return fmt.Errorf(
+		"chatgpt submit: SEND ACK missing after trusted Enter recovery (busy=%t user_messages=%d responses=%d composer_present=%t composer_empty=%t)",
+		last.Busy,
+		last.UserMessageCount,
+		last.ResponseCount,
+		last.ComposerPresent,
+		last.ComposerEmpty,
+	)
 }
 
 func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input TextInputEvaluator, wait time.Duration) error {
+	_, err := performChatGPTSubmitAction(ctx, evaluator, input, wait)
+	return err
+}
+
+func performChatGPTSubmitAction(ctx context.Context, evaluator Evaluator, input TextInputEvaluator, wait time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
 	lastReason := "send control is not ready"
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return "", err
 		}
 		raw, err := evaluator.Eval(ctx, chatGPTResolveSendExpression)
 		if err != nil {
-			return err
+			return "", err
 		}
 		var result struct {
 			OK     bool    `json:"ok"`
@@ -138,16 +204,20 @@ func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input
 			Action string  `json:"action"`
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
-			return fmt.Errorf("chatgpt resolve send result: %w", err)
+			return "", fmt.Errorf("chatgpt resolve send result: %w", err)
 		}
 		if result.OK {
 			if result.X < 0 || result.Y < 0 {
 				lastReason = "resolved send coordinates are invalid"
 			} else {
 				if err := input.Click(ctx, result.X, result.Y); err != nil {
-					return fmt.Errorf("chatgpt trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
+					return "", fmt.Errorf("chatgpt trusted send click (%s): %w", strings.TrimSpace(result.Action), err)
 				}
-				return nil
+				action := strings.TrimSpace(result.Action)
+				if action == "" {
+					action = "button"
+				}
+				return action, nil
 			}
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
@@ -156,21 +226,107 @@ func submitVerifiedChatGPTPrompt(ctx context.Context, evaluator Evaluator, input
 		if !result.Retry || !time.Now().Before(deadline) {
 			enter, ok := evaluator.(chatGPTEnterEvaluator)
 			if !ok {
-				return fmt.Errorf("chatgpt submit: %s; evaluator does not support trusted Enter fallback", lastReason)
+				return "", fmt.Errorf("chatgpt submit: %s; evaluator does not support trusted Enter fallback", lastReason)
 			}
 			if err := enter.PressEnter(ctx); err != nil {
-				return fmt.Errorf("chatgpt trusted Enter fallback after %s: %w", lastReason, err)
+				return "", fmt.Errorf("chatgpt trusted Enter fallback after %s: %w", lastReason, err)
 			}
-			return nil
+			return "enter", nil
 		}
 		timer := time.NewTimer(chatGPTSendPoll)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-timer.C:
 		}
 	}
+}
+
+func waitForChatGPTSendAck(
+	ctx context.Context,
+	evaluator Evaluator,
+	baseline ConversationSnapshot,
+	wait time.Duration,
+	poll time.Duration,
+) (bool, bool, ConversationSnapshot, error) {
+	if poll <= 0 {
+		poll = time.Millisecond
+	}
+	readOnce := func() (ConversationSnapshot, error) {
+		snapshot, err := (ChatGPT{}).Conversation(ctx, evaluator)
+		if err != nil {
+			return ConversationSnapshot{}, fmt.Errorf("chatgpt confirm submit: %w", err)
+		}
+		return snapshot, nil
+	}
+
+	if wait <= 0 {
+		snapshot, err := readOnce()
+		if err != nil {
+			return false, false, ConversationSnapshot{}, err
+		}
+		return chatGPTSubmitAcknowledged(baseline, snapshot), chatGPTPromptStillPending(baseline, snapshot), snapshot, nil
+	}
+
+	deadline := time.Now().Add(wait)
+	var last ConversationSnapshot
+	stablePending := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, false, last, err
+		}
+		snapshot, err := readOnce()
+		if err != nil {
+			return false, false, last, err
+		}
+		last = snapshot
+		if chatGPTSubmitAcknowledged(baseline, snapshot) {
+			return true, false, snapshot, nil
+		}
+		if chatGPTPromptStillPending(baseline, snapshot) {
+			stablePending++
+		} else {
+			stablePending = 0
+		}
+		if !time.Now().Before(deadline) {
+			return false, stablePending >= 2, snapshot, nil
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, false, last, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func chatGPTSubmitAcknowledged(baseline, snapshot ConversationSnapshot) bool {
+	if snapshot.UserMessageCount > baseline.UserMessageCount {
+		return true
+	}
+	if !baseline.Busy && snapshot.Busy {
+		return true
+	}
+	if snapshot.ResponseCount > baseline.ResponseCount {
+		return true
+	}
+	baselineText := strings.TrimSpace(baseline.LastResponse)
+	text := strings.TrimSpace(snapshot.LastResponse)
+	return text != "" && text != baselineText
+}
+
+func chatGPTPromptStillPending(baseline, snapshot ConversationSnapshot) bool {
+	if snapshot.Truncated || snapshot.Busy {
+		return false
+	}
+	if !snapshot.ComposerPresent || snapshot.ComposerEmpty || snapshot.ComposerLength <= 0 {
+		return false
+	}
+	return snapshot.ResponseCount == baseline.ResponseCount &&
+		snapshot.UserMessageCount == baseline.UserMessageCount &&
+		strings.TrimSpace(snapshot.LastResponse) == strings.TrimSpace(baseline.LastResponse)
 }
 
 func waitForChatGPTPromptReadback(ctx context.Context, evaluator Evaluator, expression string) (chatGPTPromptReadback, error) {
