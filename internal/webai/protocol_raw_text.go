@@ -178,13 +178,9 @@ func decodeRawToolCallMetadataStrict(metadataText string) (rawToolCallMetadata, 
 }
 
 // decodeRawToolCallMetadata keeps TOOL_CALL_RAW metadata fail-closed while
-// tolerating observed Gemini shape drift: normal tool-schema arguments may be
-// emitted beside "arguments", or the "arguments" wrapper may be omitted while
-// those small arguments remain at metadata top level. Recovery is deliberately
-// narrow. A misplaced key is accepted only when it is a declared property of
-// the selected tool, is not the raw string field, and does not duplicate an
-// argument already present. An explicit malformed arguments value, raw-field
-// leakage, or any undeclared metadata key still fails closed.
+// tolerating observed Gemini shape drift for small, non-raw arguments. The one
+// exceptional raw-field recovery is handled later, only when the raw region is
+// empty and the nested metadata value is an unambiguous schema-declared string.
 func decodeRawToolCallMetadata(metadataText string, tools []agentcore.ToolSpec) (rawToolCallMetadata, error) {
 	metadata, strictErr := decodeRawToolCallMetadataStrict(metadataText)
 	if strictErr == nil {
@@ -287,6 +283,34 @@ func declaredToolPropertyNames(parameters any) (map[string]struct{}, bool) {
 	return names, true
 }
 
+func declaredToolStringProperty(parameters any, field string) bool {
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return false
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &schema); err != nil || schema == nil {
+		return false
+	}
+	var properties map[string]json.RawMessage
+	if err := json.Unmarshal(schema["properties"], &properties); err != nil || properties == nil {
+		return false
+	}
+	rawProperty, ok := properties[field]
+	if !ok {
+		return false
+	}
+	var property map[string]json.RawMessage
+	if err := json.Unmarshal(rawProperty, &property); err != nil || property == nil {
+		return false
+	}
+	var propertyType string
+	if err := json.Unmarshal(property["type"], &propertyType); err != nil {
+		return false
+	}
+	return propertyType == "string"
+}
+
 func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore.ToolSpec) (agentcore.Message, error) {
 	if err := validateToolRegistry(tools); err != nil {
 		return agentcore.Message{}, err
@@ -332,9 +356,6 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	if hasLegacyRawEnd {
 		rawValue = trimOneProtocolLineBreak(rawValue, false)
 	}
-	if strings.TrimSpace(rawValue) == "" {
-		return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
-	}
 
 	metadata, err := decodeRawToolCallMetadata(metadataText, tools)
 	if err != nil {
@@ -345,14 +366,14 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	if name == "" || name != metadata.Name {
 		return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("tool name is empty or has surrounding whitespace"))
 	}
-	allowed := false
-	for _, tool := range tools {
-		if tool.Name == name {
-			allowed = true
+	var selectedTool *agentcore.ToolSpec
+	for i := range tools {
+		if tools[i].Name == name {
+			selectedTool = &tools[i]
 			break
 		}
 	}
-	if !allowed {
+	if selectedTool == nil {
 		return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("tool %q is not available in this request", name))
 	}
 
@@ -363,9 +384,28 @@ func parseRawToolCallResponse(requestPrompt, raw, body string, tools []agentcore
 	if metadata.Arguments == nil {
 		return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("arguments must be a JSON object"))
 	}
-	if _, exists := metadata.Arguments[field]; exists {
-		return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("raw string field %q must be omitted from metadata arguments", field))
+
+	metadataRawValue, metadataHasRawValue := metadata.Arguments[field]
+	if strings.TrimSpace(rawValue) == "" {
+		if !metadataHasRawValue {
+			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
+		}
+		if !declaredToolStringProperty(selectedTool.Parameters, field) {
+			return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("raw string field %q is not declared as a string property", field))
+		}
+		var recovered string
+		if err := json.Unmarshal(metadataRawValue, &recovered); err != nil {
+			return agentcore.Message{}, protocolError("decode raw tool call metadata", fmt.Errorf("raw string field %q metadata value must be a JSON string: %w", field, err))
+		}
+		if strings.TrimSpace(recovered) == "" {
+			return agentcore.Message{}, protocolError("parse raw tool call", fmt.Errorf("raw string argument is empty"))
+		}
+		rawValue = recovered
+		delete(metadata.Arguments, field)
+	} else if metadataHasRawValue {
+		return agentcore.Message{}, protocolError("validate raw tool call", fmt.Errorf("raw string field %q is ambiguous between metadata and raw region", field))
 	}
+
 	encodedValue, err := json.Marshal(rawValue)
 	if err != nil {
 		return agentcore.Message{}, protocolError("encode raw string argument", err)
