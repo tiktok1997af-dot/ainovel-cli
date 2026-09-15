@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	chatGPTSendWait          = 6 * time.Second
-	chatGPTSendPoll          = 100 * time.Millisecond
-	chatGPTInputSettleWait   = 2 * time.Second
-	chatGPTInputSettlePoll   = 75 * time.Millisecond
-	chatGPTSubmitAckWait     = 5 * time.Second
-	chatGPTSubmitAckPoll     = 150 * time.Millisecond
+	chatGPTSendWait        = 6 * time.Second
+	chatGPTSendPoll        = 100 * time.Millisecond
+	chatGPTInputSettleWait = 2 * time.Second
+	chatGPTInputSettlePoll = 75 * time.Millisecond
+	chatGPTSubmitAckWait   = 5 * time.Second
+	chatGPTSubmitAckPoll   = 150 * time.Millisecond
 )
 
 type chatGPTPromptReadback struct {
