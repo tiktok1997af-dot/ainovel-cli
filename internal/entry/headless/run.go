@@ -50,6 +50,13 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	if logErr := eng.FileLogError(); logErr != nil {
 		fmt.Fprintf(stderr, "警告：文件日志不可用，继续使用终端日志：%v\n", logErr)
 	}
+	// The Host-owned ModelSet is the authority for D07/D08 strict-role routing.
+	// Project that non-sensitive graph into headless stderr so packaged callers
+	// can verify the graph they actually instantiated, rather than inferring it
+	// from configuration or filenames.
+	if err := writeModelGraphProjection(stderr, eng.ModelGraphSummary()); err != nil {
+		return err
+	}
 	// 运行结束 / 出错返回时落一份脱敏诊断，方便 headless 用户贴 issue。
 	// （外部 kill 的挂死不走 defer，仍需在 TUI 里手动 /diag。）
 	defer func() {
@@ -90,6 +97,18 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	}
 
 	return consume(eng, stdout, stderr, false)
+}
+
+func writeModelGraphProjection(w io.Writer, summary string) error {
+	if w == nil {
+		return fmt.Errorf("headless model graph projection requires a writer")
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" || summary == "default=unavailable" {
+		return fmt.Errorf("headless model graph unavailable")
+	}
+	_, err := fmt.Fprintf(w, "headless model graph: %s\n", summary)
+	return err
 }
 
 func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
