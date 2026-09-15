@@ -11,7 +11,9 @@ func successfulChatGPTSubmitEvaluator() *scriptedEvaluator {
 	return &scriptedEvaluator{responses: []json.RawMessage{
 		json.RawMessage(`{"found":true,"x":40,"y":50,"kind":"prosemirror"}`),
 		json.RawMessage(`{"ok":true,"reason":"","composer_length":13,"expected_length":13,"composer_line_breaks":1,"expected_line_breaks":1,"composer_kind":"prosemirror","focused":true}`),
-		json.RawMessage(`{"ok":true,"retry":false,"reason":"","action":"button","x":100,"y":200}`),
+		json.RawMessage(`{"busy":false,"response_count":1,"user_message_count":1,"composer_present":true,"composer_empty":false,"composer_length":13,"submit_action":"button","last_response":"old","truncated":false}`),
+		json.RawMessage(`{"ok":true,"retry":false,"found":true,"reason":"","action":"button","x":100,"y":200}`),
+		json.RawMessage(`{"busy":true,"response_count":1,"user_message_count":2,"composer_present":true,"composer_empty":true,"composer_length":0,"submit_action":"","last_response":"old","truncated":false}`),
 	}}
 }
 
@@ -21,8 +23,8 @@ func TestD08ChatGPTSubmitUsesTrustedProseMirrorReplacementThenOneSendClick(t *te
 	if err := (ChatGPT{}).Submit(context.Background(), e, prompt); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.exprs) != 3 {
-		t.Fatalf("expressions = %d, want resolve composer + verify + resolve send", len(e.exprs))
+	if len(e.exprs) != 5 {
+		t.Fatalf("expressions = %d, want resolve composer + verify + baseline + resolve send + SEND ACK", len(e.exprs))
 	}
 	if e.replacements != 1 || e.replaceX != 40 || e.replaceY != 50 || e.replaceText != prompt {
 		t.Fatalf("trusted replacement mismatch: count=%d point=%.2f,%.2f text=%q", e.replacements, e.replaceX, e.replaceY, e.replaceText)
@@ -33,6 +35,9 @@ func TestD08ChatGPTSubmitUsesTrustedProseMirrorReplacementThenOneSendClick(t *te
 	encoded, _ := json.Marshal(prompt)
 	if !strings.Contains(e.exprs[1], string(encoded)) {
 		t.Fatal("read-only verification did not JSON-encode the expected prompt")
+	}
+	if !strings.Contains(e.exprs[2], "user_message_count") || !strings.Contains(e.exprs[4], "user_message_count") {
+		t.Fatal("ChatGPT submit must prove delivery with conversation-state SEND ACK")
 	}
 }
 
