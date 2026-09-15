@@ -322,6 +322,7 @@ const chatGPTVerifyPromptExpressionTemplate = `(() => {
     .replace(/\r/g, '\n')
     .replace(/\u00a0/g, ' ')
     .replace(/[\u200b\ufeff]/g, '')
+    .normalize('NFC')
     .trim();
   const stripLayoutWhitespace = (value) => String(value || '').replace(/\s+/g, '');
   const lineBreakCount = (value) => (String(value || '').match(/\n/g) || []).length;
