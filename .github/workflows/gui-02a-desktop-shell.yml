@@ -1,0 +1,104 @@
+name: GUI-02A Desktop Shell Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/gui-02a-desktop-shell.yml'
+      - 'docs/gui-02a-wails-react-shell-authority-v1.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build-shell:
+    name: Build exact Wails React shell
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare desktop module
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          Pop-Location
+
+      - name: Test desktop gateway contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go test -buildvcs=false -count=1 ./...
+          Pop-Location
+
+      - name: Install Wails
+        shell: powershell
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm run build
+          Pop-Location
+
+      - name: Build executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          Push-Location desktop
+          go mod tidy
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
+          & $wails build -clean
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Verify shell boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Get-ChildItem -LiteralPath desktop -Recurse -File | Where-Object { $_.FullName -notmatch '\\node_modules\\|\\dist\\|\\build\\' }
+          $tauri = $source | Select-String -Pattern '@tauri-apps|tauri::|src-tauri' -ErrorAction SilentlyContinue
+          if ($tauri) { $tauri | ForEach-Object { Write-Host $_ }; throw 'Tauri residue detected.' }
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
+
+      - name: Upload exact executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-shell-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 7
+          path: desktop/build/bin/AINOVEL-Desktop.exe

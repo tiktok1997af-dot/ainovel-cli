@@ -1,0 +1,345 @@
+name: GUI-02A Real Runtime Evidence
+
+on:
+  push:
+    branches:
+      - feat/gui-02a-wails-react-shell
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui02a-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-exact:
+    name: Build exact Wails candidate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wails
+        shell: powershell
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build React frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm run build
+          Pop-Location
+
+      - name: Build Wails executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
+          & $wails build -clean
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Verify architecture boundaries
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Get-ChildItem -LiteralPath desktop -Recurse -File | Where-Object { $_.FullName -notmatch '\\node_modules\\|\\dist\\|\\build\\' }
+          $tauri = $source | Select-String -Pattern '@tauri-apps|tauri::|src-tauri' -ErrorAction SilentlyContinue
+          if ($tauri) { $tauri | ForEach-Object { Write-Host $_ }; throw 'Tauri residue detected in GUI-02A shell.' }
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
+
+      - name: Create exact build provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'gui02a-candidate'
+          if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $bundle 'AINOVEL-Desktop.exe') -Force
+          [ordered]@{
+            schema = 'ainovel-gui02a-build/1'
+            candidate_sha = $actual
+            executable = 'AINOVEL-Desktop.exe'
+            executable_sha256 = $exeSha
+            shell = 'wails-v2'
+            frontend = 'react-vite'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle 'gui02a-build-provenance.json') -Encoding UTF8
+          Write-Host "EXACT GUI-02A BUILD PASS: $actual exe=$exeSha"
+
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02a-candidate
+
+  capture-real-window:
+    name: Exercise and capture actual executable window
+    needs: build-exact
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          path: runtime-input
+
+      - name: Verify interactive Windows session and provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $session = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $prov = Get-Content -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $actual) { throw 'Build provenance candidate mismatch.' }
+          $exeSha = (Get-FileHash -LiteralPath 'runtime-input/AINOVEL-Desktop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
+          Write-Host "INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
+
+      - name: Exercise runtime with real Windows input and capture direct HWND
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE 'gui02a-evidence'
+          if (Test-Path -LiteralPath $evidenceDir) { Remove-Item -LiteralPath $evidenceDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+
+          Add-Type -AssemblyName System.Drawing
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02AWindow {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+            [DllImport("user32.dll")] static extern bool SetCursorPos(int X, int Y);
+            [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+            public static void Click(int x, int y) {
+              SetCursorPos(x, y);
+              mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+              mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+            public static void Wheel(int x, int y, int delta) {
+              SetCursorPos(x, y);
+              mouse_event(0x0800, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $native
+
+          function Read-WindowRect([IntPtr]$Handle) {
+            $rect = New-Object Gui02AWindow+RECT
+            if (-not [Gui02AWindow]::GetWindowRect($Handle, [ref]$rect)) { throw 'GetWindowRect failed.' }
+            [pscustomobject]@{ left=$rect.Left; top=$rect.Top; width=$rect.Right-$rect.Left; height=$rect.Bottom-$rect.Top }
+          }
+
+          function Read-ClientOrigin([IntPtr]$Handle) {
+            $point = New-Object Gui02AWindow+POINT
+            $point.X = 0; $point.Y = 0
+            if (-not [Gui02AWindow]::ClientToScreen($Handle, [ref]$point)) { throw 'ClientToScreen failed.' }
+            [pscustomobject]@{ x=$point.X; y=$point.Y }
+          }
+
+          function Set-WindowSize([IntPtr]$Handle, [int]$Width, [int]$Height) {
+            [Gui02AWindow]::ShowWindowAsync($Handle, 9) | Out-Null
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02AWindow]::SetWindowPos($Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, $flags)) { throw "SetWindowPos failed for ${Width}x${Height}." }
+            Start-Sleep -Milliseconds 700
+            Read-WindowRect $Handle
+          }
+
+          function Capture-Hwnd([IntPtr]$Handle, [string]$Path) {
+            $rect = Read-WindowRect $Handle
+            $bitmap = New-Object System.Drawing.Bitmap $rect.width, $rect.height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = [IntPtr]::Zero
+            try {
+              $hdc = $graphics.GetHdc()
+              if (-not [Gui02AWindow]::PrintWindow($Handle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
+              $graphics.Dispose()
+            }
+            try {
+              $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+              $xStep = [Math]::Max(1, [int]($rect.width / 24))
+              $yStep = [Math]::Max(1, [int]($rect.height / 16))
+              for ($x = 0; $x -lt $rect.width; $x += $xStep) {
+                for ($y = 0; $y -lt $rect.height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
+              }
+              if ($colors.Count -lt 20) { throw "Direct HWND capture appears blank or degenerate: sampledColors=$($colors.Count)" }
+              $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+              [pscustomobject]@{ hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); colors=$colors.Count; rect=$rect }
+            } finally {
+              $bitmap.Dispose()
+            }
+          }
+
+          function Click-Client([IntPtr]$Handle, [int]$X, [int]$Y) {
+            $origin = Read-ClientOrigin $Handle
+            [Gui02AWindow]::SetForegroundWindow($Handle) | Out-Null
+            [Gui02AWindow]::Click($origin.x + $X, $origin.y + $Y)
+          }
+
+          function Wheel-Client([IntPtr]$Handle, [int]$X, [int]$Y, [int]$Delta) {
+            $origin = Read-ClientOrigin $Handle
+            [Gui02AWindow]::SetForegroundWindow($Handle) | Out-Null
+            [Gui02AWindow]::Wheel($origin.x + $X, $origin.y + $Y, $Delta)
+          }
+
+          $proc = $null
+          try {
+            $proc = Start-Process -FilePath $exe -PassThru
+            try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $proc.Refresh()
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited before runtime exercise with code $($proc.ExitCode)." }
+            } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
+
+            $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
+            if ([Math]::Abs($finalRect.width - 1600) -gt 8 -or [Math]::Abs($finalRect.height - 980) -gt 8) { throw "Initial evidence size mismatch: $($finalRect.width)x$($finalRect.height)" }
+            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 1
+
+            $navCases = @(
+              @{ id='S01'; label='Projects'; index=0 },
+              @{ id='S02'; label='Project Home'; index=1 },
+              @{ id='S03'; label='Story Bible'; index=2 },
+              @{ id='S04'; label='Architecture'; index=3 },
+              @{ id='S05'; label='Chapter Studio'; index=4 },
+              @{ id='S06'; label='Review & Repair'; index=5 },
+              @{ id='S07'; label='Continuity Center'; index=6 },
+              @{ id='S08'; label='Run Control'; index=7 },
+              @{ id='S09'; label='AI Models'; index=8 },
+              @{ id='S10'; label='Settings'; index=9 }
+            )
+            $navOrder = @($navCases + $navCases[8..0])
+            $navResults = @()
+            $previousHash = $null
+            $frameIndex = 0
+            foreach ($case in $navOrder) {
+              $relativeY = 144 + (43 * [int]$case.index)
+              Click-Client $proc.MainWindowHandle 120 $relativeY
+              Start-Sleep -Milliseconds 350
+              $framePath = Join-Path $evidenceDir ("nav-frame-{0:D2}-{1}.png" -f $frameIndex, $case.id)
+              $frame = Capture-Hwnd $proc.MainWindowHandle $framePath
+              if ($null -ne $previousHash -and $frame.hash -eq $previousHash) { throw "Navigation frame did not change for $($case.id) / $($case.label)." }
+              $navResults += [pscustomobject]@{ id=$case.id; label=$case.label; index=$case.index; click_client_x=120; click_client_y=$relativeY; frame_sha256=$frame.hash; sampled_colors=$frame.colors }
+              $previousHash = $frame.hash
+              $frameIndex++
+            }
+            if ($navResults.Count -ne 19) { throw "Unexpected navigation exercise count: $($navResults.Count)" }
+
+            $compactRect = Set-WindowSize $proc.MainWindowHandle 1280 760
+            if ([Math]::Abs($compactRect.width - 1280) -gt 8 -or [Math]::Abs($compactRect.height - 760) -gt 8) { throw "Resize exercise failed: $($compactRect.width)x$($compactRect.height)" }
+
+            Click-Client $proc.MainWindowHandle 120 (144 + 43 * 4)
+            Start-Sleep -Milliseconds 350
+            $scrollBeforePath = Join-Path $evidenceDir 'scroll-before.png'
+            $scrollBefore = Capture-Hwnd $proc.MainWindowHandle $scrollBeforePath
+            Wheel-Client $proc.MainWindowHandle 650 560 -720
+            Start-Sleep -Milliseconds 500
+            $scrollAfterPath = Join-Path $evidenceDir 'scroll-after.png'
+            $scrollAfter = Capture-Hwnd $proc.MainWindowHandle $scrollAfterPath
+            if ($scrollAfter.hash -eq $scrollBefore.hash) { throw 'Wheel scroll produced no visual change in executable frame.' }
+            Wheel-Client $proc.MainWindowHandle 650 560 1440
+            Start-Sleep -Milliseconds 500
+
+            $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
+            Click-Client $proc.MainWindowHandle 120 (144 + 43 * 4)
+            Wheel-Client $proc.MainWindowHandle 700 560 2400
+            Start-Sleep -Milliseconds 700
+            $shot = Join-Path $evidenceDir 'gui02a-real-executable.png'
+            $finalCapture = Capture-Hwnd $proc.MainWindowHandle $shot
+
+            [ordered]@{
+              schema = 'ainovel-gui02a-runtime-evidence/4'
+              candidate_sha = $candidate
+              executable_sha256 = $exeSha
+              real_window_handle = [long]$proc.MainWindowHandle
+              interactive_session = $true
+              capture = 'user32.PrintWindow(PW_RENDERFULLCONTENT)'
+              capture_source = 'direct-HWND'
+              generated_or_mock_image = $false
+              runtime_exercise = [ordered]@{
+                navigation = [ordered]@{ passed=$true; transitions=$navResults.Count; screens=@($navCases | ForEach-Object { $_.id }); input='real Win32 mouse clicks'; validation='direct-HWND frame hash changed per transition' }
+                resize = [ordered]@{ passed=$true; compact=$compactRect; final=$finalRect }
+                scroll = [ordered]@{ passed=$true; input='real Win32 mouse wheel'; before_sha256=$scrollBefore.hash; after_sha256=$scrollAfter.hash; frame_changed=($scrollBefore.hash -ne $scrollAfter.hash) }
+              }
+              window_bounds = $finalRect
+              screenshot = 'gui02a-real-executable.png'
+              screenshot_sha256 = $finalCapture.hash
+              sampled_colors = $finalCapture.colors
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
+            $navResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-navigation-evidence.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Destination $evidenceDir -Force
+            Get-ChildItem -LiteralPath $evidenceDir -Filter 'nav-frame-*.png' | Remove-Item -Force
+            Remove-Item -LiteralPath $scrollBeforePath, $scrollAfterPath -Force
+            Write-Host "REAL HWND CAPTURE + WIN32 INPUT EXERCISE PASS: candidate=$candidate nav=$($navResults.Count) resize=$($compactRect.width)x$($compactRect.height) scrollFrameChanged=true screenshot=$($finalCapture.hash)"
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload real executable evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-real-evidence-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02a-evidence
