@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/appruntime"
+	"github.com/voocel/ainovel-cli/internal/desktopui"
 )
 
 type blockingGatewayRuntime struct {
@@ -26,6 +27,22 @@ func (b *blockingGatewayRuntime) Query(ctx context.Context, req appruntime.Query
 		return appruntime.QueryResult{}, ctx.Err()
 	}
 	return b.fakeGatewayRuntime.Query(ctx, req)
+}
+
+// replaceRuntimeForRed models the current pre-GREEN gateway ownership semantics
+// using only existing production fields: the runtime pointer is swapped under
+// Gateway.mu, but the lock is released before Close. This keeps the RED test
+// compiling while proving the missing behavior is a full-call session lease,
+// not merely a missing helper method.
+func replaceRuntimeForRed(g *Gateway, ctx context.Context, replacement desktopui.RuntimeClient) error {
+	g.mu.Lock()
+	old := g.runtime
+	g.runtime = replacement
+	g.mu.Unlock()
+	if old != nil {
+		return old.Close(ctx)
+	}
+	return nil
 }
 
 func TestGatewayRuntimeReplacementWaitsForInFlightQuery(t *testing.T) {
@@ -51,11 +68,11 @@ func TestGatewayRuntimeReplacementWaitsForInFlightQuery(t *testing.T) {
 
 	replaceDone := make(chan error, 1)
 	go func() {
-		replaceDone <- gateway.replaceRuntime(context.Background(), newRuntime)
+		replaceDone <- replaceRuntimeForRed(gateway, context.Background(), newRuntime)
 	}()
 	select {
 	case err := <-replaceDone:
-		t.Fatalf("replaceRuntime returned while Query still held runtime lease: %v", err)
+		t.Fatalf("runtime replacement returned while Query still held runtime lease: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -78,10 +95,10 @@ func TestGatewayRuntimeReplacementWaitsForInFlightQuery(t *testing.T) {
 	select {
 	case err := <-replaceDone:
 		if err != nil {
-			t.Fatalf("replaceRuntime: %v", err)
+			t.Fatalf("runtime replacement: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("replaceRuntime did not complete after Query released lease")
+		t.Fatal("runtime replacement did not complete after Query released lease")
 	}
 
 	oldRuntime.mu.Lock()
