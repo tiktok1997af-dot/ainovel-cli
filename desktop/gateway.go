@@ -18,9 +18,9 @@ type desktopEventEmitter func(context.Context, string, appruntime.DesktopEvent)
 // GatewaySnapshotResult keeps Snapshot on the same typed, no-raw-error desktop
 // boundary as QueryResult and CommandResult.
 type GatewaySnapshotResult struct {
-	ContractVersion string                       `json:"contract_version"`
+	ContractVersion string                      `json:"contract_version"`
 	Data            *appruntime.DesktopSnapshot `json:"data,omitempty"`
-	Error           *appruntime.AppError         `json:"error,omitempty"`
+	Error           *appruntime.AppError        `json:"error,omitempty"`
 }
 
 // Gateway remains the only Wails-bound authority adapter. GUI-02C.2 replaces
