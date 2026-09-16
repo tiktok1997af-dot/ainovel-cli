@@ -45,6 +45,25 @@ function Stop-SmokeChrome([string]$ProfileDir) {
         }
 }
 
+function Wait-SmokeChromeProfileReleased([string]$ProfileDir, [int]$TimeoutSeconds) {
+    if ([string]::IsNullOrWhiteSpace($ProfileDir)) { Fail "Gemini profile directory is empty during Chrome handoff" }
+    if ($TimeoutSeconds -le 0) { Fail "Gemini profile release timeout must be positive" }
+
+    $needle = "--user-data-dir=$ProfileDir"
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $holders = @(
+            Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) }
+        )
+        if ($holders.Count -eq 0) { return }
+        if ((Get-Date) -ge $deadline) {
+            Fail ("Gemini profile remained held by Chrome after readiness handoff; remaining_processes=" + $holders.Count)
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function Stop-SmokeProduction([string]$ExecutablePath) {
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return }
     $target = [IO.Path]::GetFullPath($ExecutablePath)
@@ -225,6 +244,7 @@ if ([string]$ready.site -ne "gemini-web") { Fail ("unexpected WEB site identity:
 $profileName = [string]$ready.profile_name
 if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = "default" }
 $profileDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) (".ainovel\browser\profiles\" + $profileName)
+Wait-SmokeChromeProfileReleased $profileDir $ReadinessTimeoutSeconds
 
 $promptPath = Join-Path $RuntimeDir "w6c-prompt.txt"
 @"
@@ -261,7 +281,7 @@ try {
     if (-not $first.HasExited) { Stop-Process -Id $first.Id -Force -ErrorAction SilentlyContinue }
     try { $first.WaitForExit(10000) | Out-Null } catch { }
     Stop-SmokeChrome $profileDir
-    Start-Sleep -Seconds 2
+    Wait-SmokeChromeProfileReleased $profileDir $ReadinessTimeoutSeconds
 }
 
 $chapterOneFile = @(Get-ChildItem -LiteralPath (Join-Path $RuntimeDir "output\novel\chapters") -Filter "*.md" -File | Sort-Object Name)[0]
