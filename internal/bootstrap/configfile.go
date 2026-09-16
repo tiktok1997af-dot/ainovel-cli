@@ -143,6 +143,7 @@ func detectLegacyAPIConfig(data []byte) error {
 			if _, ok := fields[key]; ok {
 				return fmt.Errorf("%s (roles.%s contains legacy key %q): %w", LegacyAPIMigrationHint, role, key, errs.ErrConfig)
 			}
+		}
 	}
 	return nil
 }
