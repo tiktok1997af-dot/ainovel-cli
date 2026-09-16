@@ -44,6 +44,17 @@ func writeProjectConfig(t *testing.T, content string) {
 	}
 }
 
+func writeProjectConfigAt(t *testing.T, root, content string) {
+	t.Helper()
+	dir := filepath.Join(root, ".ainovel")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir project config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+}
+
 func TestLoadConfig_CorruptProjectFailsLoud(t *testing.T) {
 	writeGlobal(t, validGlobal)
 	t.Chdir(t.TempDir())
@@ -193,7 +204,7 @@ func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
 		t.Fatalf("example JSON: %v", err)
 	}
 	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName {
-		t.Fatalf("example is not WEB-only: %#v", cfg)
+		t.Fatalf("example is not WEB-only: %#v", cfg.Web)
 	}
 	cfg.FillDefaults()
 	if err := cfg.ValidateBase(); err != nil {
@@ -215,5 +226,61 @@ func TestWriteStartupError(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "boom: browser config invalid") {
 		t.Fatalf("startup log missing message: %s", data)
+	}
+}
+
+func TestLoadConfigForProjectUsesExplicitRootWithoutChangingCWD(t *testing.T) {
+	writeGlobal(t, validGlobal)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	writeProjectConfig(t, `{"language":"en"}`)
+
+	projectRoot := t.TempDir()
+	writeProjectConfigAt(t, projectRoot, `{
+  "web": {"profile_name": "project-profile"},
+  "language": "zh",
+  "reasoning_effort": "high"
+}`)
+
+	before, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigForProject(projectRoot)
+	if err != nil {
+		t.Fatalf("LoadConfigForProject: %v", err)
+	}
+	after, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("cwd changed: before=%q after=%q", before, after)
+	}
+	if cfg.Language != "zh" || cfg.ReasoningEffort != "high" {
+		t.Fatalf("explicit project overlay not loaded: %#v", cfg)
+	}
+	if !cfg.Web.Enabled || cfg.Web.Site != WebModelName || cfg.Web.ProfileName != "project-profile" {
+		t.Fatalf("global+project merge failed: %#v", cfg.Web)
+	}
+}
+
+func TestLoadConfigForProjectMissingProjectUsesGlobal(t *testing.T) {
+	writeGlobal(t, validGlobal)
+	cfg, err := LoadConfigForProject(t.TempDir())
+	if err != nil {
+		t.Fatalf("missing project config should be allowed: %v", err)
+	}
+	if !cfg.Web.Enabled || cfg.Language != "vi" {
+		t.Fatalf("global config not preserved: %#v", cfg)
+	}
+}
+
+func TestLoadConfigForProjectCorruptProjectFailsLoud(t *testing.T) {
+	writeGlobal(t, validGlobal)
+	projectRoot := t.TempDir()
+	writeProjectConfigAt(t, projectRoot, `{ "web": {"enabled": true}, }`)
+	if _, err := LoadConfigForProject(projectRoot); err == nil {
+		t.Fatal("corrupt explicit project config must fail loud")
 	}
 }
