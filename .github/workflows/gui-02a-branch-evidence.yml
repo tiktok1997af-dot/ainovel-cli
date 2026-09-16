@@ -9,25 +9,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gui02a-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-capture:
-    name: Build and capture actual desktop executable
-    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
-    timeout-minutes: 35
+  build-exact:
+    name: Build exact Wails candidate
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout exact head
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Verify interactive Windows session
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $session = (Get-Process -Id $PID).SessionId
-          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
-          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
-          Write-Host "Interactive Windows session PASS: $session"
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -63,9 +59,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
           & $wails build -clean
           Pop-Location
-          if (-not (Test-Path -LiteralPath 'desktop/build/bin/AINOVEL-Desktop.exe')) { throw 'AINOVEL-Desktop.exe missing.' }
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
 
-      - name: Verify GUI-02A boundaries
+      - name: Verify architecture boundaries
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -76,12 +73,79 @@ jobs:
           $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
           if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
 
+      - name: Create exact build provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'gui02a-candidate'
+          if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $bundle 'AINOVEL-Desktop.exe') -Force
+          if (Test-Path -LiteralPath 'desktop/go.sum') { Copy-Item -LiteralPath 'desktop/go.sum' -Destination (Join-Path $bundle 'desktop-go.sum') -Force }
+          if (Test-Path -LiteralPath 'desktop/frontend/package-lock.json') { Copy-Item -LiteralPath 'desktop/frontend/package-lock.json' -Destination (Join-Path $bundle 'frontend-package-lock.json') -Force }
+          [ordered]@{
+            schema = 'ainovel-gui02a-build/1'
+            candidate_sha = $actual
+            executable = 'AINOVEL-Desktop.exe'
+            executable_sha256 = $exeSha
+            shell = 'wails-v2'
+            frontend = 'react-vite'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle 'gui02a-build-provenance.json') -Encoding UTF8
+          Write-Host "EXACT GUI-02A BUILD PASS: $actual exe=$exeSha"
+
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02a-candidate
+
+  capture-real-window:
+    name: Capture actual executable window
+    needs: build-exact
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          path: runtime-input
+
+      - name: Verify interactive Windows session and provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $session = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $prov = Get-Content -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $actual) { throw 'Build provenance candidate mismatch.' }
+          $exeSha = (Get-FileHash -LiteralPath 'runtime-input/AINOVEL-Desktop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
+          Write-Host "INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
+
       - name: Launch executable and capture real window
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
           $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
           $evidenceDir = Join-Path $env:GITHUB_WORKSPACE 'gui02a-evidence'
           if (Test-Path -LiteralPath $evidenceDir) { Remove-Item -LiteralPath $evidenceDir -Recurse -Force }
@@ -107,7 +171,6 @@ jobs:
             [Gui02ACapture]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
             Start-Sleep -Seconds 3
             $proc.Refresh()
-
             $rect = New-Object Gui02ACapture+RECT
             if (-not [Gui02ACapture]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed.' }
             $width = $rect.Right - $rect.Left
@@ -126,7 +189,7 @@ jobs:
             }
 
             $shotSha = (Get-FileHash -LiteralPath $shot -Algorithm SHA256).Hash.ToLowerInvariant()
-            $evidence = [ordered]@{
+            [ordered]@{
               schema = 'ainovel-gui02a-runtime-evidence/1'
               candidate_sha = $candidate
               executable_sha256 = $exeSha
@@ -138,19 +201,17 @@ jobs:
               screenshot_sha256 = $shotSha
               generated_or_mock_image = $false
               captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-            }
-            $evidence | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
-            Copy-Item -LiteralPath $exe -Destination (Join-Path $evidenceDir 'AINOVEL-Desktop.exe') -Force
-            if (Test-Path -LiteralPath 'desktop/go.sum') { Copy-Item -LiteralPath 'desktop/go.sum' -Destination (Join-Path $evidenceDir 'desktop-go.sum') -Force }
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Destination $evidenceDir -Force
             Write-Host "REAL EXECUTABLE CAPTURE PASS: ${width}x${height}; screenshot=$shotSha; exe=$exeSha"
           } finally {
             if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Upload runtime evidence
+      - name: Upload real executable evidence
         uses: actions/upload-artifact@v4
         with:
-          name: ainovel-gui02a-runtime-${{ github.sha }}
+          name: ainovel-gui02a-real-evidence-${{ github.sha }}
           if-no-files-found: error
           retention-days: 14
           path: gui02a-evidence

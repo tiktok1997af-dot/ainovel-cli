@@ -13,14 +13,20 @@ on:
 permissions:
   contents: read
 
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   build-shell:
-    name: Build Wails React shell
+    name: Build exact Wails React shell
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -50,6 +56,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
           Push-Location desktop
           go mod tidy
           $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
@@ -71,10 +79,10 @@ jobs:
           $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
           if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
 
-      - name: Upload executable
+      - name: Upload exact executable
         uses: actions/upload-artifact@v4
         with:
-          name: ainovel-gui02a-shell-${{ github.sha }}
+          name: ainovel-gui02a-shell-${{ env.CANDIDATE_SHA }}
           if-no-files-found: error
           retention-days: 7
           path: desktop/build/bin/AINOVEL-Desktop.exe
