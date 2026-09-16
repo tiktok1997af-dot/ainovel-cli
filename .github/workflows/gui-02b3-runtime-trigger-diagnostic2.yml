@@ -1,0 +1,102 @@
+name: GUI-02B.3 Runtime Trigger Diagnostic 2
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-02b3-runtime-trigger-diagnostic2.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 10
+    steps:
+      - name: Download exact already-built candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02b3-candidate-a1c7fd5a544c3d44de196c006c50d240fa0d2c8d
+          github-token: ${{ github.token }}
+          repository: tiktok1997af-dot/ainovel-cli
+          run-id: 35100743939
+          path: runtime-input
+
+      - name: Click exact window-relative button center and capture
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02B3Diag2 {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
+            [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+            public static void Click(int x, int y) {
+              SetCursorPos(x, y);
+              mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+              mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $native
+
+          function Capture([IntPtr]$Handle, [string]$Path) {
+            $r = New-Object Gui02B3Diag2+RECT
+            if (-not [Gui02B3Diag2]::GetWindowRect($Handle, [ref]$r)) { throw 'GetWindowRect failed.' }
+            $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
+            $bmp = New-Object System.Drawing.Bitmap $w, $h
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $hdc = $g.GetHdc()
+            try { if (-not [Gui02B3Diag2]::PrintWindow($Handle, $hdc, 2)) { throw 'PrintWindow failed.' } }
+            finally { $g.ReleaseHdc($hdc); $g.Dispose() }
+            try { $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bmp.Dispose() }
+          }
+
+          $out = Join-Path $env:GITHUB_WORKSPACE 'gui02b3-trigger-diag2'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
+          $proc = Start-Process -FilePath $exe -PassThru
+          try {
+            try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
+            $deadline = (Get-Date).AddSeconds(30)
+            do { Start-Sleep -Milliseconds 500; $proc.Refresh() } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($proc.MainWindowHandle -eq 0) { throw 'No real window handle.' }
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02B3Diag2]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, 0, 0, 1600, 980, $flags)) { throw 'SetWindowPos failed.' }
+            [Gui02B3Diag2]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 1
+            Capture $proc.MainWindowHandle (Join-Path $out 'before-click.png')
+            $r = New-Object Gui02B3Diag2+RECT
+            if (-not [Gui02B3Diag2]::GetWindowRect($proc.MainWindowHandle, [ref]$r)) { throw 'GetWindowRect failed before click.' }
+            [Gui02B3Diag2]::Click($r.Left + 592, $r.Top + 847)
+            Start-Sleep -Seconds 4
+            $proc.Refresh()
+            $title = [string]$proc.MainWindowTitle
+            Capture $proc.MainWindowHandle (Join-Path $out 'after-click.png')
+            [ordered]@{
+              source_sha='a1c7fd5a544c3d44de196c006c50d240fa0d2c8d'
+              click_window_relative='592,847'
+              window_title=$title
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $out 'diagnostic.json') -Encoding UTF8
+            Write-Host "TRIGGER DIAG2: title=$title"
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload trigger diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui02b3-trigger-diagnostic2
+          if-no-files-found: warn
+          retention-days: 3
+          path: gui02b3-trigger-diag2
