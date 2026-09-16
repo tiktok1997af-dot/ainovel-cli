@@ -58,6 +58,17 @@ func EffectiveConfigPath() string {
 }
 
 func LoadConfig() (Config, error) {
+	return loadConfigFromProjectPath(projectConfigPath())
+}
+
+// LoadConfigForProject loads the same global + project overlay as LoadConfig,
+// but resolves the project config from an explicit project root instead of the
+// process working directory. It does not mutate CWD.
+func LoadConfigForProject(projectRoot string) (Config, error) {
+	return loadConfigFromProjectPath(filepath.Join(projectRoot, configDirName, "config.json"))
+}
+
+func loadConfigFromProjectPath(projectPath string) (Config, error) {
 	var cfg Config
 	var globalErr error
 
@@ -72,9 +83,9 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
-	project, found, err := loadOptionalJSON(projectConfigPath())
+	project, found, err := loadOptionalJSON(projectPath)
 	if err != nil {
-		return cfg, fmt.Errorf("项目级配置 ./.ainovel/config.json 解析失败（请检查 WEB-only 配置）: %w", err)
+		return cfg, fmt.Errorf("项目级配置 %s 解析失败（请检查 WEB-only 配置）: %w", projectPath, err)
 	}
 	if found {
 		return mergeConfig(cfg, project), nil
@@ -257,68 +268,4 @@ func stripJSONComments(data []byte) []byte {
 		out = append(out, b)
 	}
 	return out
-}
-
-func WriteStartupError(msg string) string {
-	dir := DefaultConfigDir()
-	if dir == "" {
-		return ""
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
-	}
-	path := filepath.Join(dir, "last-error.log")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), msg); err != nil {
-		return ""
-	}
-	return path
-}
-
-func SaveConfig(path string, cfg Config) error {
-	persist := CloneConfig(cfg)
-	persist.FillDefaults()
-	if err := persist.ValidateBase(); err != nil {
-		return fmt.Errorf("refusing to persist non-WEB configuration: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(persist, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	committed = true
-	return nil
 }
