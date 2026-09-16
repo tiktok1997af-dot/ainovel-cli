@@ -62,6 +62,6 @@ func TestProjectSessionControllerReplaceWaitsForInFlightRuntimeLease(t *testing.
 func TestProjectSessionControllerFailsClosedWithoutActiveRuntime(t *testing.T) {
 	controller := newProjectSessionController(nil)
 	if runtime, release, ok := controller.acquireRuntime(); ok || runtime != nil || release != nil {
-		t.Fatalf("acquireRuntime() = %#v, %#v, %v; want no active runtime", runtime, release, ok)
+		t.Fatalf("acquireRuntime() = %#v, release_non_nil=%v, ok=%v; want no active runtime", runtime, release != nil, ok)
 	}
 }
