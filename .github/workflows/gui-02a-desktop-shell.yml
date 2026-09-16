@@ -39,6 +39,15 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Test desktop gateway contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          go test -buildvcs=false -count=1 ./...
+          Pop-Location
+
       - name: Install Wails
         shell: powershell
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
@@ -60,7 +69,7 @@ jobs:
           if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
           Push-Location desktop
           go mod tidy
-          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          $wails = Join-Path (go env GOPATH) 'bin\\wails.exe'
           if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
           & $wails build -clean
           Pop-Location
@@ -72,11 +81,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $source = Get-ChildItem -LiteralPath desktop -Recurse -File | Where-Object { $_.FullName -notmatch '\\node_modules\\|\\dist\\|\\build\\' }
+          $source = Get-ChildItem -LiteralPath desktop -Recurse -File | Where-Object { $_.FullName -notmatch '\\\\node_modules\\\\|\\\\dist\\\\|\\\\build\\\\' }
           $tauri = $source | Select-String -Pattern '@tauri-apps|tauri::|src-tauri' -ErrorAction SilentlyContinue
           if ($tauri) { $tauri | ForEach-Object { Write-Host $_ }; throw 'Tauri residue detected.' }
           $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
-          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\\(' -ErrorAction SilentlyContinue
           if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
 
       - name: Upload exact executable
