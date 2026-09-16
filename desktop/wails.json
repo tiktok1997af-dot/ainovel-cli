@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "AINOVEL Desktop",
+  "outputfilename": "AINOVEL-Desktop",
+  "frontend:dir": "frontend",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "AINOVEL",
+    "email": ""
+  },
+  "info": {
+    "productName": "AINOVEL Desktop",
+    "productVersion": "0.2.0-gui02a",
+    "copyright": "AINOVEL",
+    "comments": "GUI-02A Wails/React desktop shell foundation"
+  }
+}
