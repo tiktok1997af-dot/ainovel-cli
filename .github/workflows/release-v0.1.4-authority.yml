@@ -1,0 +1,135 @@
+name: v0.1.4 Exact Release Authority
+
+on:
+  push:
+    branches:
+      - release-v0.1.4-authority
+
+permissions:
+  contents: write
+
+env:
+  PRODUCT_REPOSITORY: tiktok1997af-dot/ainovel-cli
+  RELEASE_TAG: v0.1.4
+  TARGET_SHA: d432e08c074dc8909ce2935bebcd2e0f5e151a4c
+  MAIN_MERGE_SHA: 43e8de4d7dd11ee841bcf2c82a80373786a6687c
+
+jobs:
+  publish:
+    name: Publish v0.1.4 from locked Final Gate SHA
+    if: ${{ github.repository == 'tiktok1997af-dot/ainovel-cli' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout authority branch with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify immutable publication authority
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse origin/main)" = "$MAIN_MERGE_SHA"
+          git merge-base --is-ancestor "$TARGET_SHA" "$MAIN_MERGE_SHA"
+          test "$(git rev-parse "${TARGET_SHA}^{tree}")" = "$(git rev-parse "${MAIN_MERGE_SHA}^{tree}")"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" || true)"
+          if [ -n "$remote_tag" ]; then
+            test "$remote_tag" = "$TARGET_SHA$(printf '\t')refs/tags/$RELEASE_TAG"
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" >/dev/null 2>&1; then
+            test -n "$remote_tag"
+          fi
+          echo "Release authority PASS: $RELEASE_TAG -> $TARGET_SHA"
+
+      - name: Checkout exact locked Final Gate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Re-prove WEB-only release preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/w55-no-api-audit.sh
+          go test ./...
+          go test ./internal/version
+
+      - name: Generate deterministic official release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh .github/scripts/gen-changelog.sh > release-notes.md
+          cp release-notes.md /tmp/release-notes-a.md
+          sh .github/scripts/gen-changelog.sh > /tmp/release-notes-b.md
+          cmp /tmp/release-notes-a.md /tmp/release-notes-b.md
+
+      - name: Create exact v0.1.4 tag or verify recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" || true)"
+          if [ -z "$remote_tag" ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag "$RELEASE_TAG" "$TARGET_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+          else
+            test "$remote_tag" = "$TARGET_SHA$(printf '\t')refs/tags/$RELEASE_TAG"
+            git tag "$RELEASE_TAG" "$TARGET_SHA" 2>/dev/null || true
+          fi
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$TARGET_SHA"
+
+      - name: Detect existing exact release
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$PRODUCT_REPOSITORY" >/dev/null 2>&1; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish v0.1.4 with GoReleaser
+        if: ${{ steps.state.outputs.exists != 'true' }}
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.18.1"
+          args: release --clean --release-notes=release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify live release and Windows assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" = "$TARGET_SHA$(printf '\t')refs/tags/$RELEASE_TAG"
+          gh api "repos/$PRODUCT_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/release.json',encoding='utf-8'))
+          assert r['tag_name']=='v0.1.4'
+          assert not r['draft'] and not r['prerelease']
+          names={a['name'] for a in r.get('assets',[])}
+          required={'ainovel-cli_0.1.4_Windows_x86_64.zip','ainovel-cli_checksums.txt'}
+          missing=required-names
+          if missing:
+              raise SystemExit(f'missing release assets: {sorted(missing)}')
+          print('LIVE RELEASE PASS:', r['html_url'])
+          PY
