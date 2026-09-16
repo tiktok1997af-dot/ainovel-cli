@@ -18,19 +18,19 @@ type desktopEventEmitter func(context.Context, string, appruntime.DesktopEvent)
 // GatewaySnapshotResult keeps Snapshot on the same typed, no-raw-error desktop
 // boundary as QueryResult and CommandResult.
 type GatewaySnapshotResult struct {
-	ContractVersion string                      `json:"contract_version"`
+	ContractVersion string                       `json:"contract_version"`
 	Data            *appruntime.DesktopSnapshot `json:"data,omitempty"`
-	Error           *appruntime.AppError        `json:"error,omitempty"`
+	Error           *appruntime.AppError         `json:"error,omitempty"`
 }
 
-// Gateway is the only Wails-bound authority adapter in GUI-02B.2. The only
-// exported methods are the three call surfaces permitted by the locked
-// contract. Event subscription remains Go-owned and is projected through one
-// Wails event topic; Host, Store, WebAI, filesystem, and engine internals are
-// never exposed to JavaScript.
+// Gateway remains the only Wails-bound authority adapter. GUI-02C.2 replaces
+// the raw runtime pointer with a serialized project session so every runtime
+// call holds a read lease for its full duration. No project lifecycle methods
+// are exported in this gate; GUI-02C.3 will build typed lifecycle operations on
+// top of the same session authority.
 type Gateway struct {
 	mu      sync.Mutex
-	runtime desktopui.RuntimeClient
+	session *projectSessionController
 	emit    desktopEventEmitter
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -39,29 +39,33 @@ type Gateway struct {
 }
 
 func newGateway(runtime desktopui.RuntimeClient, emit desktopEventEmitter) *Gateway {
-	return &Gateway{runtime: runtime, emit: emit}
+	return &Gateway{session: newProjectSessionController(runtime), emit: emit}
 }
 
 // Snapshot returns authoritative desktop state through a typed envelope. It
 // deliberately has no arbitrary method name or path argument.
 func (g *Gateway) Snapshot() GatewaySnapshotResult {
 	result := GatewaySnapshotResult{ContractVersion: appruntime.ContractVersion}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	if g == nil || g.session == nil {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
 
-	snapshot, err := runtime.Snapshot(g.requestContext())
-	if err != nil {
-		result.Error = gatewayError(err)
-		return result
+	ok := g.session.withRuntime(func(runtime desktopui.RuntimeClient) {
+		snapshot, err := runtime.Snapshot(g.requestContext())
+		if err != nil {
+			result.Error = gatewayError(err)
+			return
+		}
+		if snapshot.Contract.Version != appruntime.ContractVersion || snapshot.Contract.SchemaVersion != appruntime.SchemaVersion {
+			result.Error = contractMismatchGatewayError()
+			return
+		}
+		result.Data = &snapshot
+	})
+	if !ok {
+		result.Error = runtimeUnavailableGatewayError()
 	}
-	if snapshot.Contract.Version != appruntime.ContractVersion || snapshot.Contract.SchemaVersion != appruntime.SchemaVersion {
-		result.Error = contractMismatchGatewayError()
-		return result
-	}
-	result.Data = &snapshot
 	return result
 }
 
@@ -77,33 +81,38 @@ func (g *Gateway) Query(req appruntime.QueryRequest) appruntime.QueryResult {
 		result.Error = contractMismatchGatewayError()
 		return result
 	}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	if g == nil || g.session == nil {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
 
-	out, err := runtime.Query(g.requestContext(), req)
-	if err != nil {
-		if out.Error != nil {
-			result.Error = cloneGatewayError(out.Error)
-		} else {
-			result.Error = gatewayError(err)
+	ok := g.session.withRuntime(func(runtime desktopui.RuntimeClient) {
+		out, err := runtime.Query(g.requestContext(), req)
+		if err != nil {
+			if out.Error != nil {
+				result.Error = cloneGatewayError(out.Error)
+			} else {
+				result.Error = gatewayError(err)
+			}
+			return
 		}
-		return result
+		if out.ContractVersion != "" && out.ContractVersion != appruntime.ContractVersion {
+			result.Error = contractMismatchGatewayError()
+			return
+		}
+		if out.Kind != "" && out.Kind != req.Kind {
+			result.Error = internalGatewayError()
+			return
+		}
+		out.ContractVersion = appruntime.ContractVersion
+		out.Kind = req.Kind
+		out.Error = cloneGatewayError(out.Error)
+		result = out
+	})
+	if !ok {
+		result.Error = runtimeUnavailableGatewayError()
 	}
-	if out.ContractVersion != "" && out.ContractVersion != appruntime.ContractVersion {
-		result.Error = contractMismatchGatewayError()
-		return result
-	}
-	if out.Kind != "" && out.Kind != req.Kind {
-		result.Error = internalGatewayError()
-		return result
-	}
-	out.ContractVersion = appruntime.ContractVersion
-	out.Kind = req.Kind
-	out.Error = cloneGatewayError(out.Error)
-	return out
+	return result
 }
 
 // Dispatch delegates only typed command intents. State-machine authority stays
@@ -120,31 +129,36 @@ func (g *Gateway) Dispatch(cmd appruntime.CommandRequest) appruntime.CommandResu
 		result.Error = contractMismatchGatewayError()
 		return result
 	}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	if g == nil || g.session == nil {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
 
-	out, err := runtime.Dispatch(g.requestContext(), cmd)
-	if err != nil {
-		if out.Error != nil {
-			result.Error = cloneGatewayError(out.Error)
-		} else {
-			result.Error = gatewayError(err)
+	ok := g.session.withRuntime(func(runtime desktopui.RuntimeClient) {
+		out, err := runtime.Dispatch(g.requestContext(), cmd)
+		if err != nil {
+			if out.Error != nil {
+				result.Error = cloneGatewayError(out.Error)
+			} else {
+				result.Error = gatewayError(err)
+			}
+			return
 		}
-		return result
+		if out.ContractVersion != "" && out.ContractVersion != appruntime.ContractVersion {
+			result.Error = contractMismatchGatewayError()
+			return
+		}
+		out.ContractVersion = appruntime.ContractVersion
+		if out.CommandID == "" {
+			out.CommandID = cmd.ID
+		}
+		out.Error = cloneGatewayError(out.Error)
+		result = out
+	})
+	if !ok {
+		result.Error = runtimeUnavailableGatewayError()
 	}
-	if out.ContractVersion != "" && out.ContractVersion != appruntime.ContractVersion {
-		result.Error = contractMismatchGatewayError()
-		return result
-	}
-	out.ContractVersion = appruntime.ContractVersion
-	if out.CommandID == "" {
-		out.CommandID = cmd.ID
-	}
-	out.Error = cloneGatewayError(out.Error)
-	return out
+	return result
 }
 
 // startup/shutdown are Wails lifecycle callbacks, intentionally unexported so
@@ -158,16 +172,22 @@ func (g *Gateway) startup(ctx context.Context) {
 	g.mu.Lock()
 	g.ctx = bridgeCtx
 	g.cancel = cancel
-	runtime := g.runtime
 	emit := g.emit
 	g.mu.Unlock()
 
-	if runtime == nil || emit == nil {
+	if emit == nil || g.session == nil {
 		return
 	}
-	sub, err := runtime.Subscribe(bridgeCtx, appruntime.EventCursor{ContractVersion: appruntime.ContractVersion})
-	if err != nil {
-		emit(bridgeCtx, desktopEventTopic, gatewayBridgeErrorEvent(err))
+	var sub appruntime.EventSubscription
+	var subErr error
+	ok := g.session.withRuntime(func(runtime desktopui.RuntimeClient) {
+		sub, subErr = runtime.Subscribe(bridgeCtx, appruntime.EventCursor{ContractVersion: appruntime.ContractVersion})
+	})
+	if !ok {
+		return
+	}
+	if subErr != nil {
+		emit(bridgeCtx, desktopEventTopic, gatewayBridgeErrorEvent(subErr))
 		return
 	}
 	done := make(chan struct{})
@@ -186,7 +206,6 @@ func (g *Gateway) shutdown(ctx context.Context) {
 	cancel := g.cancel
 	sub := g.sub
 	done := g.done
-	runtime := g.runtime
 	g.cancel = nil
 	g.sub = nil
 	g.done = nil
@@ -205,8 +224,13 @@ func (g *Gateway) shutdown(ctx context.Context) {
 		case <-ctx.Done():
 		}
 	}
-	if runtime != nil {
-		_ = runtime.Close(ctx)
+	if g.session != nil {
+		g.session.mutate(func(runtime desktopui.RuntimeClient) desktopui.RuntimeClient {
+			if runtime != nil {
+				_ = runtime.Close(ctx)
+			}
+			return nil
+		})
 	}
 }
 
@@ -229,12 +253,6 @@ func (g *Gateway) pumpEvents(ctx context.Context, sub appruntime.EventSubscripti
 			emit(ctx, desktopEventTopic, event)
 		}
 	}
-}
-
-func (g *Gateway) runtimeClient() desktopui.RuntimeClient {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.runtime
 }
 
 func (g *Gateway) requestContext() context.Context {
