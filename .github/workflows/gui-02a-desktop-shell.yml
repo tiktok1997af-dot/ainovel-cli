@@ -55,6 +55,15 @@ jobs:
           go test -buildvcs=false -count=1 ./...
           Pop-Location
 
+      - name: Test frontend gateway round-trip contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm test
+          Pop-Location
+
       - name: Install Wails
         shell: powershell
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
