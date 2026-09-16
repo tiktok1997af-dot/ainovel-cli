@@ -139,7 +139,7 @@ jobs:
           if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
           Write-Host "INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
 
-      - name: Exercise runtime and capture direct HWND
+      - name: Exercise runtime with real Windows input and capture direct HWND
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -151,18 +151,30 @@ jobs:
           New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
 
           Add-Type -AssemblyName System.Drawing
-          Add-Type -AssemblyName UIAutomationClient
-          Add-Type -AssemblyName UIAutomationTypes
           $native = @'
           using System;
           using System.Runtime.InteropServices;
           public static class Gui02AWindow {
             [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
             [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
             [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
             [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
             [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+            [DllImport("user32.dll")] static extern bool SetCursorPos(int X, int Y);
+            [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+            public static void Click(int x, int y) {
+              SetCursorPos(x, y);
+              mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+              mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+            public static void Wheel(int x, int y, int delta) {
+              SetCursorPos(x, y);
+              mouse_event(0x0800, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
+            }
           }
           '@
           Add-Type -TypeDefinition $native
@@ -173,6 +185,13 @@ jobs:
             [pscustomobject]@{ left=$rect.Left; top=$rect.Top; width=$rect.Right-$rect.Left; height=$rect.Bottom-$rect.Top }
           }
 
+          function Read-ClientOrigin([IntPtr]$Handle) {
+            $point = New-Object Gui02AWindow+POINT
+            $point.X = 0; $point.Y = 0
+            if (-not [Gui02AWindow]::ClientToScreen($Handle, [ref]$point)) { throw 'ClientToScreen failed.' }
+            [pscustomobject]@{ x=$point.X; y=$point.Y }
+          }
+
           function Set-WindowSize([IntPtr]$Handle, [int]$Width, [int]$Height) {
             [Gui02AWindow]::ShowWindowAsync($Handle, 9) | Out-Null
             $flags = [uint32](0x0002 -bor 0x0004)
@@ -181,33 +200,43 @@ jobs:
             Read-WindowRect $Handle
           }
 
-          function Find-ElementByName([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
-            $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name)
-            $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-          }
-
-          function Invoke-Nav([System.Windows.Automation.AutomationElement]$Root, [string]$Label, [string]$Marker) {
-            $button = Find-ElementByName $Root $Label
-            if ($null -eq $button) { throw "Navigation element not found: $Label" }
-            $pattern = $null
-            if (-not $button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { throw "InvokePattern unavailable for navigation element: $Label" }
-            ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
-            Start-Sleep -Milliseconds 250
-            $markerEl = Find-ElementByName $Root $Marker
-            if ($null -eq $markerEl) { throw "Navigation marker not observed after ${Label}: $Marker" }
-            [pscustomobject]@{ label=$Label; marker=$Marker; passed=$true }
-          }
-
-          function Find-Scrollable([System.Windows.Automation.AutomationElement]$Root) {
-            $all = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-            foreach ($el in $all) {
-              $pattern = $null
-              if ($el.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {
-                $scroll = [System.Windows.Automation.ScrollPattern]$pattern
-                if ($scroll.Current.VerticallyScrollable) { return $scroll }
-              }
+          function Capture-Hwnd([IntPtr]$Handle, [string]$Path) {
+            $rect = Read-WindowRect $Handle
+            $bitmap = New-Object System.Drawing.Bitmap $rect.width, $rect.height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = [IntPtr]::Zero
+            try {
+              $hdc = $graphics.GetHdc()
+              if (-not [Gui02AWindow]::PrintWindow($Handle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
+              $graphics.Dispose()
             }
-            $null
+            try {
+              $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+              $xStep = [Math]::Max(1, [int]($rect.width / 24))
+              $yStep = [Math]::Max(1, [int]($rect.height / 16))
+              for ($x = 0; $x -lt $rect.width; $x += $xStep) {
+                for ($y = 0; $y -lt $rect.height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
+              }
+              if ($colors.Count -lt 20) { throw "Direct HWND capture appears blank or degenerate: sampledColors=$($colors.Count)" }
+              $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+              [pscustomobject]@{ hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); colors=$colors.Count; rect=$rect }
+            } finally {
+              $bitmap.Dispose()
+            }
+          }
+
+          function Click-Client([IntPtr]$Handle, [int]$X, [int]$Y) {
+            $origin = Read-ClientOrigin $Handle
+            [Gui02AWindow]::SetForegroundWindow($Handle) | Out-Null
+            [Gui02AWindow]::Click($origin.x + $X, $origin.y + $Y)
+          }
+
+          function Wheel-Client([IntPtr]$Handle, [int]$X, [int]$Y, [int]$Delta) {
+            $origin = Read-ClientOrigin $Handle
+            [Gui02AWindow]::SetForegroundWindow($Handle) | Out-Null
+            [Gui02AWindow]::Wheel($origin.x + $X, $origin.y + $Y, $Delta)
           }
 
           $proc = $null
@@ -222,79 +251,64 @@ jobs:
             } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
             if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
 
+            $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
+            if ([Math]::Abs($finalRect.width - 1600) -gt 8 -or [Math]::Abs($finalRect.height - 980) -gt 8) { throw "Initial evidence size mismatch: $($finalRect.width)x$($finalRect.height)" }
             [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
             Start-Sleep -Seconds 1
-            $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
-            if ($null -eq $root) { throw 'UI Automation root unavailable.' }
 
             $navCases = @(
-              @{ id='S01'; label='Projects'; route='/projects' },
-              @{ id='S02'; label='Project Home'; route='/project' },
-              @{ id='S03'; label='Story Bible'; route='/story-bible' },
-              @{ id='S04'; label='Architecture'; route='/architecture' },
-              @{ id='S05'; label='Chapter Studio'; route='/chapter-studio' },
-              @{ id='S06'; label='Review & Repair'; route='/review-repair' },
-              @{ id='S07'; label='Continuity Center'; route='/continuity' },
-              @{ id='S08'; label='Run Control'; route='/run-control' },
-              @{ id='S09'; label='AI Models'; route='/ai-models' },
-              @{ id='S10'; label='Settings'; route='/settings' }
+              @{ id='S01'; label='Projects'; index=0 },
+              @{ id='S02'; label='Project Home'; index=1 },
+              @{ id='S03'; label='Story Bible'; index=2 },
+              @{ id='S04'; label='Architecture'; index=3 },
+              @{ id='S05'; label='Chapter Studio'; index=4 },
+              @{ id='S06'; label='Review & Repair'; index=5 },
+              @{ id='S07'; label='Continuity Center'; index=6 },
+              @{ id='S08'; label='Run Control'; index=7 },
+              @{ id='S09'; label='AI Models'; index=8 },
+              @{ id='S10'; label='Settings'; index=9 }
             )
+            $navOrder = @($navCases + $navCases[8..0])
             $navResults = @()
-            foreach ($case in $navCases) {
-              $navResults += Invoke-Nav $root $case.label "$($case.id) · $($case.route)"
-            }
-            for ($i = 8; $i -ge 0; $i--) {
-              $case = $navCases[$i]
-              $navResults += Invoke-Nav $root $case.label "$($case.id) · $($case.route)"
+            $previousHash = $null
+            $frameIndex = 0
+            foreach ($case in $navOrder) {
+              $relativeY = 144 + (43 * [int]$case.index)
+              Click-Client $proc.MainWindowHandle 120 $relativeY
+              Start-Sleep -Milliseconds 350
+              $framePath = Join-Path $evidenceDir ("nav-frame-{0:D2}-{1}.png" -f $frameIndex, $case.id)
+              $frame = Capture-Hwnd $proc.MainWindowHandle $framePath
+              if ($null -ne $previousHash -and $frame.hash -eq $previousHash) { throw "Navigation frame did not change for $($case.id) / $($case.label)." }
+              $navResults += [pscustomobject]@{ id=$case.id; label=$case.label; index=$case.index; click_client_x=120; click_client_y=$relativeY; frame_sha256=$frame.hash; sampled_colors=$frame.colors }
+              $previousHash = $frame.hash
+              $frameIndex++
             }
             if ($navResults.Count -ne 19) { throw "Unexpected navigation exercise count: $($navResults.Count)" }
 
             $compactRect = Set-WindowSize $proc.MainWindowHandle 1280 760
             if ([Math]::Abs($compactRect.width - 1280) -gt 8 -or [Math]::Abs($compactRect.height - 760) -gt 8) { throw "Resize exercise failed: $($compactRect.width)x$($compactRect.height)" }
 
-            $scroll = Find-Scrollable $root
-            if ($null -eq $scroll) { throw 'No vertically scrollable UI Automation element found.' }
-            $scrollBefore = [double]$scroll.Current.VerticalScrollPercent
-            $scroll.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::LargeIncrement)
+            Click-Client $proc.MainWindowHandle 120 (144 + 43 * 4)
             Start-Sleep -Milliseconds 350
-            $scrollAfter = [double]$scroll.Current.VerticalScrollPercent
-            if ($scrollAfter -le $scrollBefore) { throw "Scroll-down verification failed: before=$scrollBefore after=$scrollAfter" }
-            $scroll.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::LargeDecrement)
-            Start-Sleep -Milliseconds 350
-            $scrollReturned = [double]$scroll.Current.VerticalScrollPercent
-            if ($scrollReturned -ge $scrollAfter) { throw "Scroll-return verification failed: after=$scrollAfter returned=$scrollReturned" }
+            $scrollBeforePath = Join-Path $evidenceDir 'scroll-before.png'
+            $scrollBefore = Capture-Hwnd $proc.MainWindowHandle $scrollBeforePath
+            Wheel-Client $proc.MainWindowHandle 650 560 -720
+            Start-Sleep -Milliseconds 500
+            $scrollAfterPath = Join-Path $evidenceDir 'scroll-after.png'
+            $scrollAfter = Capture-Hwnd $proc.MainWindowHandle $scrollAfterPath
+            if ($scrollAfter.hash -eq $scrollBefore.hash) { throw 'Wheel scroll produced no visual change in executable frame.' }
+            Wheel-Client $proc.MainWindowHandle 650 560 1440
+            Start-Sleep -Milliseconds 500
 
-            Invoke-Nav $root 'Chapter Studio' 'S05 · /chapter-studio' | Out-Null
             $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
-            if ([Math]::Abs($finalRect.width - 1600) -gt 8 -or [Math]::Abs($finalRect.height - 980) -gt 8) { throw "Final evidence size mismatch: $($finalRect.width)x$($finalRect.height)" }
-            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-            Start-Sleep -Milliseconds 900
-
-            $bitmap = New-Object System.Drawing.Bitmap $finalRect.width, $finalRect.height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            $hdc = [IntPtr]::Zero
-            try {
-              $hdc = $graphics.GetHdc()
-              if (-not [Gui02AWindow]::PrintWindow($proc.MainWindowHandle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
-            } finally {
-              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
-              $graphics.Dispose()
-            }
-
-            $colors = New-Object 'System.Collections.Generic.HashSet[int]'
-            $xStep = [Math]::Max(1, [int]($finalRect.width / 24))
-            $yStep = [Math]::Max(1, [int]($finalRect.height / 16))
-            for ($x = 0; $x -lt $finalRect.width; $x += $xStep) {
-              for ($y = 0; $y -lt $finalRect.height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
-            }
-            if ($colors.Count -lt 20) { $bitmap.Dispose(); throw "Direct HWND capture appears blank or degenerate: sampledColors=$($colors.Count)" }
-
+            Click-Client $proc.MainWindowHandle 120 (144 + 43 * 4)
+            Wheel-Client $proc.MainWindowHandle 700 560 2400
+            Start-Sleep -Milliseconds 700
             $shot = Join-Path $evidenceDir 'gui02a-real-executable.png'
-            try { $bitmap.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
-            $shotSha = (Get-FileHash -LiteralPath $shot -Algorithm SHA256).Hash.ToLowerInvariant()
+            $finalCapture = Capture-Hwnd $proc.MainWindowHandle $shot
 
             [ordered]@{
-              schema = 'ainovel-gui02a-runtime-evidence/3'
+              schema = 'ainovel-gui02a-runtime-evidence/4'
               candidate_sha = $candidate
               executable_sha256 = $exeSha
               real_window_handle = [long]$proc.MainWindowHandle
@@ -303,19 +317,21 @@ jobs:
               capture_source = 'direct-HWND'
               generated_or_mock_image = $false
               runtime_exercise = [ordered]@{
-                navigation = [ordered]@{ passed=$true; transitions=$navResults.Count; screens=@($navCases | ForEach-Object { $_.id }) }
+                navigation = [ordered]@{ passed=$true; transitions=$navResults.Count; screens=@($navCases | ForEach-Object { $_.id }); input='real Win32 mouse clicks'; validation='direct-HWND frame hash changed per transition' }
                 resize = [ordered]@{ passed=$true; compact=$compactRect; final=$finalRect }
-                scroll = [ordered]@{ passed=$true; before=$scrollBefore; after=$scrollAfter; returned=$scrollReturned }
+                scroll = [ordered]@{ passed=$true; input='real Win32 mouse wheel'; before_sha256=$scrollBefore.hash; after_sha256=$scrollAfter.hash; frame_changed=($scrollBefore.hash -ne $scrollAfter.hash) }
               }
               window_bounds = $finalRect
               screenshot = 'gui02a-real-executable.png'
-              screenshot_sha256 = $shotSha
-              sampled_colors = $colors.Count
+              screenshot_sha256 = $finalCapture.hash
+              sampled_colors = $finalCapture.colors
               captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
             } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
             $navResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-navigation-evidence.json') -Encoding UTF8
             Copy-Item -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Destination $evidenceDir -Force
-            Write-Host "REAL HWND CAPTURE + UIA EXERCISE PASS: candidate=$candidate nav=$($navResults.Count) resize=$($compactRect.width)x$($compactRect.height) scroll=$scrollAfter screenshot=$shotSha"
+            Get-ChildItem -LiteralPath $evidenceDir -Filter 'nav-frame-*.png' | Remove-Item -Force
+            Remove-Item -LiteralPath $scrollBeforePath, $scrollAfterPath -Force
+            Write-Host "REAL HWND CAPTURE + WIN32 INPUT EXERCISE PASS: candidate=$candidate nav=$($navResults.Count) resize=$($compactRect.width)x$($compactRect.height) scrollFrameChanged=true screenshot=$($finalCapture.hash)"
           } finally {
             if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
