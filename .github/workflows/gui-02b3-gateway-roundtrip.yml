@@ -1,0 +1,82 @@
+name: GUI-02B.3 Gateway Round-trip Verification
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/gui-02b3-gateway-roundtrip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: Verify typed gateway round-trip contract
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify exact parent lineage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          git merge-base --is-ancestor 57d193dc77815fff624dc133b513f95999f210f0 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not descended from locked GUI-02B.2 SHA.' }
+
+      - name: Test Go gateway authority seam
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          go test -buildvcs=false -count=1 ./...
+          Pop-Location
+
+      - name: Test frontend Wails round-trip seam
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm test
+          Pop-Location
+
+      - name: Build frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm run build
+          Pop-Location
+
+      - name: Verify forbidden bypass stays absent
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(|\.invoke\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Forbidden frontend authority/transport bypass detected.' }
+          $gateway = Get-Content -LiteralPath desktop/gateway.go -Raw
+          if ($gateway -match 'func \(g \*Gateway\) Invoke\(') { throw 'Generic Gateway.Invoke escape hatch detected.' }
