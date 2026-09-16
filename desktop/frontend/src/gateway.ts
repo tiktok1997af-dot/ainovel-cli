@@ -101,6 +101,7 @@ type WailsWindow = Window & {
   runtime?: {
     EventsOn: (topic: string, callback: (event: DesktopEvent) => void) => () => void
     EventsEmit: (topic: string, event: DesktopEvent) => void
+    WindowSetTitle?: (title: string) => void
   }
 }
 
@@ -142,6 +143,12 @@ export function createBrowserGatewayClient(): GatewayClient {
     eventsOn: (topic, callback) => runtime.EventsOn(topic, callback),
     eventsEmit: (topic, event) => runtime.EventsEmit(topic, event),
   })
+}
+
+export function setDesktopWindowTitle(title: string) {
+  const host = window as WailsWindow
+  document.title = title
+  host.runtime?.WindowSetTitle?.(title)
 }
 
 function hasTypedEnvelope(result: { contract_version: string; error?: AppError }): boolean {
