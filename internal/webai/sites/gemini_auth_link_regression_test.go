@@ -14,8 +14,9 @@ func TestGeminiReadinessExpressionDistinguishesAccountControlsFromSignIn(t *test
 		t.Fatal("Gemini readiness still treats every accounts.google.com link as sign-in evidence")
 	}
 
+	expr := strings.ToLower(geminiReadinessExpression)
 	for _, marker := range []string{
-		"accountHrefRequiresSignIn",
+		"accounthrefrequiressignin",
 		"/signoutoptions",
 		"/manageaccount",
 		"/servicelogin",
@@ -24,7 +25,7 @@ func TestGeminiReadinessExpressionDistinguishesAccountControlsFromSignIn(t *test
 		"/challenge",
 		"/accountchooser",
 	} {
-		if !strings.Contains(strings.ToLower(geminiReadinessExpression), marker) {
+		if !strings.Contains(expr, marker) {
 			t.Fatalf("Gemini readiness expression missing guarded auth marker %q", marker)
 		}
 	}
