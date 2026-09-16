@@ -1,0 +1,312 @@
+name: GUI-02B.3 Gateway Round-trip Verification
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/gui-02b3-gateway-roundtrip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui02b3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: Verify typed gateway round-trip contract
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify exact locked lineage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          git merge-base --is-ancestor 57d193dc77815fff624dc133b513f95999f210f0 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not descended from locked GUI-02B.2 SHA.' }
+
+      - name: Test Go gateway authority and fail-closed behavior
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          go test -buildvcs=false -count=1 ./...
+          Pop-Location
+
+      - name: Test frontend typed Wails round-trip seam
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm test
+          Pop-Location
+
+      - name: Build frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm run build
+          Pop-Location
+
+      - name: Verify no authority bypass
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(|\.invoke\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Forbidden frontend authority/transport bypass detected.' }
+          $gateway = Get-Content -LiteralPath desktop/gateway.go -Raw
+          if ($gateway -match 'func \(g \*Gateway\) Invoke\(') { throw 'Generic Gateway.Invoke escape hatch detected.' }
+
+      - name: Install Wails
+        shell: powershell
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build exact Wails executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift before build: expected $env:CANDIDATE_SHA got $actual" }
+          Push-Location desktop
+          go mod tidy
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
+          & $wails build -clean
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Create exact GUI-02B.3 build provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'gui02b3-candidate'
+          if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $bundle 'AINOVEL-Desktop.exe') -Force
+          [ordered]@{
+            schema = 'ainovel-gui02b3-build/2'
+            candidate_sha = $candidate
+            locked_parent_sha = '57d193dc77815fff624dc133b513f95999f210f0'
+            executable = 'AINOVEL-Desktop.exe'
+            executable_sha256 = $exeSha
+            gateway_contract = 'ainovel.desktop.v1'
+            event_topic = 'ainovel:desktop:event'
+            project_lifecycle = 'CLOSED'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle 'gui02b3-build-provenance.json') -Encoding UTF8
+          Write-Host "GUI-02B.3 EXACT BUILD PASS: $candidate exe=$exeSha"
+
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02b3-candidate-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02b3-candidate
+
+  runtime-evidence:
+    name: Prove real Wails round-trip and capture executable
+    needs: contract
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02b3-candidate-${{ env.CANDIDATE_SHA }}
+          path: runtime-input
+
+      - name: Verify interactive session and provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $session = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:CANDIDATE_SHA.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $prov = Get-Content -LiteralPath 'runtime-input/gui02b3-build-provenance.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $actual) { throw 'Build provenance candidate mismatch.' }
+          if ([string]$prov.project_lifecycle -ne 'CLOSED') { throw 'GUI-02C authority opened unexpectedly.' }
+          $exeSha = (Get-FileHash -LiteralPath 'runtime-input/AINOVEL-Desktop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
+          Write-Host "GUI-02B.3 INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
+
+      - name: Exercise typed Wails round-trip and capture direct HWND
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02B3Window {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
+            [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+            public static void Click(int x, int y) {
+              SetCursorPos(x, y);
+              mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+              mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $native
+
+          function Capture-Hwnd([IntPtr]$Handle, [string]$Path) {
+            $rect = New-Object Gui02B3Window+RECT
+            if (-not [Gui02B3Window]::GetWindowRect($Handle, [ref]$rect)) { throw 'GetWindowRect failed.' }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            $bitmap = New-Object System.Drawing.Bitmap $width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = [IntPtr]::Zero
+            try {
+              $hdc = $graphics.GetHdc()
+              if (-not [Gui02B3Window]::PrintWindow($Handle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
+              $graphics.Dispose()
+            }
+            try {
+              $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+              $xStep = [Math]::Max(1, [int]($width / 24))
+              $yStep = [Math]::Max(1, [int]($height / 16))
+              for ($x = 0; $x -lt $width; $x += $xStep) {
+                for ($y = 0; $y -lt $height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
+              }
+              if ($colors.Count -lt 20) { throw "Direct HWND capture appears blank: sampledColors=$($colors.Count)" }
+              $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+              [pscustomobject]@{ hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); colors=$colors.Count; width=$width; height=$height }
+            } finally {
+              $bitmap.Dispose()
+            }
+          }
+
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE 'gui02b3-evidence'
+          if (Test-Path -LiteralPath $evidenceDir) { Remove-Item -LiteralPath $evidenceDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+
+          $proc = $null
+          try {
+            $proc = Start-Process -FilePath $exe -PassThru
+            try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $proc.Refresh()
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited before GUI-02B.3 verification with code $($proc.ExitCode)." }
+            } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
+
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02B3Window]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, 0, 0, 1600, 980, $flags)) { throw 'SetWindowPos failed.' }
+            [Gui02B3Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 1
+
+            # The exact button centre was established from direct-HWND diagnostics on
+            # the same 1600x980 executable. Use window-relative coordinates so the
+            # native non-client/title-bar offset cannot move the click above the button.
+            $rect = New-Object Gui02B3Window+RECT
+            if (-not [Gui02B3Window]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed before click.' }
+            [Gui02B3Window]::Click($rect.Left + 592, $rect.Top + 847)
+
+            $verifyDeadline = (Get-Date).AddSeconds(15)
+            $title = ''
+            do {
+              Start-Sleep -Milliseconds 300
+              $proc.Refresh()
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited during gateway verification with code $($proc.ExitCode)." }
+              $title = [string]$proc.MainWindowTitle
+              if ($title -match 'GATEWAY FAILED') { throw "Executable reported gateway verification failure: $title" }
+            } while ($title -notmatch 'GATEWAY VERIFIED' -and (Get-Date) -lt $verifyDeadline)
+            if ($title -notmatch 'GATEWAY VERIFIED') { throw "Timed out waiting for typed Wails round-trip proof. Window title=$title" }
+
+            Start-Sleep -Milliseconds 700
+            $shot = Join-Path $evidenceDir 'gui02b3-real-executable.png'
+            $capture = Capture-Hwnd $proc.MainWindowHandle $shot
+            [ordered]@{
+              schema = 'ainovel-gui02b3-runtime-evidence/2'
+              candidate_sha = $candidate
+              locked_parent_sha = '57d193dc77815fff624dc133b513f95999f210f0'
+              executable_sha256 = $exeSha
+              real_window_handle = [long]$proc.MainWindowHandle
+              interactive_session = $true
+              window_title = $title
+              trigger = 'real Win32 mouse click at verified window-relative button centre 592,847'
+              round_trip = [ordered]@{
+                passed = $true
+                snapshot = 'typed envelope through Wails Gateway.Snapshot; fail-closed runtime_unavailable is visible in executable'
+                query = 'project.overview typed envelope through Wails Gateway.Query; fail-closed runtime_unavailable is visible in executable'
+                dispatch = 'gui.verify.noop typed envelope through Wails Gateway.Dispatch; fail-closed runtime_unavailable is visible in executable'
+                event = 'ainovel:desktop:event bounded diagnostic loopback'
+                authority_bypass = $false
+                project_lifecycle = 'CLOSED'
+              }
+              capture = 'user32.PrintWindow(PW_RENDERFULLCONTENT)'
+              generated_or_mock_image = $false
+              screenshot = 'gui02b3-real-executable.png'
+              screenshot_sha256 = $capture.hash
+              sampled_colors = $capture.colors
+              window_size = "$($capture.width)x$($capture.height)"
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02b3-runtime-evidence.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02b3-build-provenance.json' -Destination $evidenceDir -Force
+            Write-Host "GUI-02B.3 REAL WAILS ROUND-TRIP PASS: candidate=$candidate title=$title screenshot=$($capture.hash)"
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload real executable evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02b3-real-evidence-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02b3-evidence

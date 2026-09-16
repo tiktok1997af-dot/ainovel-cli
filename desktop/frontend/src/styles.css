@@ -92,7 +92,12 @@ ul { margin: 0; padding-left: 18px; color: #b9c4d1; font-size: 11px; line-height
 .runtime-grid { display: grid; grid-template-columns: minmax(360px, .65fr) minmax(0, 1.35fr); gap: 12px; margin-top: 12px; }
 .runtime-card { min-height: 128px; padding: 13px 14px; }
 .status-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr); align-items: center; gap: 10px; min-height: 28px; border-bottom: 1px dashed #24313f; font-size: 11px; }
+.status-row button { min-height: 25px; padding: 2px 8px; border: 1px solid #344253; border-radius: 5px; background: #16212c; cursor: pointer; font-size: 10px; }
+.status-row button:disabled { cursor: default; opacity: .55; }
 .runtime-foot { margin-top: 9px; color: #8d9bad; font-size: 10px; }
+.gateway-diagnostic { margin-bottom: 6px; }
+.gateway-proof { color: #91dfb8; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.gateway-failure { color: #f0a7a7; }
 .run-layout { display: grid; grid-template-columns: .7fr 1.25fr .85fr; gap: 20px; }
 .run-value { margin-top: 8px; color: #cbd6e3; font-size: 11px; }
 .muted { color: #7f8da0; }

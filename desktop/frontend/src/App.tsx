@@ -1,4 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+
+import {
+  createBrowserGatewayClient,
+  setDesktopWindowTitle,
+  verifyGatewayRoundTrip,
+  type GatewayRoundTripReport,
+} from './gateway'
 
 type Screen = {
   id: string
@@ -28,6 +35,71 @@ const chapterCopy = [
 
 function Badge({ children, tone = 'neutral' }: { children: React.ReactNode; tone?: 'neutral' | 'ready' | 'idle' }) {
   return <span className={`badge badge-${tone}`}>{children}</span>
+}
+
+function gatewayCode(result: { error?: { code: string } }) {
+  return result.error?.code ?? 'ok'
+}
+
+function GatewayDiagnostics() {
+  const [state, setState] = useState<'idle' | 'running' | 'pass' | 'fail'>('idle')
+  const [report, setReport] = useState<GatewayRoundTripReport | null>(null)
+  const [failure, setFailure] = useState('')
+
+  const runVerification = useCallback(async () => {
+    if (state === 'running') return
+    setState('running')
+    setFailure('')
+    setReport(null)
+    setDesktopWindowTitle('AINOVEL Desktop · GATEWAY CHECK')
+
+    try {
+      const client = createBrowserGatewayClient()
+      const nextReport = await verifyGatewayRoundTrip(client)
+      setReport(nextReport)
+      if (!nextReport.ok) {
+        throw new Error('Typed gateway round-trip did not satisfy all verification seams.')
+      }
+      setState('pass')
+      setDesktopWindowTitle('AINOVEL Desktop · GATEWAY VERIFIED')
+    } catch (error) {
+      setState('fail')
+      setFailure(error instanceof Error ? error.message : 'Gateway verification failed.')
+      setDesktopWindowTitle('AINOVEL Desktop · GATEWAY FAILED')
+    }
+  }, [state])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault()
+        void runVerification()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [runVerification])
+
+  const label = state === 'pass' ? 'VERIFIED' : state === 'running' ? 'CHECKING' : state === 'fail' ? 'FAILED' : 'READY TO VERIFY'
+  const tone = state === 'pass' ? 'ready' : 'idle'
+
+  return (
+    <div className="gateway-diagnostic" aria-label="GUI-02B.3 gateway diagnostic">
+      <div className="status-row">
+        <span>Wails Gateway</span>
+        <Badge tone={tone}>{label}</Badge>
+        <button onClick={() => void runVerification()} disabled={state === 'running'}>Verify Gateway</button>
+      </div>
+      {report ? (
+        <div className="runtime-foot gateway-proof">
+          Snapshot {gatewayCode(report.snapshot)} · Query {gatewayCode(report.query)} · Dispatch {gatewayCode(report.dispatch)} · Event {report.eventReceived ? 'PASS' : 'FAIL'}
+        </div>
+      ) : (
+        <div className="runtime-foot muted">Ctrl+Shift+G · project runtime remains CLOSED until GUI-02C</div>
+      )}
+      {failure ? <div className="runtime-foot gateway-failure">{failure}</div> : null}
+    </div>
+  )
 }
 
 function ChapterStudio() {
@@ -81,7 +153,7 @@ function ChapterStudio() {
               <dt>Số chương</dt><dd>63</dd>
               <dt>Trạng thái</dt><dd><Badge tone="idle">Đang viết</Badge></dd>
               <dt>Số từ</dt><dd>1,247</dd>
-              <dt>Cập nhật</dt><dd>GUI-02A shell</dd>
+              <dt>Cập nhật</dt><dd>GUI-02B gateway foundation</dd>
             </dl>
           </div>
 
@@ -90,7 +162,7 @@ function ChapterStudio() {
             <ul>
               <li>Giữ đúng mạch manh mối từ checkpoint gần nhất.</li>
               <li>Không thay đổi canon đã khóa.</li>
-              <li>Đây là shell preview; backend chưa nối ở GUI-02A.</li>
+              <li>Business wiring vẫn chưa mở trong GUI-02B.</li>
             </ul>
           </div>
 
@@ -117,9 +189,9 @@ function ChapterStudio() {
       <section className="runtime-grid" aria-label="Runtime shell">
         <article className="panel runtime-card">
           <div className="section-title">AI Bridge Status</div>
-          <div className="status-row"><span>Gemini Web</span><Badge tone="ready">READY</Badge><span className="muted">gateway pending</span></div>
-          <div className="status-row"><span>ChatGPT Web</span><Badge tone="ready">READY</Badge><span className="muted">gateway pending</span></div>
-          <div className="runtime-foot"><span className="green-dot" /> Shell executable target</div>
+          <GatewayDiagnostics />
+          <div className="status-row"><span>Gemini Web</span><Badge tone="ready">READY</Badge><span className="muted">business wiring staged later</span></div>
+          <div className="status-row"><span>ChatGPT Web</span><Badge tone="ready">READY</Badge><span className="muted">business wiring staged later</span></div>
         </article>
 
         <article className="panel runtime-card run-card">
@@ -133,7 +205,7 @@ function ChapterStudio() {
       </section>
 
       <footer className="action-bar">
-        <span className="shell-note">GUI-02A · real Wails/React shell · backend wiring staged later</span>
+        <span className="shell-note">GUI-02B.3 · typed Wails gateway verification · project lifecycle still CLOSED</span>
         <div className="action-buttons">
           <button className="primary">Generate Draft</button>
           <button>Review</button>
@@ -153,7 +225,7 @@ function Placeholder({ screen }: { screen: Screen }) {
       <h2>{screen.label}</h2>
       <p>{screen.hint}</p>
       <div className="placeholder-route">Canonical shell route: {screen.route}</div>
-      <p className="muted">GUI-02A owns the runnable navigation/layout shell only. Business behavior opens in its later authorized milestone.</p>
+      <p className="muted">GUI-02B exposes only the typed gateway foundation. Business behavior opens in its later authorized screen milestone.</p>
     </section>
   )
 }
@@ -165,7 +237,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="titlebar">
-        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · GUI-02A</span></div>
+        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · GUI-02B.3</span></div>
         <div className="window-dots" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
       </header>
 
@@ -198,8 +270,8 @@ export default function App() {
             <div className="project-heading">
               <div className="project-icon">▣</div>
               <div>
-                <div className="project-title-row"><h1>Hứa An 2026</h1><Badge tone="ready">SHELL PREVIEW</Badge><Badge tone="idle">IDLE</Badge></div>
-                <div className="project-subtitle">GUI-02A · Wails/React Desktop Shell Foundation · backend chưa nối ở gate này</div>
+                <div className="project-title-row"><h1>Hứa An 2026</h1><Badge tone="ready">GATEWAY FOUNDATION</Badge><Badge tone="idle">RUNTIME CLOSED</Badge></div>
+                <div className="project-subtitle">GUI-02B.3 · typed Wails Gateway · project lifecycle remains closed until GUI-02C</div>
               </div>
             </div>
             <div className="search-box">⌕ <span>Tìm trong dự án...</span><kbd>Ctrl + K</kbd></div>
