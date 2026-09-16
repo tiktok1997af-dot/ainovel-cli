@@ -195,13 +195,33 @@ const geminiReadinessExpression = `(() => {
     '[contenteditable="true"][role="textbox"]',
     'textarea[aria-label*="prompt" i]'
   ]);
+  const accountHrefRequiresSignIn = (rawHref) => {
+    if (!rawHref) return false;
+    try {
+      const u = new URL(rawHref, location.href);
+      const h = String(u.hostname || '').toLowerCase();
+      const p = String(u.pathname || '/').toLowerCase();
+      if (h !== 'accounts.google.com') return false;
+      // SignOutOptions / ManageAccount are positive authenticated account
+      // controls, not login prompts. Only explicit login / chooser / challenge
+      // routes count as sign-in evidence.
+      if (p.includes('/signoutoptions') || p.includes('/manageaccount')) return false;
+      return p === '/servicelogin' ||
+        p.startsWith('/signin') ||
+        p.startsWith('/v3/signin') ||
+        p.startsWith('/challenge') ||
+        p.startsWith('/accountchooser');
+    } catch (_) {
+      return false;
+    }
+  };
   let signIn = false;
   for (const root of roots) {
     for (const el of root.querySelectorAll('a,button')) {
       if (!visible(el)) continue;
-      const href = String(el.getAttribute('href') || '').toLowerCase();
+      const href = String(el.getAttribute('href') || '');
       const text = String(el.textContent || '').trim().toLowerCase();
-      if (href.includes('accounts.google.com') || text === 'sign in' || text === 'đăng nhập') {
+      if (accountHrefRequiresSignIn(href) || text === 'sign in' || text === 'đăng nhập') {
         signIn = true;
         break;
       }
