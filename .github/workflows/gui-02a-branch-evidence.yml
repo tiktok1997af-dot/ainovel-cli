@@ -140,7 +140,7 @@ jobs:
           if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
           Write-Host "INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
 
-      - name: Launch executable and capture real window
+      - name: Exercise runtime and capture direct HWND
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -152,60 +152,241 @@ jobs:
           New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
 
           Add-Type -AssemblyName System.Drawing
-          $native = 'using System; using System.Runtime.InteropServices; public static class Gui02ACapture { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow); }'
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02AWindow {
+            [StructLayout(LayoutKind.Sequential)]
+            public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+          }
+          '@
           Add-Type -TypeDefinition $native
 
+          function Get-FreeTcpPort {
+            $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+            $listener.Start()
+            try { return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port }
+            finally { $listener.Stop() }
+          }
+
+          function Connect-Cdp([int]$Port) {
+            $deadline = (Get-Date).AddSeconds(20)
+            $target = $null
+            do {
+              try {
+                $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -Method Get -TimeoutSec 2
+                $target = $targets | Where-Object { $_.type -eq 'page' } | Select-Object -First 1
+              } catch {}
+              if ($null -eq $target) { Start-Sleep -Milliseconds 300 }
+            } while ($null -eq $target -and (Get-Date) -lt $deadline)
+            if ($null -eq $target) { throw 'WebView2 CDP endpoint was not available for runtime exercise.' }
+            $client = [System.Net.WebSockets.ClientWebSocket]::new()
+            $client.Options.SetRequestHeader('Origin', "http://localhost:$Port")
+            $client.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            return $client
+          }
+
+          $script:cdpId = 0
+          function Invoke-Cdp($Client, [string]$Method, [hashtable]$Params) {
+            $script:cdpId++
+            $id = $script:cdpId
+            $payload = @{ id = $id; method = $Method; params = $Params } | ConvertTo-Json -Compress -Depth 12
+            $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+            $segment = [System.ArraySegment[byte]]::new($bytes, 0, $bytes.Length)
+            $Client.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            while ($true) {
+              $buffer = New-Object byte[] 131072
+              $memory = New-Object System.IO.MemoryStream
+              do {
+                $receiveSegment = [System.ArraySegment[byte]]::new($buffer, 0, $buffer.Length)
+                $receive = $Client.ReceiveAsync($receiveSegment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                if ($receive.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { throw 'CDP WebSocket closed unexpectedly.' }
+                $memory.Write($buffer, 0, $receive.Count)
+              } while (-not $receive.EndOfMessage)
+              $message = [Text.Encoding]::UTF8.GetString($memory.ToArray()) | ConvertFrom-Json
+              $memory.Dispose()
+              if ($message.id -eq $id) {
+                if ($null -ne $message.error) { throw "CDP $Method failed: $($message.error.message)" }
+                return $message
+              }
+            }
+          }
+
+          function Invoke-CdpEval($Client, [string]$Expression) {
+            $response = Invoke-Cdp $Client 'Runtime.evaluate' @{
+              expression = $Expression
+              returnByValue = $true
+              awaitPromise = $true
+            }
+            if ($null -ne $response.result.exceptionDetails) { throw 'Runtime.evaluate returned exception details.' }
+            return $response.result.result.value
+          }
+
+          function Read-WindowRect([IntPtr]$Handle) {
+            $rect = New-Object Gui02AWindow+RECT
+            if (-not [Gui02AWindow]::GetWindowRect($Handle, [ref]$rect)) { throw 'GetWindowRect failed.' }
+            return [pscustomobject]@{
+              left = $rect.Left
+              top = $rect.Top
+              width = $rect.Right - $rect.Left
+              height = $rect.Bottom - $rect.Top
+            }
+          }
+
+          function Set-WindowSize([IntPtr]$Handle, [int]$Width, [int]$Height) {
+            [Gui02AWindow]::ShowWindowAsync($Handle, 9) | Out-Null
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02AWindow]::SetWindowPos($Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, $flags)) { throw "SetWindowPos failed for ${Width}x${Height}." }
+            Start-Sleep -Milliseconds 800
+            return Read-WindowRect $Handle
+          }
+
           $proc = $null
+          $ws = $null
+          $previousWebViewArgs = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
           try {
+            $port = Get-FreeTcpPort
+            $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port --remote-allow-origins=*"
             $proc = Start-Process -FilePath $exe -PassThru
             try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
             $deadline = (Get-Date).AddSeconds(30)
             do {
               Start-Sleep -Milliseconds 500
               $proc.Refresh()
-              if ($proc.HasExited) { throw "AINOVEL Desktop exited before capture with code $($proc.ExitCode)." }
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited before exercise with code $($proc.ExitCode)." }
             } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
             if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
 
-            [Gui02ACapture]::ShowWindowAsync($proc.MainWindowHandle, 3) | Out-Null
-            [Gui02ACapture]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-            Start-Sleep -Seconds 3
-            $proc.Refresh()
-            $rect = New-Object Gui02ACapture+RECT
-            if (-not [Gui02ACapture]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed.' }
-            $width = $rect.Right - $rect.Left
-            $height = $rect.Bottom - $rect.Top
-            if ($width -lt 800 -or $height -lt 600) { throw "Unexpected desktop window size ${width}x${height}." }
+            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            $ws = Connect-Cdp $port
+            Invoke-Cdp $ws 'Runtime.enable' @{} | Out-Null
 
-            $bitmap = New-Object System.Drawing.Bitmap $width, $height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            try {
-              $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
-              $shot = Join-Path $evidenceDir 'gui02a-real-executable.png'
-              $bitmap.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
-            } finally {
-              $graphics.Dispose()
-              $bitmap.Dispose()
+            $screenSpecs = @(
+              @{ id = 'S01'; label = 'Projects'; index = 0 },
+              @{ id = 'S02'; label = 'Project Home'; index = 1 },
+              @{ id = 'S03'; label = 'Story Bible'; index = 2 },
+              @{ id = 'S04'; label = 'Architecture'; index = 3 },
+              @{ id = 'S05'; label = 'Chapter Studio'; index = 4 },
+              @{ id = 'S06'; label = 'Review & Repair'; index = 5 },
+              @{ id = 'S07'; label = 'Continuity Center'; index = 6 },
+              @{ id = 'S08'; label = 'Run Control'; index = 7 },
+              @{ id = 'S09'; label = 'AI Models'; index = 8 },
+              @{ id = 'S10'; label = 'Settings'; index = 9 }
+            )
+            $navResults = @()
+            $navigationOrder = @($screenSpecs + ($screenSpecs[8..0]))
+            foreach ($spec in $navigationOrder) {
+              $i = [int]$spec.index
+              $id = [string]$spec.id
+              $label = [string]$spec.label
+              $expression = @"
+              (async () => {
+                const items = Array.from(document.querySelectorAll('.nav-item'));
+                const el = items[$i];
+                if (!el) return { ok: false, reason: 'missing-nav-item', count: items.length };
+                el.click();
+                await new Promise(resolve => setTimeout(resolve, 140));
+                const breadcrumb = document.querySelector('.breadcrumb-row')?.innerText || '';
+                return {
+                  ok: el.classList.contains('active') && breadcrumb.includes('$id') && breadcrumb.includes('$label'),
+                  active: el.classList.contains('active'),
+                  breadcrumb,
+                  navCount: items.length
+                };
+              })()
+              "@
+              $result = Invoke-CdpEval $ws $expression
+              if (-not [bool]$result.ok) { throw "Navigation runtime exercise failed for $id / $label. Breadcrumb=$($result.breadcrumb)" }
+              $navResults += [pscustomobject]@{ id = $id; label = $label; breadcrumb = [string]$result.breadcrumb }
             }
+            if ($navResults.Count -ne 19) { throw "Unexpected navigation exercise count: $($navResults.Count)" }
+
+            $compactRect = Set-WindowSize $proc.MainWindowHandle 1280 760
+            if ($compactRect.width -lt 1180 -or $compactRect.height -lt 720) { throw "Resize exercise violated minimum size: $($compactRect.width)x$($compactRect.height)" }
+            if ([Math]::Abs($compactRect.width - 1280) -gt 8 -or [Math]::Abs($compactRect.height - 760) -gt 8) { throw "Resize exercise did not reach expected bounds: $($compactRect.width)x$($compactRect.height)" }
+
+            $scrollResult = Invoke-CdpEval $ws @'
+            (async () => {
+              const items = Array.from(document.querySelectorAll('.nav-item'));
+              items[4].click();
+              await new Promise(resolve => setTimeout(resolve, 160));
+              const el = document.querySelector('.content-scroll');
+              if (!el) return { ok: false, reason: 'missing-content-scroll' };
+              const max = Math.max(0, el.scrollHeight - el.clientHeight);
+              el.scrollTop = el.scrollHeight;
+              await new Promise(resolve => setTimeout(resolve, 120));
+              return { ok: max > 0 && el.scrollTop > 0, top: el.scrollTop, max, clientHeight: el.clientHeight, scrollHeight: el.scrollHeight };
+            })()
+            '@
+            if (-not [bool]$scrollResult.ok) { throw "Scroll runtime exercise failed: top=$($scrollResult.top) max=$($scrollResult.max)" }
+
+            Invoke-CdpEval $ws "(() => { const el = document.querySelector('.content-scroll'); if (el) el.scrollTop = 0; return true; })()" | Out-Null
+            $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
+            if ([Math]::Abs($finalRect.width - 1600) -gt 8 -or [Math]::Abs($finalRect.height - 980) -gt 8) { throw "Final evidence size mismatch: $($finalRect.width)x$($finalRect.height)" }
+            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Milliseconds 900
+
+            $bitmap = New-Object System.Drawing.Bitmap $finalRect.width, $finalRect.height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = $graphics.GetHdc()
+            try {
+              if (-not [Gui02AWindow]::PrintWindow($proc.MainWindowHandle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              $graphics.ReleaseHdc($hdc)
+              $graphics.Dispose()
+            }
+
+            $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+            $xStep = [Math]::Max(1, [int]($finalRect.width / 24))
+            $yStep = [Math]::Max(1, [int]($finalRect.height / 16))
+            for ($x = 0; $x -lt $finalRect.width; $x += $xStep) {
+              for ($y = 0; $y -lt $finalRect.height; $y += $yStep) {
+                $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null
+              }
+            }
+            if ($colors.Count -lt 20) { $bitmap.Dispose(); throw "Direct HWND capture appears blank or degenerate: sampledColors=$($colors.Count)" }
+
+            $shot = Join-Path $evidenceDir 'gui02a-real-executable.png'
+            try { $bitmap.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png) }
+            finally { $bitmap.Dispose() }
 
             $shotSha = (Get-FileHash -LiteralPath $shot -Algorithm SHA256).Hash.ToLowerInvariant()
             [ordered]@{
-              schema = 'ainovel-gui02a-runtime-evidence/1'
+              schema = 'ainovel-gui02a-runtime-evidence/2'
               candidate_sha = $candidate
               executable_sha256 = $exeSha
               real_window_handle = [long]$proc.MainWindowHandle
               interactive_session = $true
-              capture = 'System.Drawing.Graphics.CopyFromScreen'
-              window_bounds = [ordered]@{ left = $rect.Left; top = $rect.Top; width = $width; height = $height }
+              capture = 'user32.PrintWindow(PW_RENDERFULLCONTENT)'
+              capture_source = 'direct-HWND'
+              generated_or_mock_image = $false
+              runtime_exercise = [ordered]@{
+                navigation = [ordered]@{ passed = $true; transitions = $navResults.Count; screens = @($screenSpecs | ForEach-Object { $_.id }) }
+                resize = [ordered]@{ passed = $true; compact = $compactRect; final = $finalRect }
+                scroll = [ordered]@{ passed = $true; top = [double]$scrollResult.top; max = [double]$scrollResult.max }
+              }
+              window_bounds = $finalRect
               screenshot = 'gui02a-real-executable.png'
               screenshot_sha256 = $shotSha
-              generated_or_mock_image = $false
+              sampled_colors = $colors.Count
               captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
+            $navResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-navigation-evidence.json') -Encoding UTF8
             Copy-Item -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Destination $evidenceDir -Force
-            Write-Host "REAL EXECUTABLE CAPTURE PASS: ${width}x${height}; screenshot=$shotSha; exe=$exeSha"
+            Write-Host "REAL HWND CAPTURE + RUNTIME EXERCISE PASS: candidate=$candidate nav=$($navResults.Count) resize=$($compactRect.width)x$($compactRect.height) scroll=$($scrollResult.top)/$($scrollResult.max) screenshot=$shotSha"
           } finally {
+            if ($null -ne $ws) {
+              try { $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } catch {}
+              $ws.Dispose()
+            }
             if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            if ($null -eq $previousWebViewArgs) { Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue }
+            else { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $previousWebViewArgs }
           }
 
       - name: Upload real executable evidence
