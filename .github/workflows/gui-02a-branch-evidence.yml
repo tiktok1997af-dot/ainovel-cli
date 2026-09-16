@@ -284,22 +284,17 @@ jobs:
               $i = [int]$spec.index
               $id = [string]$spec.id
               $label = [string]$spec.label
-              $expression = @"
-              (async () => {
-                const items = Array.from(document.querySelectorAll('.nav-item'));
-                const el = items[$i];
-                if (!el) return { ok: false, reason: 'missing-nav-item', count: items.length };
-                el.click();
-                await new Promise(resolve => setTimeout(resolve, 140));
-                const breadcrumb = document.querySelector('.breadcrumb-row')?.innerText || '';
-                return {
-                  ok: el.classList.contains('active') && breadcrumb.includes('$id') && breadcrumb.includes('$label'),
-                  active: el.classList.contains('active'),
-                  breadcrumb,
-                  navCount: items.length
-                };
-              })()
-              "@
+              $expression = @(
+                '(async () => {'
+                "  const items = Array.from(document.querySelectorAll('.nav-item'));"
+                "  const el = items[$i];"
+                "  if (!el) return { ok: false, reason: 'missing-nav-item', count: items.length };"
+                '  el.click();'
+                '  await new Promise(resolve => setTimeout(resolve, 140));'
+                "  const breadcrumb = document.querySelector('.breadcrumb-row')?.innerText || '';"
+                "  return { ok: el.classList.contains('active') && breadcrumb.includes('$id') && breadcrumb.includes('$label'), active: el.classList.contains('active'), breadcrumb, navCount: items.length };"
+                '})()'
+              ) -join "`n"
               $result = Invoke-CdpEval $ws $expression
               if (-not [bool]$result.ok) { throw "Navigation runtime exercise failed for $id / $label. Breadcrumb=$($result.breadcrumb)" }
               $navResults += [pscustomobject]@{ id = $id; label = $label; breadcrumb = [string]$result.breadcrumb }
@@ -310,19 +305,20 @@ jobs:
             if ($compactRect.width -lt 1180 -or $compactRect.height -lt 720) { throw "Resize exercise violated minimum size: $($compactRect.width)x$($compactRect.height)" }
             if ([Math]::Abs($compactRect.width - 1280) -gt 8 -or [Math]::Abs($compactRect.height - 760) -gt 8) { throw "Resize exercise did not reach expected bounds: $($compactRect.width)x$($compactRect.height)" }
 
-            $scrollResult = Invoke-CdpEval $ws @'
-            (async () => {
-              const items = Array.from(document.querySelectorAll('.nav-item'));
-              items[4].click();
-              await new Promise(resolve => setTimeout(resolve, 160));
-              const el = document.querySelector('.content-scroll');
-              if (!el) return { ok: false, reason: 'missing-content-scroll' };
-              const max = Math.max(0, el.scrollHeight - el.clientHeight);
-              el.scrollTop = el.scrollHeight;
-              await new Promise(resolve => setTimeout(resolve, 120));
-              return { ok: max > 0 && el.scrollTop > 0, top: el.scrollTop, max, clientHeight: el.clientHeight, scrollHeight: el.scrollHeight };
-            })()
-            '@
+            $scrollExpression = @(
+              '(async () => {'
+              "  const items = Array.from(document.querySelectorAll('.nav-item'));"
+              '  items[4].click();'
+              '  await new Promise(resolve => setTimeout(resolve, 160));'
+              "  const el = document.querySelector('.content-scroll');"
+              "  if (!el) return { ok: false, reason: 'missing-content-scroll' };"
+              '  const max = Math.max(0, el.scrollHeight - el.clientHeight);'
+              '  el.scrollTop = el.scrollHeight;'
+              '  await new Promise(resolve => setTimeout(resolve, 120));'
+              '  return { ok: max > 0 && el.scrollTop > 0, top: el.scrollTop, max, clientHeight: el.clientHeight, scrollHeight: el.scrollHeight };'
+              '})()'
+            ) -join "`n"
+            $scrollResult = Invoke-CdpEval $ws $scrollExpression
             if (-not [bool]$scrollResult.ok) { throw "Scroll runtime exercise failed: top=$($scrollResult.top) max=$($scrollResult.max)" }
 
             Invoke-CdpEval $ws "(() => { const el = document.querySelector('.content-scroll'); if (el) el.scrollTop = 0; return true; })()" | Out-Null
