@@ -39,12 +39,19 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test desktop gateway contract
+      - name: Prepare desktop module
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           Push-Location desktop
           go mod tidy
+          Pop-Location
+
+      - name: Test desktop gateway contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
           go test -buildvcs=false -count=1 ./...
           Pop-Location
 
