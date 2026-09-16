@@ -58,6 +58,17 @@ func EffectiveConfigPath() string {
 }
 
 func LoadConfig() (Config, error) {
+	return loadConfigFromProjectPath(projectConfigPath())
+}
+
+// LoadConfigForProject loads the same global + project overlay as LoadConfig,
+// but resolves the project config from an explicit project root instead of the
+// process working directory. It does not mutate CWD.
+func LoadConfigForProject(projectRoot string) (Config, error) {
+	return loadConfigFromProjectPath(filepath.Join(projectRoot, configDirName, "config.json"))
+}
+
+func loadConfigFromProjectPath(projectPath string) (Config, error) {
 	var cfg Config
 	var globalErr error
 
@@ -72,9 +83,9 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
-	project, found, err := loadOptionalJSON(projectConfigPath())
+	project, found, err := loadOptionalJSON(projectPath)
 	if err != nil {
-		return cfg, fmt.Errorf("项目级配置 ./.ainovel/config.json 解析失败（请检查 WEB-only 配置）: %w", err)
+		return cfg, fmt.Errorf("项目级配置 %s 解析失败（请检查 WEB-only 配置）: %w", projectPath, err)
 	}
 	if found {
 		return mergeConfig(cfg, project), nil
