@@ -143,7 +143,6 @@ func detectLegacyAPIConfig(data []byte) error {
 			if _, ok := fields[key]; ok {
 				return fmt.Errorf("%s (roles.%s contains legacy key %q): %w", LegacyAPIMigrationHint, role, key, errs.ErrConfig)
 			}
-		}
 	}
 	return nil
 }
@@ -268,4 +267,68 @@ func stripJSONComments(data []byte) []byte {
 		out = append(out, b)
 	}
 	return out
+}
+
+func WriteStartupError(msg string) string {
+	dir := DefaultConfigDir()
+	if dir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, "last-error.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), msg); err != nil {
+		return ""
+	}
+	return path
+}
+
+func SaveConfig(path string, cfg Config) error {
+	persist := CloneConfig(cfg)
+	persist.FillDefaults()
+	if err := persist.ValidateBase(); err != nil {
+		return fmt.Errorf("refusing to persist non-WEB configuration: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(persist, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
