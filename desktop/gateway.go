@@ -30,7 +30,7 @@ type GatewaySnapshotResult struct {
 // never exposed to JavaScript.
 type Gateway struct {
 	mu      sync.Mutex
-	runtime desktopui.RuntimeClient
+	session *projectSessionController
 	emit    desktopEventEmitter
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -39,18 +39,19 @@ type Gateway struct {
 }
 
 func newGateway(runtime desktopui.RuntimeClient, emit desktopEventEmitter) *Gateway {
-	return &Gateway{runtime: runtime, emit: emit}
+	return &Gateway{session: newProjectSessionController(runtime), emit: emit}
 }
 
 // Snapshot returns authoritative desktop state through a typed envelope. It
 // deliberately has no arbitrary method name or path argument.
 func (g *Gateway) Snapshot() GatewaySnapshotResult {
 	result := GatewaySnapshotResult{ContractVersion: appruntime.ContractVersion}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	runtime, release, ok := g.acquireRuntime()
+	if !ok {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
+	defer release()
 
 	snapshot, err := runtime.Snapshot(g.requestContext())
 	if err != nil {
@@ -77,11 +78,12 @@ func (g *Gateway) Query(req appruntime.QueryRequest) appruntime.QueryResult {
 		result.Error = contractMismatchGatewayError()
 		return result
 	}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	runtime, release, ok := g.acquireRuntime()
+	if !ok {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
+	defer release()
 
 	out, err := runtime.Query(g.requestContext(), req)
 	if err != nil {
@@ -120,11 +122,12 @@ func (g *Gateway) Dispatch(cmd appruntime.CommandRequest) appruntime.CommandResu
 		result.Error = contractMismatchGatewayError()
 		return result
 	}
-	runtime := g.runtimeClient()
-	if runtime == nil {
+	runtime, release, ok := g.acquireRuntime()
+	if !ok {
 		result.Error = runtimeUnavailableGatewayError()
 		return result
 	}
+	defer release()
 
 	out, err := runtime.Dispatch(g.requestContext(), cmd)
 	if err != nil {
@@ -158,14 +161,18 @@ func (g *Gateway) startup(ctx context.Context) {
 	g.mu.Lock()
 	g.ctx = bridgeCtx
 	g.cancel = cancel
-	runtime := g.runtime
 	emit := g.emit
 	g.mu.Unlock()
 
-	if runtime == nil || emit == nil {
+	if emit == nil {
+		return
+	}
+	runtime, release, ok := g.acquireRuntime()
+	if !ok {
 		return
 	}
 	sub, err := runtime.Subscribe(bridgeCtx, appruntime.EventCursor{ContractVersion: appruntime.ContractVersion})
+	release()
 	if err != nil {
 		emit(bridgeCtx, desktopEventTopic, gatewayBridgeErrorEvent(err))
 		return
@@ -186,7 +193,6 @@ func (g *Gateway) shutdown(ctx context.Context) {
 	cancel := g.cancel
 	sub := g.sub
 	done := g.done
-	runtime := g.runtime
 	g.cancel = nil
 	g.sub = nil
 	g.done = nil
@@ -205,8 +211,8 @@ func (g *Gateway) shutdown(ctx context.Context) {
 		case <-ctx.Done():
 		}
 	}
-	if runtime != nil {
-		_ = runtime.Close(ctx)
+	if g.session != nil {
+		_ = g.session.closeRuntime(ctx)
 	}
 }
 
@@ -231,10 +237,28 @@ func (g *Gateway) pumpEvents(ctx context.Context, sub appruntime.EventSubscripti
 	}
 }
 
-func (g *Gateway) runtimeClient() desktopui.RuntimeClient {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.runtime
+func (g *Gateway) acquireRuntime() (desktopui.RuntimeClient, func(), bool) {
+	if g == nil || g.session == nil {
+		return nil, nil, false
+	}
+	return g.session.acquireRuntime()
+}
+
+// replaceRuntime is an internal GUI-02C.2 serialization seam. It is deliberately
+// unexported: public Create/Open/Switch/Close lifecycle bindings belong to
+// GUI-02C.3. The session controller holds exclusive ownership while replacing
+// and closing the old runtime, so this waits for all in-flight Gateway leases.
+func (g *Gateway) replaceRuntime(ctx context.Context, replacement desktopui.RuntimeClient) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if g == nil || g.session == nil {
+		if replacement != nil {
+			return replacement.Close(ctx)
+		}
+		return nil
+	}
+	return g.session.replaceRuntime(ctx, replacement)
 }
 
 func (g *Gateway) requestContext() context.Context {
