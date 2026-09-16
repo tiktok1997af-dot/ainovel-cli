@@ -62,17 +62,14 @@ func (p *DevToolsReadinessProbe) Probe(ctx context.Context, session SessionSnaps
 		return ReadinessResult{}, protocolError("probe browser readiness", fmt.Errorf("browser profile directory is required"))
 	}
 
-	port, err := waitForDevToolsPort(ctx, profileDir, p.discoverTimeout, p.pollInterval)
+	// A persistent profile can retain DevToolsActivePort from a previous Chrome
+	// process. Even after the launcher clears that stale locator, the replacement
+	// file can become visible a fraction before /json/list is accepting requests.
+	// Treat discovery as one bounded operation: require a readable locator, a live
+	// endpoint, and a matching page target before readiness inspection proceeds.
+	port, target, err := waitForLiveDevToolsTarget(ctx, profileDir, p.httpClient, p.adapter, p.discoverTimeout, p.pollInterval)
 	if err != nil {
-		return ReadinessResult{}, readinessTransportError("discover Chrome DevTools", err)
-	}
-	targets, err := listDevToolsTargets(ctx, p.httpClient, port)
-	if err != nil {
-		return ReadinessResult{}, readinessTransportError("list Chrome targets", err)
-	}
-	target, err := selectDevToolsTarget(targets, p.adapter)
-	if err != nil {
-		return ReadinessResult{}, readinessTransportError("select site tab", err)
+		return ReadinessResult{}, err
 	}
 	wsURL, err := safeDevToolsWebSocketURL(target.WebSocketDebuggerURL, port)
 	if err != nil {
@@ -103,6 +100,62 @@ func readinessTransportError(op string, cause error) error {
 		Cause:      cause,
 		Retry:      true,
 		RetryDelay: 500 * time.Millisecond,
+	}
+}
+
+func waitForLiveDevToolsTarget(ctx context.Context, profileDir string, client *http.Client, adapter sites.Adapter, timeout, poll time.Duration) (int, devToolsTarget, error) {
+	if timeout <= 0 {
+		timeout = 6 * time.Second
+	}
+	if poll <= 0 {
+		poll = 100 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	lastOp := "discover Chrome DevTools"
+	var lastErr error
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, devToolsTarget{}, readinessTransportError(lastOp, err)
+		}
+
+		port, err := readDevToolsActivePort(profileDir)
+		if err != nil {
+			lastOp, lastErr = "discover Chrome DevTools", err
+		} else {
+			targets, listErr := listDevToolsTargets(ctx, client, port)
+			if listErr != nil {
+				lastOp, lastErr = "list Chrome targets", listErr
+			} else {
+				target, selectErr := selectDevToolsTarget(targets, adapter)
+				if selectErr == nil {
+					return port, target, nil
+				}
+				lastOp, lastErr = "select site tab", selectErr
+			}
+		}
+
+		if !time.Now().Before(deadline) {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("Chrome DevTools target unavailable")
+			}
+			return 0, devToolsTarget{}, readinessTransportError(lastOp, lastErr)
+		}
+
+		wait := poll
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			continue
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, devToolsTarget{}, readinessTransportError(lastOp, ctx.Err())
+		case <-timer.C:
+		}
 	}
 }
 

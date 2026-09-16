@@ -2,6 +2,7 @@ package webai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,6 +51,16 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 	if err := os.MkdirAll(cfg.ProfileDir, 0o700); err != nil {
 		return nil, fmt.Errorf("webai: create browser profile: %w", err)
 	}
+	// Chrome leaves DevToolsActivePort behind after a forced/unclean shutdown.
+	// With --remote-debugging-port=0 that stale file can point the next readiness
+	// probe at the previous process' dead port before the new Chrome rewrites it.
+	// Remove only this ephemeral locator before an owned DevTools launch; cookies,
+	// login state and the rest of the persistent profile stay untouched.
+	if !cfg.DisableDevTools {
+		if err := clearStaleDevToolsActivePort(cfg.ProfileDir); err != nil {
+			return nil, err
+		}
+	}
 
 	args, err := browserLaunchArgs(cfg)
 	if err != nil {
@@ -65,6 +76,14 @@ func (ExecBrowserLauncher) Launch(ctx context.Context, cfg BrowserLaunchConfig) 
 		close(p.done)
 	}()
 	return p, nil
+}
+
+func clearStaleDevToolsActivePort(profileDir string) error {
+	path := filepath.Join(profileDir, devToolsActivePortFile)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("webai: clear stale Chrome DevTools locator: %w", err)
+	}
+	return nil
 }
 
 func browserLaunchArgs(cfg BrowserLaunchConfig) ([]string, error) {
@@ -85,16 +104,22 @@ func browserLaunchArgs(cfg BrowserLaunchConfig) ([]string, error) {
 	// The W5E restart boundary deliberately terminates owned Chrome processes.
 	// Chrome therefore sees the persistent profile as having an unclean exit on
 	// the next launch. Suppress only Chrome's crash-restore UI so it cannot cover
-	// the Gemini composer/send controls; the profile, cookies and login storage
-	// remain untouched and Chrome still starts the requested Gemini URL normally.
+	// the Gemini/ChatGPT composer controls; the profile, cookies and login storage
+	// remain untouched and Chrome still starts the requested WEB-only URL normally.
 	args := []string{
 		"--user-data-dir=" + cfg.ProfileDir,
 		"--hide-crash-restore-bubble",
 	}
 	if cfg.DisableDevTools {
-		// Manual Google sign-in must happen in an ordinary visible Chrome session.
-		// Do not add remote-debugging or automation flags in this phase.
-		args = append(args, "--new-window")
+		// Manual Google/OpenAI sign-in must happen in an ordinary visible Chrome
+		// session. Keep automation/debugging disabled, while suppressing first-run
+		// and default-app/browser promotion UI that can cover the auth surface.
+		args = append(args,
+			"--no-first-run",
+			"--no-default-browser-check",
+			"--disable-background-mode",
+			"--new-window",
+		)
 	} else {
 		args = append(args,
 			"--remote-debugging-address=127.0.0.1",

@@ -45,6 +45,25 @@ function Stop-SmokeChrome([string]$ProfileDir) {
         }
 }
 
+function Wait-SmokeChromeProfileReleased([string]$ProfileDir, [int]$TimeoutSeconds) {
+    if ([string]::IsNullOrWhiteSpace($ProfileDir)) { Fail "Gemini profile directory is empty during Chrome handoff" }
+    if ($TimeoutSeconds -le 0) { Fail "Gemini profile release timeout must be positive" }
+
+    $needle = "--user-data-dir=$ProfileDir"
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $holders = @(
+            Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) }
+        )
+        if ($holders.Count -eq 0) { return }
+        if ((Get-Date) -ge $deadline) {
+            Fail ("Gemini profile remained held by Chrome after readiness handoff; remaining_processes=" + $holders.Count)
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function Stop-SmokeProduction([string]$ExecutablePath) {
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return }
     $target = [IO.Path]::GetFullPath($ExecutablePath)
@@ -95,6 +114,101 @@ function Get-SanitizedDiagnosticTail([string]$Path) {
 
     if ($safe.Count -eq 0) { return "<no-sanitized-diagnostic-lines>" }
     return (($safe | Select-Object -Last 12) -join " | ")
+}
+
+function Get-W6CFirstBoundaryDiagnostic(
+    [string]$RuntimeDir,
+    [string]$ProgressPath,
+    [string]$FirstOutPath,
+    [string]$FirstErrPath,
+    [string]$ProfileDir,
+    [System.Diagnostics.Process]$Process
+) {
+    $progress = Get-Progress $ProgressPath
+    $draftDir = Join-Path $RuntimeDir "output\novel\drafts"
+    $chapterDir = Join-Path $RuntimeDir "output\novel\chapters"
+    $sessionDir = Join-Path $RuntimeDir "output\novel\meta\sessions\agents"
+    $headlessLog = Join-Path $RuntimeDir "output\novel\headless.log"
+
+    $draftFiles = @(Get-ChildItem -LiteralPath $draftDir -Filter "*.draft.md" -File -ErrorAction SilentlyContinue)
+    $chapterFiles = @(Get-ChildItem -LiteralPath $chapterDir -Filter "*.md" -File -ErrorAction SilentlyContinue)
+    $sessionFiles = @(Get-ChildItem -LiteralPath $sessionDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue)
+
+    $processAlive = $false
+    try {
+        $Process.Refresh()
+        $processAlive = -not $Process.HasExited
+    } catch { }
+
+    $chromeCount = 0
+    if (-not [string]::IsNullOrWhiteSpace($ProfileDir)) {
+        $needle = "--user-data-dir=$ProfileDir"
+        $chromeCount = @(
+            Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) }
+        ).Count
+    }
+
+    $phase = ""
+    $currentChapter = 0
+    $inProgressChapter = 0
+    $completed = @()
+    $progressLastWrite = ""
+    if ($null -ne $progress) {
+        $phase = [string]$progress.phase
+        $currentChapter = [int]$progress.current_chapter
+        $inProgressChapter = [int]$progress.in_progress_chapter
+        $completed = @($progress.completed_chapters | ForEach-Object { [int]$_ })
+        if (Test-Path -LiteralPath $ProgressPath) {
+            $progressLastWrite = (Get-Item -LiteralPath $ProgressPath).LastWriteTimeUtc.ToString("o")
+        }
+    }
+
+    $stage = "no_progress"
+    if ($null -eq $progress -and $sessionFiles.Count -gt 0) {
+        $stage = "worker_session_without_progress"
+    } elseif ($null -ne $progress) {
+        if ($completed -contains 1) {
+            $stage = "chapter_1_completed_without_boundary_artifact"
+        } elseif ($chapterFiles.Count -gt 0) {
+            $stage = "commit_persisted_final_before_progress"
+        } elseif ($draftFiles.Count -gt 0) {
+            $stage = "draft_persisted_before_commit"
+        } elseif ($inProgressChapter -gt 0) {
+            $stage = "chapter_started_before_draft_persist"
+        } elseif ($phase -eq "writing") {
+            $stage = "writing_before_chapter_start"
+        } else {
+            $stage = "pre_writing"
+        }
+    }
+
+    $sessionLastWrite = ""
+    if ($sessionFiles.Count -gt 0) {
+        $latestSession = $sessionFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        $sessionLastWrite = $latestSession.LastWriteTimeUtc.ToString("o")
+    }
+
+    $diagnostic = [ordered]@{
+        schema = "ainovel-w6c-first-boundary-timeout/1"
+        stage = $stage
+        process_alive = [bool]$processAlive
+        chrome_profile_process_count = [int]$chromeCount
+        progress_exists = [bool]($null -ne $progress)
+        phase = $phase
+        current_chapter = $currentChapter
+        in_progress_chapter = $inProgressChapter
+        completed_chapters = $completed
+        progress_last_write_utc = $progressLastWrite
+        draft_file_count = $draftFiles.Count
+        final_chapter_file_count = $chapterFiles.Count
+        worker_session_file_count = $sessionFiles.Count
+        worker_session_last_write_utc = $sessionLastWrite
+        stdout_tail = Get-SanitizedDiagnosticTail $FirstOutPath
+        stderr_tail = Get-SanitizedDiagnosticTail $FirstErrPath
+        headless_tail = Get-SanitizedDiagnosticTail $headlessLog
+    }
+    return ($diagnostic | ConvertTo-Json -Depth 5 -Compress)
 }
 
 function Verify-PackageChecksum([string]$ArchivePath, [string]$ManifestPath, [string]$SnapshotVersion) {
@@ -225,6 +339,7 @@ if ([string]$ready.site -ne "gemini-web") { Fail ("unexpected WEB site identity:
 $profileName = [string]$ready.profile_name
 if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = "default" }
 $profileDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) (".ainovel\browser\profiles\" + $profileName)
+Wait-SmokeChromeProfileReleased $profileDir $ReadinessTimeoutSeconds
 
 $promptPath = Join-Path $RuntimeDir "w6c-prompt.txt"
 @"
@@ -256,12 +371,15 @@ try {
             Fail ("first packaged production process exited before a resumable chapter-1 boundary; stderr=" + $stderrDiagnostic)
         }
     }
-    if ($null -eq $checkpoint) { Fail "timed out waiting for a durable, resumable chapter-1 boundary" }
+    if ($null -eq $checkpoint) {
+        $timeoutDiagnostic = Get-W6CFirstBoundaryDiagnostic $RuntimeDir $progressPath $firstOut $firstErr $profileDir $first
+        Fail ("timed out waiting for a durable, resumable chapter-1 boundary; diagnostic=" + $timeoutDiagnostic)
+    }
 } finally {
     if (-not $first.HasExited) { Stop-Process -Id $first.Id -Force -ErrorAction SilentlyContinue }
     try { $first.WaitForExit(10000) | Out-Null } catch { }
     Stop-SmokeChrome $profileDir
-    Start-Sleep -Seconds 2
+    Wait-SmokeChromeProfileReleased $profileDir $ReadinessTimeoutSeconds
 }
 
 $chapterOneFile = @(Get-ChildItem -LiteralPath (Join-Path $RuntimeDir "output\novel\chapters") -Filter "*.md" -File | Sort-Object Name)[0]
