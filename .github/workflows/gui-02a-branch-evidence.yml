@@ -1,0 +1,329 @@
+name: GUI-02A Real Runtime Evidence
+
+on:
+  push:
+    branches:
+      - feat/gui-02a-wails-react-shell
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui02a-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-exact:
+    name: Build exact Wails candidate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wails
+        shell: powershell
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build React frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm run build
+          Pop-Location
+
+      - name: Build Wails executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          if (-not (Test-Path -LiteralPath $wails)) { throw 'Wails CLI missing.' }
+          & $wails build -clean
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Verify architecture boundaries
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Get-ChildItem -LiteralPath desktop -Recurse -File | Where-Object { $_.FullName -notmatch '\\node_modules\\|\\dist\\|\\build\\' }
+          $tauri = $source | Select-String -Pattern '@tauri-apps|tauri::|src-tauri' -ErrorAction SilentlyContinue
+          if ($tauri) { $tauri | ForEach-Object { Write-Host $_ }; throw 'Tauri residue detected in GUI-02A shell.' }
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|fetch\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Direct frontend authority or transport detected.' }
+
+      - name: Create exact build provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'gui02a-candidate'
+          if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $bundle 'AINOVEL-Desktop.exe') -Force
+          [ordered]@{
+            schema = 'ainovel-gui02a-build/1'
+            candidate_sha = $actual
+            executable = 'AINOVEL-Desktop.exe'
+            executable_sha256 = $exeSha
+            shell = 'wails-v2'
+            frontend = 'react-vite'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle 'gui02a-build-provenance.json') -Encoding UTF8
+          Write-Host "EXACT GUI-02A BUILD PASS: $actual exe=$exeSha"
+
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02a-candidate
+
+  capture-real-window:
+    name: Exercise and capture actual executable window
+    needs: build-exact
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02a-candidate-${{ github.sha }}
+          path: runtime-input
+
+      - name: Verify interactive Windows session and provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $session = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Candidate drift: expected $expected got $actual" }
+          $prov = Get-Content -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $actual) { throw 'Build provenance candidate mismatch.' }
+          $exeSha = (Get-FileHash -LiteralPath 'runtime-input/AINOVEL-Desktop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
+          Write-Host "INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
+
+      - name: Exercise runtime and capture direct HWND
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE 'gui02a-evidence'
+          if (Test-Path -LiteralPath $evidenceDir) { Remove-Item -LiteralPath $evidenceDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02AWindow {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+          }
+          '@
+          Add-Type -TypeDefinition $native
+
+          function Read-WindowRect([IntPtr]$Handle) {
+            $rect = New-Object Gui02AWindow+RECT
+            if (-not [Gui02AWindow]::GetWindowRect($Handle, [ref]$rect)) { throw 'GetWindowRect failed.' }
+            [pscustomobject]@{ left=$rect.Left; top=$rect.Top; width=$rect.Right-$rect.Left; height=$rect.Bottom-$rect.Top }
+          }
+
+          function Set-WindowSize([IntPtr]$Handle, [int]$Width, [int]$Height) {
+            [Gui02AWindow]::ShowWindowAsync($Handle, 9) | Out-Null
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02AWindow]::SetWindowPos($Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, $flags)) { throw "SetWindowPos failed for ${Width}x${Height}." }
+            Start-Sleep -Milliseconds 700
+            Read-WindowRect $Handle
+          }
+
+          function Find-ElementByName([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
+            $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+            $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+          }
+
+          function Invoke-Nav([System.Windows.Automation.AutomationElement]$Root, [string]$Label, [string]$Marker) {
+            $button = Find-ElementByName $Root $Label
+            if ($null -eq $button) { throw "Navigation element not found: $Label" }
+            $pattern = $null
+            if (-not $button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { throw "InvokePattern unavailable for navigation element: $Label" }
+            ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+            Start-Sleep -Milliseconds 250
+            $markerEl = Find-ElementByName $Root $Marker
+            if ($null -eq $markerEl) { throw "Navigation marker not observed after ${Label}: $Marker" }
+            [pscustomobject]@{ label=$Label; marker=$Marker; passed=$true }
+          }
+
+          function Find-Scrollable([System.Windows.Automation.AutomationElement]$Root) {
+            $all = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($el in $all) {
+              $pattern = $null
+              if ($el.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {
+                $scroll = [System.Windows.Automation.ScrollPattern]$pattern
+                if ($scroll.Current.VerticallyScrollable) { return $scroll }
+              }
+            }
+            $null
+          }
+
+          $proc = $null
+          try {
+            $proc = Start-Process -FilePath $exe -PassThru
+            try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $proc.Refresh()
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited before runtime exercise with code $($proc.ExitCode)." }
+            } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
+
+            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 1
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+            if ($null -eq $root) { throw 'UI Automation root unavailable.' }
+
+            $navCases = @(
+              @{ id='S01'; label='Projects'; route='/projects' },
+              @{ id='S02'; label='Project Home'; route='/project' },
+              @{ id='S03'; label='Story Bible'; route='/story-bible' },
+              @{ id='S04'; label='Architecture'; route='/architecture' },
+              @{ id='S05'; label='Chapter Studio'; route='/chapter-studio' },
+              @{ id='S06'; label='Review & Repair'; route='/review-repair' },
+              @{ id='S07'; label='Continuity Center'; route='/continuity' },
+              @{ id='S08'; label='Run Control'; route='/run-control' },
+              @{ id='S09'; label='AI Models'; route='/ai-models' },
+              @{ id='S10'; label='Settings'; route='/settings' }
+            )
+            $navResults = @()
+            foreach ($case in $navCases) {
+              $navResults += Invoke-Nav $root $case.label "$($case.id) · $($case.route)"
+            }
+            for ($i = 8; $i -ge 0; $i--) {
+              $case = $navCases[$i]
+              $navResults += Invoke-Nav $root $case.label "$($case.id) · $($case.route)"
+            }
+            if ($navResults.Count -ne 19) { throw "Unexpected navigation exercise count: $($navResults.Count)" }
+
+            $compactRect = Set-WindowSize $proc.MainWindowHandle 1280 760
+            if ([Math]::Abs($compactRect.width - 1280) -gt 8 -or [Math]::Abs($compactRect.height - 760) -gt 8) { throw "Resize exercise failed: $($compactRect.width)x$($compactRect.height)" }
+
+            $scroll = Find-Scrollable $root
+            if ($null -eq $scroll) { throw 'No vertically scrollable UI Automation element found.' }
+            $scrollBefore = [double]$scroll.Current.VerticalScrollPercent
+            $scroll.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::LargeIncrement)
+            Start-Sleep -Milliseconds 350
+            $scrollAfter = [double]$scroll.Current.VerticalScrollPercent
+            if ($scrollAfter -le $scrollBefore) { throw "Scroll-down verification failed: before=$scrollBefore after=$scrollAfter" }
+            $scroll.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::LargeDecrement)
+            Start-Sleep -Milliseconds 350
+            $scrollReturned = [double]$scroll.Current.VerticalScrollPercent
+            if ($scrollReturned -ge $scrollAfter) { throw "Scroll-return verification failed: after=$scrollAfter returned=$scrollReturned" }
+
+            Invoke-Nav $root 'Chapter Studio' 'S05 · /chapter-studio' | Out-Null
+            $finalRect = Set-WindowSize $proc.MainWindowHandle 1600 980
+            if ([Math]::Abs($finalRect.width - 1600) -gt 8 -or [Math]::Abs($finalRect.height - 980) -gt 8) { throw "Final evidence size mismatch: $($finalRect.width)x$($finalRect.height)" }
+            [Gui02AWindow]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Milliseconds 900
+
+            $bitmap = New-Object System.Drawing.Bitmap $finalRect.width, $finalRect.height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = [IntPtr]::Zero
+            try {
+              $hdc = $graphics.GetHdc()
+              if (-not [Gui02AWindow]::PrintWindow($proc.MainWindowHandle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
+              $graphics.Dispose()
+            }
+
+            $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+            $xStep = [Math]::Max(1, [int]($finalRect.width / 24))
+            $yStep = [Math]::Max(1, [int]($finalRect.height / 16))
+            for ($x = 0; $x -lt $finalRect.width; $x += $xStep) {
+              for ($y = 0; $y -lt $finalRect.height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
+            }
+            if ($colors.Count -lt 20) { $bitmap.Dispose(); throw "Direct HWND capture appears blank or degenerate: sampledColors=$($colors.Count)" }
+
+            $shot = Join-Path $evidenceDir 'gui02a-real-executable.png'
+            try { $bitmap.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+            $shotSha = (Get-FileHash -LiteralPath $shot -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            [ordered]@{
+              schema = 'ainovel-gui02a-runtime-evidence/3'
+              candidate_sha = $candidate
+              executable_sha256 = $exeSha
+              real_window_handle = [long]$proc.MainWindowHandle
+              interactive_session = $true
+              capture = 'user32.PrintWindow(PW_RENDERFULLCONTENT)'
+              capture_source = 'direct-HWND'
+              generated_or_mock_image = $false
+              runtime_exercise = [ordered]@{
+                navigation = [ordered]@{ passed=$true; transitions=$navResults.Count; screens=@($navCases | ForEach-Object { $_.id }) }
+                resize = [ordered]@{ passed=$true; compact=$compactRect; final=$finalRect }
+                scroll = [ordered]@{ passed=$true; before=$scrollBefore; after=$scrollAfter; returned=$scrollReturned }
+              }
+              window_bounds = $finalRect
+              screenshot = 'gui02a-real-executable.png'
+              screenshot_sha256 = $shotSha
+              sampled_colors = $colors.Count
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-runtime-evidence.json') -Encoding UTF8
+            $navResults | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02a-navigation-evidence.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02a-build-provenance.json' -Destination $evidenceDir -Force
+            Write-Host "REAL HWND CAPTURE + UIA EXERCISE PASS: candidate=$candidate nav=$($navResults.Count) resize=$($compactRect.width)x$($compactRect.height) scroll=$scrollAfter screenshot=$shotSha"
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload real executable evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02a-real-evidence-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02a-evidence
