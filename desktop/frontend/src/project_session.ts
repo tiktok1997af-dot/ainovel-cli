@@ -19,20 +19,40 @@ export function initialProjectSessionState(): ProjectSessionState {
   }
 }
 
-// GUI-02C.4 behavioral RED seam: these transitions are intentionally not
-// implemented yet. The tests must reach assertions before production behavior
-// is added.
 export function beginProjectLifecycle(
   state: ProjectSessionState,
-  _operation: ProjectLifecycleOperation,
+  operation: ProjectLifecycleOperation,
 ): ProjectSessionState {
-  return state
+  return {
+    status: 'busy',
+    projectRoot: state.projectRoot,
+    pendingOperation: operation,
+    error: null,
+  }
 }
 
 export function settleProjectLifecycle(
   state: ProjectSessionState,
-  _operation: ProjectLifecycleOperation,
-  _result: ProjectLifecycleResult,
+  operation: ProjectLifecycleOperation,
+  result: ProjectLifecycleResult,
 ): ProjectSessionState {
-  return state
+  if (result.error) {
+    return {
+      status: 'error',
+      projectRoot: state.projectRoot,
+      pendingOperation: null,
+      error: result.error,
+    }
+  }
+
+  if (operation === 'close') {
+    return initialProjectSessionState()
+  }
+
+  return {
+    status: 'active',
+    projectRoot: result.project_root ?? '',
+    pendingOperation: null,
+    error: null,
+  }
 }
