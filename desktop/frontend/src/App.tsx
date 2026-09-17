@@ -6,6 +6,7 @@ import {
   verifyGatewayRoundTrip,
   type GatewayRoundTripReport,
 } from './gateway'
+import { ProjectSession } from './project_session_ui'
 
 type Screen = {
   id: string
@@ -95,7 +96,7 @@ function GatewayDiagnostics() {
           Snapshot {gatewayCode(report.snapshot)} · Query {gatewayCode(report.query)} · Dispatch {gatewayCode(report.dispatch)} · Event {report.eventReceived ? 'PASS' : 'FAIL'}
         </div>
       ) : (
-        <div className="runtime-foot muted">Ctrl+Shift+G · project runtime remains CLOSED until GUI-02C</div>
+        <div className="runtime-foot muted">Ctrl+Shift+G · typed gateway remains the only frontend authority seam</div>
       )}
       {failure ? <div className="runtime-foot gateway-failure">{failure}</div> : null}
     </div>
@@ -105,6 +106,8 @@ function GatewayDiagnostics() {
 function ChapterStudio() {
   return (
     <>
+      <ProjectSession />
+
       <section className="workspace-grid" aria-label="Chapter Studio shell">
         <article className="panel editor-panel">
           <header className="panel-header editor-heading">
@@ -153,7 +156,7 @@ function ChapterStudio() {
               <dt>Số chương</dt><dd>63</dd>
               <dt>Trạng thái</dt><dd><Badge tone="idle">Đang viết</Badge></dd>
               <dt>Số từ</dt><dd>1,247</dd>
-              <dt>Cập nhật</dt><dd>GUI-02B gateway foundation</dd>
+              <dt>Cập nhật</dt><dd>GUI-02C.4 Project Session lifecycle</dd>
             </dl>
           </div>
 
@@ -162,7 +165,7 @@ function ChapterStudio() {
             <ul>
               <li>Giữ đúng mạch manh mối từ checkpoint gần nhất.</li>
               <li>Không thay đổi canon đã khóa.</li>
-              <li>Business wiring vẫn chưa mở trong GUI-02B.</li>
+              <li>S01–S10 business implementation vẫn CLOSED.</li>
             </ul>
           </div>
 
@@ -205,7 +208,7 @@ function ChapterStudio() {
       </section>
 
       <footer className="action-bar">
-        <span className="shell-note">GUI-02B.3 · typed Wails gateway verification · project lifecycle still CLOSED</span>
+        <span className="shell-note">GUI-02C.4 · typed Project Session lifecycle only · S01–S10 business remains CLOSED</span>
         <div className="action-buttons">
           <button className="primary">Generate Draft</button>
           <button>Review</button>
@@ -225,7 +228,7 @@ function Placeholder({ screen }: { screen: Screen }) {
       <h2>{screen.label}</h2>
       <p>{screen.hint}</p>
       <div className="placeholder-route">Canonical shell route: {screen.route}</div>
-      <p className="muted">GUI-02B exposes only the typed gateway foundation. Business behavior opens in its later authorized screen milestone.</p>
+      <p className="muted">GUI-02C.4 opens only bounded Project Session lifecycle integration. This screen's business behavior remains CLOSED.</p>
     </section>
   )
 }
@@ -237,7 +240,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="titlebar">
-        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · GUI-02B.3</span></div>
+        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · GUI-02C.4</span></div>
         <div className="window-dots" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
       </header>
 
@@ -270,8 +273,8 @@ export default function App() {
             <div className="project-heading">
               <div className="project-icon">▣</div>
               <div>
-                <div className="project-title-row"><h1>Hứa An 2026</h1><Badge tone="ready">GATEWAY FOUNDATION</Badge><Badge tone="idle">RUNTIME CLOSED</Badge></div>
-                <div className="project-subtitle">GUI-02B.3 · typed Wails Gateway · project lifecycle remains closed until GUI-02C</div>
+                <div className="project-title-row"><h1>AINOVEL Project Session</h1><Badge tone="ready">LIFECYCLE</Badge><Badge tone="idle">BUSINESS CLOSED</Badge></div>
+                <div className="project-subtitle">GUI-02C.4 · backend-authoritative Create / Open / Switch / Close through typed Wails Gateway</div>
               </div>
             </div>
             <div className="search-box">⌕ <span>Tìm trong dự án...</span><kbd>Ctrl + K</kbd></div>
