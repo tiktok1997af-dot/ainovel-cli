@@ -4,23 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/errs"
 )
+
+// ProjectConfigPath resolves the project-scoped config target without
+// consulting or mutating the process working directory.
+func ProjectConfigPath(projectRoot string) (string, error) {
+	if strings.TrimSpace(projectRoot) == "" {
+		return "", fmt.Errorf("project root is required: %w", errs.ErrConfig)
+	}
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve project root: %w", err)
+	}
+	return filepath.Join(root, configDirName, "config.json"), nil
+}
 
 // LoadConfigForProject loads global configuration overlaid by the config rooted
 // at projectRoot without consulting or mutating the process working directory.
 // It preserves LoadConfig's migration semantics while making desktop project
 // selection explicit and safe for multiple project sessions in one process.
 func LoadConfigForProject(projectRoot string) (Config, error) {
-	if projectRoot == "" {
-		return Config{}, fmt.Errorf("project root is required: %w", errs.ErrConfig)
-	}
-	root, err := filepath.Abs(projectRoot)
+	projectPath, err := ProjectConfigPath(projectRoot)
 	if err != nil {
-		return Config{}, fmt.Errorf("resolve project root: %w", err)
+		return Config{}, err
 	}
-	projectPath := filepath.Join(root, configDirName, "config.json")
 
 	var cfg Config
 	var globalErr error
