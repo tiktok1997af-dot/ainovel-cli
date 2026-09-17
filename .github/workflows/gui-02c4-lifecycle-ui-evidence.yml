@@ -287,6 +287,11 @@ jobs:
           if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force }
 
           $proc = $null
+          $root = $null
+          $input = $null
+          $create = $null
+          $inputClick = $null
+          $createClick = $null
           try {
             $proc = Start-Process -FilePath $exe -PassThru
             try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
@@ -358,12 +363,80 @@ jobs:
             } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02c4-runtime-evidence.json') -Encoding UTF8
             Copy-Item -LiteralPath 'runtime-input/gui02c4-build-provenance.json' -Destination $evidenceDir -Force
             Write-Host "GUI-02C.4 REAL PROJECT SESSION PASS: candidate=$candidate project=$projectRoot active=$($active.Current.Name) closed=$($closed.Current.Name)"
+          } catch {
+            $failure = $_.Exception.ToString()
+            $inputValue = $null
+            if ($null -ne $input) {
+              try {
+                $valuePattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+                $inputValue = [string]$valuePattern.Current.Value
+              } catch {
+                $inputValue = "<unavailable: $($_.Exception.Message)>"
+              }
+            }
+
+            $automationTree = @()
+            if ($null -ne $root) {
+              try {
+                $elements = $root.FindAll(
+                  [System.Windows.Automation.TreeScope]::Descendants,
+                  [System.Windows.Automation.Condition]::TrueCondition
+                )
+                $automationTree = @($elements | ForEach-Object {
+                  [ordered]@{
+                    name = [string]$_.Current.Name
+                    control_type = [string]$_.Current.ControlType.ProgrammaticName
+                    enabled = [bool]$_.Current.IsEnabled
+                    offscreen = [bool]$_.Current.IsOffscreen
+                    bounds = [string]$_.Current.BoundingRectangle
+                  }
+                } | Where-Object { $_.name -or $_.control_type -match 'Edit|Button|Text' })
+              } catch {
+                $automationTree = @([ordered]@{ enumeration_error = $_.Exception.ToString() })
+              }
+            }
+
+            $failureCapture = $null
+            if ($null -ne $proc -and -not $proc.HasExited -and $proc.MainWindowHandle -ne 0) {
+              try {
+                $failureShot = Join-Path $evidenceDir 'gui02c4-real-executable-failure.png'
+                $failureCapture = Capture-Hwnd $proc.MainWindowHandle $failureShot
+              } catch {
+                $failureCapture = [pscustomobject]@{ capture_error = $_.Exception.ToString() }
+              }
+            }
+
+            $windowHandle = 0
+            if ($null -ne $proc) { $windowHandle = [long]$proc.MainWindowHandle }
+            $createEnabled = $null
+            if ($null -ne $create) { $createEnabled = [bool]$create.Current.IsEnabled }
+
+            [ordered]@{
+              schema = 'ainovel-gui02c4-runtime-diagnostic/1'
+              candidate_sha = $candidate
+              locked_parent_sha = $env:LOCKED_PARENT_SHA.ToLowerInvariant()
+              executable_sha256 = $exeSha
+              real_window_handle = $windowHandle
+              project_root_target = $projectRoot
+              project_root_exists_after_click = [bool](Test-Path -LiteralPath $projectRoot -PathType Container)
+              input_value_after_paste = $inputValue
+              input_click = $inputClick
+              create_enabled = $createEnabled
+              create_click = $createClick
+              failure = $failure
+              failure_capture = $failureCapture
+              automation_tree = $automationTree
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02c4-runtime-diagnostic.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02c4-build-provenance.json' -Destination $evidenceDir -Force
+            throw
           } finally {
             if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
             if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue }
           }
 
       - name: Upload real Project Session evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ainovel-gui02c4-real-evidence-${{ env.CANDIDATE_SHA }}
