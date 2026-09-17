@@ -286,6 +286,8 @@ jobs:
           if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force }
           $runtimeHome = Join-Path $env:TEMP ("ainovel-gui02c4-home-" + $candidate.Substring(0, 12))
           $originalUserProfile = $env:USERPROFILE
+          $stdoutPath = Join-Path $evidenceDir 'gui02c4-executable-stdout.log'
+          $stderrPath = Join-Path $evidenceDir 'gui02c4-executable-stderr.log'
 
           $proc = $null
           $root = $null
@@ -310,9 +312,10 @@ jobs:
             } | ConvertTo-Json -Depth 5
             $runtimeConfigPath = Join-Path $runtimeConfigDir 'config.json'
             [System.IO.File]::WriteAllText($runtimeConfigPath, $runtimeConfig, (New-Object System.Text.UTF8Encoding($false)))
+            $runtimeConfigSha = (Get-FileHash -LiteralPath $runtimeConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
             $env:USERPROFILE = $runtimeHome
 
-            $proc = Start-Process -FilePath $exe -PassThru
+            $proc = Start-Process -FilePath $exe -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
             try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
             $deadline = (Get-Date).AddSeconds(30)
             do {
@@ -383,6 +386,7 @@ jobs:
               input_has_keyboard_focus = $inputFocused
               input_method = 'real Win32 mouse click + UI Automation ValuePattern.SetValue on the real executable control'
               runtime_config = 'isolated WEB-only/no-API test home inherited through USERPROFILE'
+              runtime_config_sha256 = $runtimeConfigSha
               create_click = $createClick
               active_observed = $true
               close_click = $closeClick
@@ -454,6 +458,7 @@ jobs:
               candidate_sha = $candidate
               locked_parent_sha = $env:LOCKED_PARENT_SHA.ToLowerInvariant()
               executable_sha256 = $exeSha
+              runtime_config_sha256 = $runtimeConfigSha
               real_window_handle = $windowHandle
               project_root_target = $projectRoot
               project_root_exists_after_click = [bool](Test-Path -LiteralPath $projectRoot -PathType Container)
