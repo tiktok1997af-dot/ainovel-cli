@@ -1,0 +1,372 @@
+name: GUI-02C.4 Lifecycle UI Evidence
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/gui-02c3-lifecycle-verification.yml'
+      - '.github/workflows/gui-02c4-lifecycle-ui-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui02c4-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  LOCKED_PARENT_SHA: 9189e7de0ec366ab3e65d434516380e5bb97d641
+
+jobs:
+  contract:
+    name: Verify GUI-02C.4 exact candidate
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify exact GUI-02C.4 lineage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          git merge-base --is-ancestor $env:LOCKED_PARENT_SHA HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not descended from exact locked GUI-02C.3 parent.' }
+
+      - name: Test frontend Project Session contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop/frontend
+          npm install --no-audit --no-fund
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend Project Session tests failed.' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend production build failed.' }
+          Pop-Location
+
+      - name: Test desktop lifecycle regressions
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          if ($LASTEXITCODE -ne 0) { throw 'desktop go mod tidy failed.' }
+          go test -buildvcs=false -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop lifecycle regression suite failed.' }
+          Pop-Location
+          go test -buildvcs=false -count=1 ./internal/bootstrap ./internal/host
+          if ($LASTEXITCODE -ne 0) { throw 'Path-explicit config seam regression failed.' }
+
+      - name: Audit no frontend authority bypass
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $direct = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|os\.Chdir|fetch\(|\.invoke\(' -ErrorAction SilentlyContinue
+          if ($direct) { $direct | ForEach-Object { Write-Host $_ }; throw 'Forbidden frontend authority/transport bypass detected.' }
+          $gateway = Get-Content -LiteralPath desktop/gateway.go -Raw
+          if ($gateway -match 'func \(g \*Gateway\) Invoke\(') { throw 'Generic Gateway.Invoke escape hatch detected.' }
+
+      - name: Install Wails
+        shell: powershell
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+          if ($LASTEXITCODE -ne 0) { throw 'Wails installation failed.' }
+
+      - name: Build exact Wails executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift before build: expected $env:CANDIDATE_SHA got $actual" }
+          Push-Location desktop
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          & $wails build -clean
+          if ($LASTEXITCODE -ne 0) { throw 'Wails production build failed.' }
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Verify generated lifecycle bindings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bindingRoot = 'desktop/frontend/wailsjs'
+          if (-not (Test-Path -LiteralPath $bindingRoot)) { throw 'Generated Wails bindings directory missing.' }
+          $bindingFiles = Get-ChildItem -LiteralPath $bindingRoot -Recurse -File
+          foreach ($method in @('CreateProject','OpenProject','SwitchProject','CloseProject')) {
+            if (-not ($bindingFiles | Select-String -SimpleMatch $method -ErrorAction SilentlyContinue)) {
+              throw "Generated Wails binding missing: $method"
+            }
+          }
+
+      - name: Create GUI-02C.4 build provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'gui02c4-candidate'
+          if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exe = (Resolve-Path 'desktop/build/bin/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $bundle 'AINOVEL-Desktop.exe') -Force
+          [ordered]@{
+            schema = 'ainovel-gui02c4-build/1'
+            candidate_sha = $candidate
+            locked_parent_sha = $env:LOCKED_PARENT_SHA.ToLowerInvariant()
+            executable = 'AINOVEL-Desktop.exe'
+            executable_sha256 = $exeSha
+            lifecycle_surface = @('CreateProject','OpenProject','SwitchProject','CloseProject')
+            generic_invoke = $false
+            frontend_filesystem_authority = $false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $bundle 'gui02c4-build-provenance.json') -Encoding UTF8
+          Write-Host "GUI-02C.4 EXACT BUILD PASS: $candidate exe=$exeSha"
+
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02c4-candidate-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02c4-candidate
+
+  runtime-evidence:
+    name: Exercise real Project Session UI and capture HWND
+    needs: contract
+    runs-on: [self-hosted, Windows, X64, ainovel-w5e-desktop]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ainovel-gui02c4-candidate-${{ env.CANDIDATE_SHA }}
+          path: runtime-input
+
+      - name: Verify interactive session and provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $session = (Get-Process -Id $PID).SessionId
+          $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+          if ($null -eq $explorer) { throw 'Runner is not attached to an interactive Windows desktop session.' }
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          $prov = Get-Content -LiteralPath 'runtime-input/gui02c4-build-provenance.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$prov.candidate_sha -ne $actual) { throw 'Build provenance candidate mismatch.' }
+          if ([string]$prov.locked_parent_sha -ne $env:LOCKED_PARENT_SHA.ToLowerInvariant()) { throw 'Locked-parent provenance mismatch.' }
+          $exeSha = (Get-FileHash -LiteralPath 'runtime-input/AINOVEL-Desktop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeSha -ne [string]$prov.executable_sha256) { throw 'Executable transport hash mismatch.' }
+          Write-Host "GUI-02C.4 INTERACTIVE + PROVENANCE PASS: session=$session candidate=$actual"
+
+      - name: Input project path, mouse-click lifecycle actions, capture direct HWND
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+
+          $native = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Gui02C4Window {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
+            [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+            public static void Click(int x, int y) {
+              SetCursorPos(x, y);
+              mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+              mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $native
+
+          function Find-AutomationElement([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [System.Windows.Automation.ControlType]$ControlType, [int]$TimeoutSeconds = 20) {
+            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+            do {
+              $nameCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+              $typeCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ControlType)
+              $condition = New-Object System.Windows.Automation.AndCondition($nameCondition, $typeCondition)
+              $element = $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+              if ($null -ne $element) { return $element }
+              Start-Sleep -Milliseconds 400
+            } while ((Get-Date) -lt $deadline)
+            throw "Timed out waiting for UI element: $Name / $ControlType"
+          }
+
+          function Find-TextElement([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [int]$TimeoutSeconds = 20) {
+            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+            do {
+              $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+              $element = $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+              if ($null -ne $element) { return $element }
+              Start-Sleep -Milliseconds 400
+            } while ((Get-Date) -lt $deadline)
+            throw "Timed out waiting for visible UI text: $Name"
+          }
+
+          function Click-AutomationElement([System.Windows.Automation.AutomationElement]$Element) {
+            $bounds = $Element.Current.BoundingRectangle
+            if ($bounds.Width -le 0 -or $bounds.Height -le 0) { throw "UI element has invalid bounds: $($Element.Current.Name)" }
+            $x = [int]($bounds.Left + ($bounds.Width / 2))
+            $y = [int]($bounds.Top + ($bounds.Height / 2))
+            [Gui02C4Window]::Click($x, $y)
+            return [pscustomobject]@{ x=$x; y=$y; name=$Element.Current.Name }
+          }
+
+          function Capture-Hwnd([IntPtr]$Handle, [string]$Path) {
+            $rect = New-Object Gui02C4Window+RECT
+            if (-not [Gui02C4Window]::GetWindowRect($Handle, [ref]$rect)) { throw 'GetWindowRect failed.' }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            $bitmap = New-Object System.Drawing.Bitmap $width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = [IntPtr]::Zero
+            try {
+              $hdc = $graphics.GetHdc()
+              if (-not [Gui02C4Window]::PrintWindow($Handle, $hdc, 2)) { throw 'PrintWindow(PW_RENDERFULLCONTENT) failed.' }
+            } finally {
+              if ($hdc -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($hdc) }
+              $graphics.Dispose()
+            }
+            try {
+              $colors = New-Object 'System.Collections.Generic.HashSet[int]'
+              $xStep = [Math]::Max(1, [int]($width / 24))
+              $yStep = [Math]::Max(1, [int]($height / 16))
+              for ($x = 0; $x -lt $width; $x += $xStep) {
+                for ($y = 0; $y -lt $height; $y += $yStep) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null }
+              }
+              if ($colors.Count -lt 20) { throw "Direct HWND capture appears blank: sampledColors=$($colors.Count)" }
+              $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+              return [pscustomobject]@{ hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); colors=$colors.Count; width=$width; height=$height }
+            } finally {
+              $bitmap.Dispose()
+            }
+          }
+
+          $candidate = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $exe = (Resolve-Path 'runtime-input/AINOVEL-Desktop.exe').Path
+          $exeSha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE 'gui02c4-evidence'
+          if (Test-Path -LiteralPath $evidenceDir) { Remove-Item -LiteralPath $evidenceDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          $projectRoot = Join-Path $env:TEMP ("ainovel-gui02c4-" + $candidate.Substring(0, 12))
+          if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force }
+
+          $proc = $null
+          try {
+            $proc = Start-Process -FilePath $exe -PassThru
+            try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $proc.Refresh()
+              if ($proc.HasExited) { throw "AINOVEL Desktop exited before GUI-02C.4 verification with code $($proc.ExitCode)." }
+            } while ($proc.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($proc.MainWindowHandle -eq 0) { throw 'AINOVEL Desktop did not expose a real window handle.' }
+
+            $flags = [uint32](0x0002 -bor 0x0004)
+            if (-not [Gui02C4Window]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, 0, 0, 1600, 980, $flags)) { throw 'SetWindowPos failed.' }
+            [Gui02C4Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 2
+
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+            if ($null -eq $root) { throw 'Unable to resolve UI Automation root from real HWND.' }
+
+            $input = Find-AutomationElement $root 'Project root' ([System.Windows.Automation.ControlType]::Edit)
+            $inputClick = Click-AutomationElement $input
+            [Gui02C4Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            [System.Windows.Forms.Clipboard]::SetText($projectRoot)
+            [System.Windows.Forms.SendKeys]::SendWait('^a')
+            [System.Windows.Forms.SendKeys]::SendWait('^v')
+            Start-Sleep -Milliseconds 600
+
+            $create = Find-AutomationElement $root 'Create' ([System.Windows.Automation.ControlType]::Button)
+            $createClick = Click-AutomationElement $create
+            $active = Find-TextElement $root 'ACTIVE' 30
+            if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) { throw 'CreateProject did not create the requested project directory.' }
+            Start-Sleep -Milliseconds 800
+
+            $activeShot = Join-Path $evidenceDir 'gui02c4-real-executable-active.png'
+            $activeCapture = Capture-Hwnd $proc.MainWindowHandle $activeShot
+
+            $close = Find-AutomationElement $root 'Close' ([System.Windows.Automation.ControlType]::Button)
+            $closeClick = Click-AutomationElement $close
+            $closed = Find-TextElement $root 'NO ACTIVE PROJECT' 30
+            Start-Sleep -Milliseconds 800
+
+            $closedShot = Join-Path $evidenceDir 'gui02c4-real-executable-closed.png'
+            $closedCapture = Capture-Hwnd $proc.MainWindowHandle $closedShot
+
+            [ordered]@{
+              schema = 'ainovel-gui02c4-runtime-evidence/1'
+              candidate_sha = $candidate
+              locked_parent_sha = $env:LOCKED_PARENT_SHA.ToLowerInvariant()
+              executable_sha256 = $exeSha
+              real_window_handle = [long]$proc.MainWindowHandle
+              interactive_session = $true
+              project_root_input = $projectRoot
+              input_method = 'real Win32 mouse focus + System.Windows.Forms.SendKeys keyboard paste'
+              create_click = $createClick
+              active_observed = $true
+              close_click = $closeClick
+              no_project_observed_after_close = $true
+              frontend_filesystem_authority = $false
+              direct_hwnd_capture = 'user32.PrintWindow(PW_RENDERFULLCONTENT)'
+              generated_or_mock_image = $false
+              active_screenshot = 'gui02c4-real-executable-active.png'
+              active_screenshot_sha256 = $activeCapture.hash
+              closed_screenshot = 'gui02c4-real-executable-closed.png'
+              closed_screenshot_sha256 = $closedCapture.hash
+              sampled_colors_active = $activeCapture.colors
+              sampled_colors_closed = $closedCapture.colors
+              window_size = "$($activeCapture.width)x$($activeCapture.height)"
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceDir 'gui02c4-runtime-evidence.json') -Encoding UTF8
+            Copy-Item -LiteralPath 'runtime-input/gui02c4-build-provenance.json' -Destination $evidenceDir -Force
+            Write-Host "GUI-02C.4 REAL PROJECT SESSION PASS: candidate=$candidate project=$projectRoot active=$($active.Current.Name) closed=$($closed.Current.Name)"
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload real Project Session evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ainovel-gui02c4-real-evidence-${{ env.CANDIDATE_SHA }}
+          if-no-files-found: error
+          retention-days: 14
+          path: gui02c4-evidence
