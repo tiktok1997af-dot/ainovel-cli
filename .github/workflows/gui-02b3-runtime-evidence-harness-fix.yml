@@ -1,0 +1,49 @@
+name: GUI-02B.3 Runtime Evidence Harness Fix
+
+on:
+  push:
+    branches:
+      - feat/gui-02c3-lifecycle-wails-bindings
+    paths:
+      - .github/workflows/gui-02b3-runtime-evidence-harness-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/gui-02c3-lifecycle-wails-bindings
+          fetch-depth: 0
+      - name: Harden real-click readiness without weakening evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/gui-02b3-gateway-roundtrip.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '''            [Gui02B3Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null\n            Start-Sleep -Seconds 1\n\n            # The exact button centre was established from direct-HWND diagnostics on\n            # the same 1600x980 executable. Use window-relative coordinates so the\n            # native non-client/title-bar offset cannot move the click above the button.\n            $rect = New-Object Gui02B3Window+RECT\n            if (-not [Gui02B3Window]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed before click.' }\n            [Gui02B3Window]::Click($rect.Left + 592, $rect.Top + 847)\n\n            $verifyDeadline = (Get-Date).AddSeconds(15)\n            $title = ''\n            do {\n              Start-Sleep -Milliseconds 300\n              $proc.Refresh()\n              if ($proc.HasExited) { throw "AINOVEL Desktop exited during gateway verification with code $($proc.ExitCode)." }\n              $title = [string]$proc.MainWindowTitle\n              if ($title -match 'GATEWAY FAILED') { throw "Executable reported gateway verification failure: $title" }\n            } while ($title -notmatch 'GATEWAY VERIFIED' -and (Get-Date) -lt $verifyDeadline)\n            if ($title -notmatch 'GATEWAY VERIFIED') { throw "Timed out waiting for typed Wails round-trip proof. Window title=$title" }\n'''
+          new = '''            [Gui02B3Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null\n            Start-Sleep -Seconds 1\n\n            # The exact button centre was established from direct-HWND diagnostics on\n            # the same 1600x980 executable. Keep the same real Win32 click target, but\n            # retry it while the title is still plain because WebView/foreground readiness\n            # can lag behind MainWindowHandle publication. Once React accepts the click it\n            # immediately publishes GATEWAY CHECK, so no further clicks are sent.\n            $verifyDeadline = (Get-Date).AddSeconds(20)\n            $title = ''\n            $clickAttempts = 0\n            do {\n              $proc.Refresh()\n              if ($proc.HasExited) { throw "AINOVEL Desktop exited during gateway verification with code $($proc.ExitCode)." }\n              $title = [string]$proc.MainWindowTitle\n              if ($title -match 'GATEWAY FAILED') { throw "Executable reported gateway verification failure: $title" }\n              if ($title -match 'GATEWAY VERIFIED') { break }\n\n              if ($title -notmatch 'GATEWAY CHECK') {\n                [Gui02B3Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null\n                Start-Sleep -Milliseconds 250\n                $rect = New-Object Gui02B3Window+RECT\n                if (-not [Gui02B3Window]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed before click.' }\n                [Gui02B3Window]::Click($rect.Left + 592, $rect.Top + 847)\n                $clickAttempts++\n                Write-Host "GUI-02B.3 real-click attempt $clickAttempts at window-relative 592,847; title=$title"\n              }\n              Start-Sleep -Milliseconds 800\n            } while ((Get-Date) -lt $verifyDeadline)\n            if ($title -notmatch 'GATEWAY VERIFIED') { throw "Timed out waiting for typed Wails round-trip proof after $clickAttempts real-click attempts. Window title=$title" }\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected runtime-evidence block exactly once, found {text.count(old)}')
+          text = text.replace(old, new)
+          old_trigger = "              trigger = 'real Win32 mouse click at verified window-relative button centre 592,847'"
+          new_trigger = "              trigger = \"bounded real Win32 mouse clicks at verified window-relative button centre 592,847; attempts=$clickAttempts\""
+          if text.count(old_trigger) != 1:
+              raise SystemExit(f'expected trigger line exactly once, found {text.count(old_trigger)}')
+          path.write_text(text.replace(old_trigger, new_trigger), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- .github/workflows/gui-02b3-gateway-roundtrip.yml
+      - name: Commit harness fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/gui-02b3-gateway-roundtrip.yml
+          git commit -m "ci: harden real executable click readiness"
+          git push origin HEAD:feat/gui-02c3-lifecycle-wails-bindings
