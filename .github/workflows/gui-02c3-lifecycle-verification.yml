@@ -74,7 +74,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $changedGo = git diff --unified=0 $env:LOCKED_PARENT_SHA...HEAD -- '*.go'
+          $range = "$($env:LOCKED_PARENT_SHA)...HEAD"
+          $changedGo = git diff --unified=0 $range -- '*.go'
           if ($changedGo -match 'os\.Chdir\s*\(') { throw 'Forbidden os.Chdir lifecycle bypass detected.' }
           $gateway = Get-Content -LiteralPath desktop/gateway.go -Raw
           if ($gateway -match 'func \(g \*Gateway\) Invoke\(') { throw 'Generic Gateway.Invoke escape hatch detected.' }
