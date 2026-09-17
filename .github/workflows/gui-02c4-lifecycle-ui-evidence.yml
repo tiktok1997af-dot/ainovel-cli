@@ -284,6 +284,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
           $projectRoot = Join-Path $env:TEMP ("ainovel-gui02c4-" + $candidate.Substring(0, 12))
           if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force }
+          $runtimeHome = Join-Path $env:TEMP ("ainovel-gui02c4-home-" + $candidate.Substring(0, 12))
+          $originalUserProfile = $env:USERPROFILE
 
           $proc = $null
           $root = $null
@@ -293,6 +295,23 @@ jobs:
           $createClick = $null
           $inputFocused = $null
           try {
+            if (Test-Path -LiteralPath $runtimeHome) { Remove-Item -LiteralPath $runtimeHome -Recurse -Force }
+            $runtimeConfigDir = Join-Path $runtimeHome '.ainovel'
+            New-Item -ItemType Directory -Force -Path $runtimeConfigDir | Out-Null
+            $runtimeConfig = [ordered]@{
+              web = [ordered]@{
+                enabled = $true
+                site = 'gemini-web'
+                profile_name = "gui02c4-$($candidate.Substring(0, 12))"
+              }
+              style = 'default'
+              language = 'vi'
+              notify = [ordered]@{ enabled = $false }
+            } | ConvertTo-Json -Depth 5
+            $runtimeConfigPath = Join-Path $runtimeConfigDir 'config.json'
+            [System.IO.File]::WriteAllText($runtimeConfigPath, $runtimeConfig, (New-Object System.Text.UTF8Encoding($false)))
+            $env:USERPROFILE = $runtimeHome
+
             $proc = Start-Process -FilePath $exe -PassThru
             try { $proc.WaitForInputIdle(10000) | Out-Null } catch {}
             $deadline = (Get-Date).AddSeconds(30)
@@ -343,6 +362,8 @@ jobs:
             $activeCapture = Capture-Hwnd $proc.MainWindowHandle $activeShot
 
             $close = Find-AutomationElement $root 'Close' ([System.Windows.Automation.ControlType]::Button)
+            [Gui02C4Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Milliseconds 300
             $closeClick = Click-AutomationElement $close
             $closed = Find-TextElement $root 'NO ACTIVE PROJECT' 30
             Start-Sleep -Milliseconds 800
@@ -361,6 +382,7 @@ jobs:
               input_value_observed = $enteredProjectRoot
               input_has_keyboard_focus = $inputFocused
               input_method = 'real Win32 mouse click + UI Automation ValuePattern.SetValue on the real executable control'
+              runtime_config = 'isolated WEB-only/no-API test home inherited through USERPROFILE'
               create_click = $createClick
               active_observed = $true
               close_click = $closeClick
@@ -435,6 +457,7 @@ jobs:
               real_window_handle = $windowHandle
               project_root_target = $projectRoot
               project_root_exists_after_click = [bool](Test-Path -LiteralPath $projectRoot -PathType Container)
+              input_value_before_create = $enteredProjectRoot
               input_value_after_entry = $inputValue
               input_has_keyboard_focus = $inputFocused
               input_click = $inputClick
@@ -450,6 +473,14 @@ jobs:
           } finally {
             if ($null -ne $proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
             if (Test-Path -LiteralPath $projectRoot) { Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue }
+            $env:USERPROFILE = $originalUserProfile
+            $ownedBrowserProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+              $_.CommandLine -and $_.CommandLine.Contains($runtimeHome)
+            }
+            foreach ($ownedBrowserProcess in $ownedBrowserProcesses) {
+              Stop-Process -Id $ownedBrowserProcess.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $runtimeHome) { Remove-Item -LiteralPath $runtimeHome -Recurse -Force -ErrorAction SilentlyContinue }
           }
 
       - name: Upload real Project Session evidence
