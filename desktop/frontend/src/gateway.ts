@@ -14,6 +14,17 @@ export type GatewaySnapshotResult = {
   error?: AppError
 }
 
+export type ProjectLifecycleRequest = {
+  project_root: string
+}
+
+export type ProjectLifecycleResult = {
+  contract_version: string
+  project_root?: string
+  data?: unknown
+  error?: AppError
+}
+
 export type QueryRequest = {
   contract_version?: string
   kind: string
@@ -67,6 +78,10 @@ export type WailsDesktopBridge = {
   snapshot: () => Promise<GatewaySnapshotResult>
   query: (request: QueryRequest) => Promise<QueryResult>
   dispatch: (command: CommandRequest) => Promise<CommandResult>
+  createProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+  openProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+  switchProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+  closeProject: () => Promise<ProjectLifecycleResult>
   eventsOn: (topic: string, callback: (event: DesktopEvent) => void) => () => void
   eventsEmit: (topic: string, event: DesktopEvent) => void
 }
@@ -75,6 +90,10 @@ export type GatewayClient = {
   snapshot: () => Promise<GatewaySnapshotResult>
   query: (kind: string, payload?: unknown) => Promise<QueryResult>
   dispatch: (command: Omit<CommandRequest, 'contract_version'>) => Promise<CommandResult>
+  createProject: (projectRoot: string) => Promise<ProjectLifecycleResult>
+  openProject: (projectRoot: string) => Promise<ProjectLifecycleResult>
+  switchProject: (projectRoot: string) => Promise<ProjectLifecycleResult>
+  closeProject: () => Promise<ProjectLifecycleResult>
   subscribe: (listener: (event: DesktopEvent) => void) => () => void
   emitVerificationProbe: (event: DesktopEvent) => void
 }
@@ -95,6 +114,10 @@ type WailsWindow = Window & {
         Snapshot: () => Promise<GatewaySnapshotResult>
         Query: (request: QueryRequest) => Promise<QueryResult>
         Dispatch: (command: CommandRequest) => Promise<CommandResult>
+        CreateProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+        OpenProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+        SwitchProject: (request: ProjectLifecycleRequest) => Promise<ProjectLifecycleResult>
+        CloseProject: () => Promise<ProjectLifecycleResult>
       }
     }
   }
@@ -114,6 +137,10 @@ export function createGatewayClient(bridge: WailsDesktopBridge): GatewayClient {
       return bridge.query(request)
     },
     dispatch: (command) => bridge.dispatch({ contract_version: CONTRACT_VERSION, ...command }),
+    createProject: (projectRoot) => bridge.createProject({ project_root: projectRoot }),
+    openProject: (projectRoot) => bridge.openProject({ project_root: projectRoot }),
+    switchProject: (projectRoot) => bridge.switchProject({ project_root: projectRoot }),
+    closeProject: () => bridge.closeProject(),
     subscribe: (listener) => bridge.eventsOn(DESKTOP_EVENT_TOPIC, listener),
     emitVerificationProbe: (event) => {
       if (
@@ -140,6 +167,10 @@ export function createBrowserGatewayClient(): GatewayClient {
     snapshot: () => gateway.Snapshot(),
     query: (request) => gateway.Query(request),
     dispatch: (command) => gateway.Dispatch(command),
+    createProject: (request) => gateway.CreateProject(request),
+    openProject: (request) => gateway.OpenProject(request),
+    switchProject: (request) => gateway.SwitchProject(request),
+    closeProject: () => gateway.CloseProject(),
     eventsOn: (topic, callback) => runtime.EventsOn(topic, callback),
     eventsEmit: (topic, event) => runtime.EventsEmit(topic, event),
   })
