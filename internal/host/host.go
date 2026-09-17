@@ -176,7 +176,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle, options ...NewOption) (*Hos
 		thinkingApplier: applyThinking,
 		writerRestore:   restore,
 		userRules:       userrules.NewService(store, models.Default, rules.DefaultOptions()),
-		configPath:      bootstrap.EffectiveConfigPath(),
+		configPath:      configPathForOptions(bootstrap.EffectiveConfigPath(), opts),
 		logCleanup:      logCleanup,
 		fileLogErr:      fileLogErr,
 		events:          make(chan Event, 100),

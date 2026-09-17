@@ -57,11 +57,10 @@ func defaultProjectRuntimeFactory(ctx context.Context, projectRoot string, creat
 	if err != nil {
 		return nil, invalidProjectRootError(err)
 	}
-	core, err := host.New(cfg, bundle)
+	core, err := host.New(cfg, bundle, host.WithConfigPath(configPath))
 	if err != nil {
 		return nil, internalProjectLifecycleError(err)
 	}
-	host.ApplyConfigOptions(core, host.WithConfigPath(configPath))
 	runtime, err := appruntime.New(core)
 	if err != nil {
 		core.Close()
