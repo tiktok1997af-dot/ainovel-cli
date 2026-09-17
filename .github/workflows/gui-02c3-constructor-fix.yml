@@ -1,0 +1,63 @@
+name: GUI-02C.3 Constructor Fix
+
+on:
+  push:
+    branches:
+      - feat/gui-02c3-lifecycle-wails-bindings
+    paths:
+      - .github/workflows/gui-02c3-constructor-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/gui-02c3-lifecycle-wails-bindings
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Apply locked constructor-path fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          host_path = Path('internal/host/host.go')
+          host_text = host_path.read_text(encoding='utf-8')
+          old = 'configPath:      bootstrap.EffectiveConfigPath(),'
+          new = 'configPath:      configPathForOptions(bootstrap.EffectiveConfigPath(), opts),'
+          if host_text.count(old) != 1:
+              raise SystemExit(f'host.go replacement count = {host_text.count(old)}, want 1')
+          host_path.write_text(host_text.replace(old, new), encoding='utf-8')
+
+          config_path = Path('internal/host/config_path.go')
+          config_path.write_text('''package host\n\n// configPathForOptions resolves the config-write target during Host construction.\n// Explicit project ownership wins; callers that omit WithConfigPath retain the\n// existing EffectiveConfigPath fallback.\nfunc configPathForOptions(fallback string, opts newOptions) string {\n\tif opts.configPath != "" {\n\t\treturn opts.configPath\n\t}\n\treturn fallback\n}\n''', encoding='utf-8')
+
+          factory_path = Path('desktop/project_runtime_factory.go')
+          factory_text = factory_path.read_text(encoding='utf-8')
+          old_factory = '''\tcore, err := host.New(cfg, bundle)\n\tif err != nil {\n\t\treturn nil, internalProjectLifecycleError(err)\n\t}\n\thost.ApplyConfigOptions(core, host.WithConfigPath(configPath))\n'''
+          new_factory = '''\tcore, err := host.New(cfg, bundle, host.WithConfigPath(configPath))\n\tif err != nil {\n\t\treturn nil, internalProjectLifecycleError(err)\n\t}\n'''
+          if factory_text.count(old_factory) != 1:
+              raise SystemExit(f'project_runtime_factory.go replacement count = {factory_text.count(old_factory)}, want 1')
+          factory_path.write_text(factory_text.replace(old_factory, new_factory), encoding='utf-8')
+          PY
+          gofmt -w internal/host/config_path.go internal/host/host.go desktop/project_runtime_factory.go
+      - name: Verify GREEN before commit
+        shell: bash
+        run: |
+          go test -buildvcs=false -count=1 ./internal/bootstrap ./internal/host
+          (cd desktop && go test -buildvcs=false -count=1 ./...)
+      - name: Commit GREEN fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/host/config_path.go internal/host/host.go desktop/project_runtime_factory.go
+          git diff --cached --check
+          git commit -m "fix: consume project config path during Host construction"
+          git push origin HEAD:feat/gui-02c3-lifecycle-wails-bindings
