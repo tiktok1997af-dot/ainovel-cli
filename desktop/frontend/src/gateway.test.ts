@@ -43,6 +43,18 @@ function fakeBridge(): WailsDesktopBridge & {
         error: runtimeUnavailable(),
       }
     },
+    async createProject(request) {
+      return { contract_version: CONTRACT_VERSION, project_root: request.project_root, error: runtimeUnavailable() }
+    },
+    async openProject(request) {
+      return { contract_version: CONTRACT_VERSION, project_root: request.project_root, error: runtimeUnavailable() }
+    },
+    async switchProject(request) {
+      return { contract_version: CONTRACT_VERSION, project_root: request.project_root, error: runtimeUnavailable() }
+    },
+    async closeProject() {
+      return { contract_version: CONTRACT_VERSION, error: runtimeUnavailable() }
+    },
     eventsOn(topic, callback) {
       calls.eventTopics.push(topic)
       listener = callback
