@@ -18,28 +18,36 @@ type desktopEventEmitter func(context.Context, string, appruntime.DesktopEvent)
 // GatewaySnapshotResult keeps Snapshot on the same typed, no-raw-error desktop
 // boundary as QueryResult and CommandResult.
 type GatewaySnapshotResult struct {
-	ContractVersion string                      `json:"contract_version"`
+	ContractVersion string                       `json:"contract_version"`
 	Data            *appruntime.DesktopSnapshot `json:"data,omitempty"`
-	Error           *appruntime.AppError        `json:"error,omitempty"`
+	Error           *appruntime.AppError         `json:"error,omitempty"`
 }
 
-// Gateway is the only Wails-bound authority adapter in GUI-02B.2. The only
-// exported methods are the three call surfaces permitted by the locked
-// contract. Event subscription remains Go-owned and is projected through one
+// Gateway is the only Wails-bound authority adapter. Snapshot, Query, Dispatch,
+// and the four typed GUI-02C.3 lifecycle methods are the complete public call
+// surface. Event subscription remains Go-owned and is projected through one
 // Wails event topic; Host, Store, WebAI, filesystem, and engine internals are
 // never exposed to JavaScript.
 type Gateway struct {
-	mu      sync.Mutex
-	session *projectSessionController
-	emit    desktopEventEmitter
-	ctx     context.Context
-	cancel  context.CancelFunc
-	sub     appruntime.EventSubscription
-	done    chan struct{}
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	session     *projectSessionController
+	emit        desktopEventEmitter
+	ctx         context.Context
+	cancel      context.CancelFunc
+	sub         appruntime.EventSubscription
+	done        chan struct{}
+
+	runtimeFactory projectRuntimeFactory
+	projectRoot   string
 }
 
 func newGateway(runtime desktopui.RuntimeClient, emit desktopEventEmitter) *Gateway {
-	return &Gateway{session: newProjectSessionController(runtime), emit: emit}
+	return &Gateway{
+		session:        newProjectSessionController(runtime),
+		emit:           emit,
+		runtimeFactory: defaultProjectRuntimeFactory,
+	}
 }
 
 // Snapshot returns authoritative desktop state through a typed envelope. It
@@ -156,36 +164,80 @@ func (g *Gateway) startup(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	bridgeCtx, cancel := context.WithCancel(ctx)
-
 	g.mu.Lock()
-	g.ctx = bridgeCtx
-	g.cancel = cancel
+	g.ctx = ctx
 	emit := g.emit
 	g.mu.Unlock()
 
-	if emit == nil {
-		return
-	}
 	runtime, release, ok := g.acquireRuntime()
 	if !ok {
 		return
 	}
-	sub, err := runtime.Subscribe(bridgeCtx, appruntime.EventCursor{ContractVersion: appruntime.ContractVersion})
+	err := g.startEventBridge(runtime)
 	release()
+	if err != nil && emit != nil {
+		emit(ctx, desktopEventTopic, gatewayBridgeErrorEvent(err))
+	}
+}
+
+func (g *Gateway) shutdown(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	g.lifecycleMu.Lock()
+	defer g.lifecycleMu.Unlock()
+
+	g.stopEventBridge(ctx)
+	if g.session != nil {
+		_ = g.session.closeRuntime(ctx)
+	}
+	g.mu.Lock()
+	g.ctx = nil
+	g.projectRoot = ""
+	g.mu.Unlock()
+}
+
+func (g *Gateway) startEventBridge(runtime desktopui.RuntimeClient) error {
+	if runtime == nil {
+		return nil
+	}
+	g.mu.Lock()
+	if g.sub != nil {
+		g.mu.Unlock()
+		return nil
+	}
+	parent := g.ctx
+	emit := g.emit
+	g.mu.Unlock()
+	if parent == nil {
+		parent = context.Background()
+	}
+	if emit == nil {
+		emit = func(context.Context, string, appruntime.DesktopEvent) {}
+	}
+	bridgeCtx, cancel := context.WithCancel(parent)
+	sub, err := runtime.Subscribe(bridgeCtx, appruntime.EventCursor{ContractVersion: appruntime.ContractVersion})
 	if err != nil {
-		emit(bridgeCtx, desktopEventTopic, gatewayBridgeErrorEvent(err))
-		return
+		cancel()
+		return err
 	}
 	done := make(chan struct{})
 	g.mu.Lock()
+	if g.sub != nil {
+		g.mu.Unlock()
+		cancel()
+		_ = sub.Close()
+		return nil
+	}
+	g.cancel = cancel
 	g.sub = sub
 	g.done = done
 	g.mu.Unlock()
 	go g.pumpEvents(bridgeCtx, sub, done, emit)
+	return nil
 }
 
-func (g *Gateway) shutdown(ctx context.Context) {
+func (g *Gateway) stopEventBridge(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -196,7 +248,6 @@ func (g *Gateway) shutdown(ctx context.Context) {
 	g.cancel = nil
 	g.sub = nil
 	g.done = nil
-	g.ctx = nil
 	g.mu.Unlock()
 
 	if cancel != nil {
@@ -210,9 +261,6 @@ func (g *Gateway) shutdown(ctx context.Context) {
 		case <-done:
 		case <-ctx.Done():
 		}
-	}
-	if g.session != nil {
-		_ = g.session.closeRuntime(ctx)
 	}
 }
 
@@ -244,10 +292,17 @@ func (g *Gateway) acquireRuntime() (desktopui.RuntimeClient, func(), bool) {
 	return g.session.acquireRuntime()
 }
 
-// replaceRuntime is an internal GUI-02C.2 serialization seam. It is deliberately
-// unexported: public Create/Open/Switch/Close lifecycle bindings belong to
-// GUI-02C.3. The session controller holds exclusive ownership while replacing
-// and closing the old runtime, so this waits for all in-flight Gateway leases.
+func (g *Gateway) hasRuntime() bool {
+	runtime, release, ok := g.acquireRuntime()
+	if ok {
+		release()
+	}
+	return ok && runtime != nil
+}
+
+// replaceRuntime remains an internal serialization seam. Public lifecycle
+// methods stop the old event bridge first, then call this exclusive controller
+// operation, preserving the GUI-02C.2 lease invariant.
 func (g *Gateway) replaceRuntime(ctx context.Context, replacement desktopui.RuntimeClient) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -315,6 +370,22 @@ func contractMismatchGatewayError() *appruntime.AppError {
 		Code:     appruntime.ErrorCodeContractMismatch,
 		Category: appruntime.ErrorCategoryValidation,
 		Message:  "The desktop and core contract versions are incompatible.",
+	}
+}
+
+func invalidArgumentGatewayError() *appruntime.AppError {
+	return &appruntime.AppError{
+		Code:     appruntime.ErrorCodeInvalidArgument,
+		Category: appruntime.ErrorCategoryValidation,
+		Message:  "The request is invalid.",
+	}
+}
+
+func commandNotAllowedGatewayError() *appruntime.AppError {
+	return &appruntime.AppError{
+		Code:     appruntime.ErrorCodeCommandNotAllowed,
+		Category: appruntime.ErrorCategoryConflict,
+		Message:  "This action is not allowed in the current state.",
 	}
 }
 
