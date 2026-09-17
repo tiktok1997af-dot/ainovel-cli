@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           go test -buildvcs=false -count=1 ./internal/bootstrap ./internal/host
-          (cd desktop && go test -buildvcs=false -count=1 ./...)
+          (cd desktop && go mod tidy && go test -buildvcs=false -count=1 ./...)
       - name: Commit GREEN fix
         shell: bash
         run: |
