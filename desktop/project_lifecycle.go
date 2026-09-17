@@ -18,10 +18,10 @@ type ProjectLifecycleRequest struct {
 // ProjectLifecycleResult keeps project lifecycle on the same typed/no-raw-error
 // Wails boundary as Snapshot, Query, and Dispatch.
 type ProjectLifecycleResult struct {
-	ContractVersion string                       `json:"contract_version"`
-	ProjectRoot     string                       `json:"project_root,omitempty"`
+	ContractVersion string                      `json:"contract_version"`
+	ProjectRoot     string                      `json:"project_root,omitempty"`
 	Data            *appruntime.DesktopSnapshot `json:"data,omitempty"`
-	Error           *appruntime.AppError         `json:"error,omitempty"`
+	Error           *appruntime.AppError        `json:"error,omitempty"`
 }
 
 type projectRuntimeFactory func(context.Context, string, bool) (desktopui.RuntimeClient, error)
