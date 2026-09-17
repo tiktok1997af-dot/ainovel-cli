@@ -65,7 +65,7 @@ func defaultProjectRuntimeFactory(ctx context.Context, projectRoot string, creat
 	}
 	runtime, err := appruntime.New(core)
 	if err != nil {
-		slog.Error("GUI-02C.4 project AppRuntime initialization failed", "module", "desktop.project_runtime_factory", "project_root", root, "err", err)
+		slog.Error("GUI-02C.4 project AppRuntime initialization failed", "module", "desktop.project_runtime_factory", "project_root", root, "err", err, "cause", errors.Unwrap(err))
 		core.Close()
 		return nil, err
 	}
