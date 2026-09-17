@@ -192,6 +192,73 @@ func TestGatewaySwitchStopsOldEventsBeforeClosingOldRuntime(t *testing.T) {
 	}
 }
 
+type blockingSubscribeRuntime struct {
+	*fakeGatewayRuntime
+	subscribeEntered chan struct{}
+	subscribeRelease chan struct{}
+}
+
+func (r *blockingSubscribeRuntime) Subscribe(ctx context.Context, cursor appruntime.EventCursor) (appruntime.EventSubscription, error) {
+	close(r.subscribeEntered)
+	select {
+	case <-r.subscribeRelease:
+		return r.fakeGatewayRuntime.Subscribe(ctx, cursor)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestGatewaySwitchKeepsReplacementHiddenUntilEventBridgeReady(t *testing.T) {
+	oldRuntime := newFakeGatewayRuntime()
+	newRuntime := &blockingSubscribeRuntime{
+		fakeGatewayRuntime: newFakeGatewayRuntime(),
+		subscribeEntered:   make(chan struct{}),
+		subscribeRelease:   make(chan struct{}),
+	}
+	newRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 55}
+	gateway := newGatewayWithRuntimeFactory(oldRuntime, nil, func(context.Context, string, bool) (desktopui.RuntimeClient, error) {
+		return newRuntime, nil
+	})
+
+	switchDone := make(chan ProjectLifecycleResult, 1)
+	go func() {
+		switchDone <- gateway.SwitchProject(ProjectLifecycleRequest{ProjectRoot: t.TempDir()})
+	}()
+	select {
+	case <-newRuntime.subscribeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("replacement subscription did not start")
+	}
+
+	snapshotDone := make(chan GatewaySnapshotResult, 1)
+	go func() {
+		snapshotDone <- gateway.Snapshot()
+	}()
+	select {
+	case result := <-snapshotDone:
+		t.Fatalf("Snapshot observed replacement before event bridge was ready: %#v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(newRuntime.subscribeRelease)
+	select {
+	case result := <-switchDone:
+		if result.Error != nil {
+			t.Fatalf("SwitchProject() error = %#v", result.Error)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SwitchProject did not finish after subscription became ready")
+	}
+	select {
+	case result := <-snapshotDone:
+		if result.Error != nil || result.Data == nil || result.Data.Revision != 55 {
+			t.Fatalf("Snapshot after activation = %#v, want revision 55", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Snapshot did not resume after replacement activation")
+	}
+}
+
 func TestGatewayCloseProjectStopsSessionAndFailsClosed(t *testing.T) {
 	runtime := newFakeGatewayRuntime()
 	runtime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 33}
