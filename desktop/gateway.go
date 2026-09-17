@@ -18,9 +18,9 @@ type desktopEventEmitter func(context.Context, string, appruntime.DesktopEvent)
 // GatewaySnapshotResult keeps Snapshot on the same typed, no-raw-error desktop
 // boundary as QueryResult and CommandResult.
 type GatewaySnapshotResult struct {
-	ContractVersion string                       `json:"contract_version"`
+	ContractVersion string                      `json:"contract_version"`
 	Data            *appruntime.DesktopSnapshot `json:"data,omitempty"`
-	Error           *appruntime.AppError         `json:"error,omitempty"`
+	Error           *appruntime.AppError        `json:"error,omitempty"`
 }
 
 // Gateway is the only Wails-bound authority adapter. Snapshot, Query, Dispatch,
@@ -39,7 +39,7 @@ type Gateway struct {
 	done        chan struct{}
 
 	runtimeFactory projectRuntimeFactory
-	projectRoot   string
+	projectRoot    string
 }
 
 func newGateway(runtime desktopui.RuntimeClient, emit desktopEventEmitter) *Gateway {
