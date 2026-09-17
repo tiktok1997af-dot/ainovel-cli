@@ -125,16 +125,25 @@ func (g *Gateway) activateProject(req ProjectLifecycleRequest, create, switching
 		return result
 	}
 
-	// The old session's event stream is cut before exclusive runtime replacement.
-	// replaceRuntime then waits for all in-flight Snapshot/Query/Dispatch leases.
+	// Cut the old event stream before taking exclusive controller ownership.
+	// transitionRuntime then waits for all in-flight Gateway leases, hides and
+	// closes the old runtime, prepares the replacement subscription while no
+	// runtime is visible, and commits runtime + bridge before readers resume.
 	g.stopEventBridge(ctx)
-	if err := g.replaceRuntime(ctx, replacement); err != nil {
+	var bridge *preparedEventBridge
+	if err := g.session.transitionRuntime(
+		ctx,
+		replacement,
+		func() error {
+			var prepareErr error
+			bridge, prepareErr = g.prepareEventBridge(replacement)
+			return prepareErr
+		},
+		func() {
+			g.activatePreparedEventBridge(bridge)
+		},
+	); err != nil {
 		_ = replacement.Close(ctx)
-		result.Error = gatewayError(err)
-		return result
-	}
-	if err := g.startEventBridge(replacement); err != nil {
-		_ = g.replaceRuntime(ctx, nil)
 		result.Error = gatewayError(err)
 		return result
 	}
