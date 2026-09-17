@@ -337,10 +337,18 @@ jobs:
             if ($null -eq $root) { throw 'Unable to resolve UI Automation root from real HWND.' }
 
             $input = Find-AutomationElement $root 'Project root' ([System.Windows.Automation.ControlType]::Edit)
-            $inputClick = Click-AutomationElement $input
             [Gui02C4Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Milliseconds 200
+            $inputClick = Click-AutomationElement $input
             $input.SetFocus()
-            $inputFocused = [bool]$input.Current.HasKeyboardFocus
+            $focusDeadline = (Get-Date).AddSeconds(5)
+            do {
+              Start-Sleep -Milliseconds 100
+              $inputFocused = [bool]$input.Current.HasKeyboardFocus
+            } while (-not $inputFocused -and (Get-Date) -lt $focusDeadline)
+            if (-not $inputFocused) {
+              throw 'Project-root input did not receive keyboard focus after the real mouse click.'
+            }
             [Gui02C4Window]::SendUnicodeText($projectRoot)
             Start-Sleep -Milliseconds 600
             $inputValuePattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
