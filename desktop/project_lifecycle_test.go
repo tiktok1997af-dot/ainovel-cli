@@ -25,6 +25,35 @@ func TestGatewayExposesOnlyTypedProjectLifecycleBindings(t *testing.T) {
 	}
 }
 
+func TestGatewayCreateProjectUsesCreateMode(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "new-project")
+	runtime := newFakeGatewayRuntime()
+	runtime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 7}
+
+	var gotRoot string
+	var gotCreate bool
+	gateway := newGatewayWithRuntimeFactory(nil, nil, func(_ context.Context, projectRoot string, create bool) (desktopui.RuntimeClient, error) {
+		gotRoot = projectRoot
+		gotCreate = create
+		return runtime, nil
+	})
+
+	result := gateway.CreateProject(ProjectLifecycleRequest{ProjectRoot: root})
+	if result.Error != nil {
+		t.Fatalf("CreateProject() error = %#v", result.Error)
+	}
+	wantRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("factory root = %q, want %q", gotRoot, wantRoot)
+	}
+	if !gotCreate {
+		t.Fatal("CreateProject passed create=false")
+	}
+}
+
 func TestGatewayOpenProjectBuildsAndActivatesPathExplicitRuntime(t *testing.T) {
 	root := t.TempDir()
 	runtime := newFakeGatewayRuntime()
@@ -128,6 +157,38 @@ func TestGatewaySwitchProjectWaitsForInFlightLeaseAndClosesOldRuntime(t *testing
 	oldRuntime.mu.Unlock()
 	if closed != 1 {
 		t.Fatalf("old runtime close calls = %d, want 1", closed)
+	}
+}
+
+type eventOrderRuntime struct {
+	*fakeGatewayRuntime
+	closeSawSubscriptionClosed bool
+}
+
+func (r *eventOrderRuntime) Close(ctx context.Context) error {
+	r.sub.mu.Lock()
+	r.closeSawSubscriptionClosed = r.sub.closed
+	r.sub.mu.Unlock()
+	return r.fakeGatewayRuntime.Close(ctx)
+}
+
+func TestGatewaySwitchStopsOldEventsBeforeClosingOldRuntime(t *testing.T) {
+	oldRuntime := &eventOrderRuntime{fakeGatewayRuntime: newFakeGatewayRuntime()}
+	newRuntime := newFakeGatewayRuntime()
+	newRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 44}
+	gateway := newGatewayWithRuntimeFactory(oldRuntime, nil, func(context.Context, string, bool) (desktopui.RuntimeClient, error) {
+		return newRuntime, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gateway.startup(ctx)
+
+	result := gateway.SwitchProject(ProjectLifecycleRequest{ProjectRoot: t.TempDir()})
+	if result.Error != nil {
+		t.Fatalf("SwitchProject() error = %#v", result.Error)
+	}
+	if !oldRuntime.closeSawSubscriptionClosed {
+		t.Fatal("old runtime was closed before its event subscription stopped")
 	}
 }
 
