@@ -1,0 +1,121 @@
+name: GUI-02C.3 Lifecycle Verification
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'internal/bootstrap/**'
+      - 'internal/host/**'
+      - '.github/workflows/gui-02c3-lifecycle-verification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui02c3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  LOCKED_PARENT_SHA: f9cb6b0d8ac1d7e3442f3098171fbadc4a7b4ef2
+
+jobs:
+  lifecycle-contract:
+    name: Verify lifecycle serialization and Wails bindings
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify exact GUI-02C.2 lineage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:CANDIDATE_SHA.ToLowerInvariant()) { throw "Candidate drift: expected $env:CANDIDATE_SHA got $actual" }
+          git merge-base --is-ancestor $env:LOCKED_PARENT_SHA HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not descended from exact locked GUI-02C.2 SHA.' }
+          $mergeBase = (git merge-base $env:LOCKED_PARENT_SHA HEAD).Trim().ToLowerInvariant()
+          if ($mergeBase -ne $env:LOCKED_PARENT_SHA.ToLowerInvariant()) { throw "Wrong merge-base: $mergeBase" }
+
+      - name: Test desktop lifecycle authority
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          go mod tidy
+          go test -buildvcs=false -count=1 ./...
+          go test -race -buildvcs=false -count=1 -run 'TestGateway(CreateProject|OpenProject|SwitchProject|CloseProject|SwitchStopsOldEvents)' .
+          Pop-Location
+
+      - name: Test path-explicit config seams
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          go test -buildvcs=false -count=1 ./internal/bootstrap ./internal/host
+
+      - name: Audit lifecycle authority boundaries
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $changedGo = git diff --unified=0 $env:LOCKED_PARENT_SHA...HEAD -- '*.go'
+          if ($changedGo -match 'os\.Chdir\s*\(') { throw 'Forbidden os.Chdir lifecycle bypass detected.' }
+          $gateway = Get-Content -LiteralPath desktop/gateway.go -Raw
+          if ($gateway -match 'func \(g \*Gateway\) Invoke\(') { throw 'Generic Gateway.Invoke escape hatch detected.' }
+          foreach ($method in @('CreateProject','OpenProject','SwitchProject','CloseProject')) {
+            if ($gateway -notmatch [regex]::Escape($method) -and (Get-Content -LiteralPath desktop/project_lifecycle.go -Raw) -notmatch [regex]::Escape($method)) {
+              throw "Missing typed lifecycle method: $method"
+            }
+          }
+          $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
+          $bypass = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|os\.Chdir|\.invoke\(' -ErrorAction SilentlyContinue
+          if ($bypass) { $bypass | ForEach-Object { Write-Host $_ }; throw 'Frontend authority bypass detected.' }
+          $lifecycleUI = $frontend | Select-String -Pattern 'CreateProject|OpenProject|SwitchProject|CloseProject' -ErrorAction SilentlyContinue
+          if ($lifecycleUI) { $lifecycleUI | ForEach-Object { Write-Host $_ }; throw 'GUI-02C.4 lifecycle UI opened inside GUI-02C.3.' }
+          $topic = Get-ChildItem -LiteralPath desktop -Filter '*.go' -File | Select-String -SimpleMatch 'ainovel:desktop:event'
+          if (-not $topic) { throw 'Locked desktop event topic missing.' }
+
+      - name: Install Wails
+        shell: powershell
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build exact Wails executable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop
+          $wails = Join-Path (go env GOPATH) 'bin\wails.exe'
+          & $wails build -clean
+          Pop-Location
+          $exe = 'desktop/build/bin/AINOVEL-Desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'AINOVEL-Desktop.exe missing.' }
+          if ((Get-Item -LiteralPath $exe).Length -le 0) { throw 'AINOVEL-Desktop.exe is empty.' }
+
+      - name: Verify generated Wails lifecycle bindings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bindingRoot = 'desktop/frontend/wailsjs'
+          if (-not (Test-Path -LiteralPath $bindingRoot)) { throw 'Generated Wails bindings directory missing.' }
+          $bindingFiles = Get-ChildItem -LiteralPath $bindingRoot -Recurse -File
+          foreach ($method in @('CreateProject','OpenProject','SwitchProject','CloseProject')) {
+            $hit = $bindingFiles | Select-String -SimpleMatch $method -ErrorAction SilentlyContinue
+            if (-not $hit) { throw "Generated Wails binding missing: $method" }
+          }
+          Write-Host "GUI-02C.3 GENERATED BINDINGS PASS: $env:CANDIDATE_SHA"
