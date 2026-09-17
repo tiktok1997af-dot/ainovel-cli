@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -59,10 +60,12 @@ func defaultProjectRuntimeFactory(ctx context.Context, projectRoot string, creat
 	}
 	core, err := host.New(cfg, bundle, host.WithConfigPath(configPath))
 	if err != nil {
+		slog.Error("GUI-02C.4 project Host initialization failed", "module", "desktop.project_runtime_factory", "project_root", root, "err", err)
 		return nil, internalProjectLifecycleError(err)
 	}
 	runtime, err := appruntime.New(core)
 	if err != nil {
+		slog.Error("GUI-02C.4 project AppRuntime initialization failed", "module", "desktop.project_runtime_factory", "project_root", root, "err", err)
 		core.Close()
 		return nil, err
 	}
