@@ -34,11 +34,17 @@ func (c *projectSessionController) acquireRuntime() (desktopui.RuntimeClient, fu
 	return c.runtime, c.mu.RUnlock, true
 }
 
-// replaceRuntime waits for all in-flight runtime leases, deactivates and closes
-// the old runtime while holding exclusive ownership, then activates replacement.
-// If closing the old runtime fails, the controller remains fail-closed with no
-// active runtime.
-func (c *projectSessionController) replaceRuntime(ctx context.Context, replacement desktopui.RuntimeClient) error {
+// transitionRuntime owns the complete session handoff under one exclusive
+// controller lock. The old runtime is hidden and closed first. prepare then
+// runs while no runtime is visible to Gateway calls; only after prepare succeeds
+// is replacement published. activate runs while the same lock is still held so
+// event/session ownership can be committed before readers are released.
+func (c *projectSessionController) transitionRuntime(
+	ctx context.Context,
+	replacement desktopui.RuntimeClient,
+	prepare func() error,
+	activate func(),
+) error {
 	if c == nil {
 		if replacement != nil {
 			return replacement.Close(ctx)
@@ -58,8 +64,24 @@ func (c *projectSessionController) replaceRuntime(ctx context.Context, replaceme
 			return err
 		}
 	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return err
+		}
+	}
 	c.runtime = replacement
+	if activate != nil {
+		activate()
+	}
 	return nil
+}
+
+// replaceRuntime waits for all in-flight runtime leases, deactivates and closes
+// the old runtime while holding exclusive ownership, then activates replacement.
+// If closing the old runtime fails, the controller remains fail-closed with no
+// active runtime.
+func (c *projectSessionController) replaceRuntime(ctx context.Context, replacement desktopui.RuntimeClient) error {
+	return c.transitionRuntime(ctx, replacement, nil, nil)
 }
 
 func (c *projectSessionController) closeRuntime(ctx context.Context) error {
