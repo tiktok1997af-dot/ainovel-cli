@@ -59,6 +59,53 @@ func TestProjectSessionControllerReplaceWaitsForInFlightRuntimeLease(t *testing.
 	release()
 }
 
+func TestProjectSessionControllerTransitionActivatesOnlyAfterPrepare(t *testing.T) {
+	oldRuntime := newFakeGatewayRuntime()
+	newRuntime := newFakeGatewayRuntime()
+	controller := newProjectSessionController(oldRuntime)
+	prepared := false
+	activated := false
+
+	err := controller.transitionRuntime(
+		context.Background(),
+		newRuntime,
+		func() error {
+			if controller.runtime != nil {
+				t.Fatalf("runtime visible during prepare: %#v", controller.runtime)
+			}
+			oldRuntime.mu.Lock()
+			oldClosed := oldRuntime.closeCalls
+			oldRuntime.mu.Unlock()
+			if oldClosed != 1 {
+				t.Fatalf("old runtime close calls during prepare = %d, want 1", oldClosed)
+			}
+			prepared = true
+			return nil
+		},
+		func() {
+			if !prepared {
+				t.Fatal("activation ran before prepare")
+			}
+			if controller.runtime != desktopui.RuntimeClient(newRuntime) {
+				t.Fatalf("runtime during activation = %#v, want replacement", controller.runtime)
+			}
+			activated = true
+		},
+	)
+	if err != nil {
+		t.Fatalf("transitionRuntime() error = %v", err)
+	}
+	if !prepared || !activated {
+		t.Fatalf("transition callbacks prepared=%v activated=%v, want both true", prepared, activated)
+	}
+
+	leased, release, ok := controller.acquireRuntime()
+	if !ok || leased != desktopui.RuntimeClient(newRuntime) {
+		t.Fatalf("runtime after transition = %#v, %v; want replacement", leased, ok)
+	}
+	release()
+}
+
 func TestProjectSessionControllerFailsClosedWithoutActiveRuntime(t *testing.T) {
 	controller := newProjectSessionController(nil)
 	if runtime, release, ok := controller.acquireRuntime(); ok || runtime != nil || release != nil {
