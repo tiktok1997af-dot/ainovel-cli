@@ -93,8 +93,9 @@ jobs:
           $frontend = Get-ChildItem -LiteralPath desktop/frontend/src -Recurse -File
           $bypass = $frontend | Select-String -Pattern 'internal/host|internal/store|internal/webai|child_process|os\.Chdir|\.invoke\(' -ErrorAction SilentlyContinue
           if ($bypass) { $bypass | ForEach-Object { Write-Host $_ }; throw 'Frontend authority bypass detected.' }
-          $lifecycleUI = $frontend | Select-String -Pattern 'CreateProject|OpenProject|SwitchProject|CloseProject' -ErrorAction SilentlyContinue
-          if ($lifecycleUI) { $lifecycleUI | ForEach-Object { Write-Host $_ }; throw 'GUI-02C.4 lifecycle UI opened inside GUI-02C.3.' }
+          # GUI-02C.4 explicitly authorizes the bounded typed lifecycle client/UI.
+          # Lifecycle method names in frontend are therefore expected; authority still
+          # remains constrained by the bypass checks above and generated typed bindings below.
           $topic = Get-ChildItem -LiteralPath desktop -Filter '*.go' -File | Select-String -SimpleMatch 'ainovel:desktop:event'
           if (-not $topic) { throw 'Locked desktop event topic missing.' }
 
