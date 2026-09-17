@@ -6,6 +6,7 @@ type newOptions struct {
 	logFile       string
 	logAlsoStderr bool
 	logAttrs      []slog.Attr
+	configPath    string
 }
 
 // NewOption 配置 Host 构造过程，运行时资源仍由 Host 持有。
@@ -19,5 +20,13 @@ func WithFileLog(filename string, alsoStderr bool, attrs ...slog.Attr) NewOption
 		opts.logFile = filename
 		opts.logAlsoStderr = alsoStderr
 		opts.logAttrs = append([]slog.Attr(nil), attrs...)
+	}
+}
+
+// WithConfigPath pins Host config writes to an explicit project-scoped target.
+// Existing CLI/TUI callers that omit it retain EffectiveConfigPath semantics.
+func WithConfigPath(path string) NewOption {
+	return func(opts *newOptions) {
+		opts.configPath = path
 	}
 }
