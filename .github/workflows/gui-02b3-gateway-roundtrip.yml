@@ -251,22 +251,32 @@ jobs:
             Start-Sleep -Seconds 1
 
             # The exact button centre was established from direct-HWND diagnostics on
-            # the same 1600x980 executable. Use window-relative coordinates so the
-            # native non-client/title-bar offset cannot move the click above the button.
-            $rect = New-Object Gui02B3Window+RECT
-            if (-not [Gui02B3Window]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed before click.' }
-            [Gui02B3Window]::Click($rect.Left + 592, $rect.Top + 847)
-
-            $verifyDeadline = (Get-Date).AddSeconds(15)
+            # the same 1600x980 executable. Keep the same real Win32 click target, but
+            # retry it while the title is still plain because WebView/foreground readiness
+            # can lag behind MainWindowHandle publication. Once React accepts the click it
+            # immediately publishes GATEWAY CHECK, so no further clicks are sent.
+            $verifyDeadline = (Get-Date).AddSeconds(20)
             $title = ''
+            $clickAttempts = 0
             do {
-              Start-Sleep -Milliseconds 300
               $proc.Refresh()
               if ($proc.HasExited) { throw "AINOVEL Desktop exited during gateway verification with code $($proc.ExitCode)." }
               $title = [string]$proc.MainWindowTitle
               if ($title -match 'GATEWAY FAILED') { throw "Executable reported gateway verification failure: $title" }
-            } while ($title -notmatch 'GATEWAY VERIFIED' -and (Get-Date) -lt $verifyDeadline)
-            if ($title -notmatch 'GATEWAY VERIFIED') { throw "Timed out waiting for typed Wails round-trip proof. Window title=$title" }
+              if ($title -match 'GATEWAY VERIFIED') { break }
+
+              if ($title -notmatch 'GATEWAY CHECK') {
+                [Gui02B3Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+                Start-Sleep -Milliseconds 250
+                $rect = New-Object Gui02B3Window+RECT
+                if (-not [Gui02B3Window]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed before click.' }
+                [Gui02B3Window]::Click($rect.Left + 592, $rect.Top + 847)
+                $clickAttempts++
+                Write-Host "GUI-02B.3 real-click attempt $clickAttempts at window-relative 592,847; title=$title"
+              }
+              Start-Sleep -Milliseconds 800
+            } while ((Get-Date) -lt $verifyDeadline)
+            if ($title -notmatch 'GATEWAY VERIFIED') { throw "Timed out waiting for typed Wails round-trip proof after $clickAttempts real-click attempts. Window title=$title" }
 
             Start-Sleep -Milliseconds 700
             $shot = Join-Path $evidenceDir 'gui02b3-real-executable.png'
@@ -279,7 +289,7 @@ jobs:
               real_window_handle = [long]$proc.MainWindowHandle
               interactive_session = $true
               window_title = $title
-              trigger = 'real Win32 mouse click at verified window-relative button centre 592,847'
+              trigger = "bounded real Win32 mouse clicks at verified window-relative button centre 592,847; attempts=$clickAttempts"
               round_trip = [ordered]@{
                 passed = $true
                 snapshot = 'typed envelope through Wails Gateway.Snapshot; fail-closed runtime_unavailable is visible in executable'
