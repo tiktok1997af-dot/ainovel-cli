@@ -314,10 +314,16 @@ jobs:
             $input = Find-AutomationElement $root 'Project root' ([System.Windows.Automation.ControlType]::Edit)
             $inputClick = Click-AutomationElement $input
             [Gui02C4Window]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            $input.SetFocus()
             [System.Windows.Forms.Clipboard]::SetText($projectRoot)
             [System.Windows.Forms.SendKeys]::SendWait('^a')
             [System.Windows.Forms.SendKeys]::SendWait('^v')
             Start-Sleep -Milliseconds 600
+            $inputValuePattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            $enteredProjectRoot = [string]$inputValuePattern.Current.Value
+            if ($enteredProjectRoot -ne $projectRoot) {
+              throw "Project-root keyboard input mismatch: expected '$projectRoot' got '$enteredProjectRoot'."
+            }
 
             $create = Find-AutomationElement $root 'Create' ([System.Windows.Automation.ControlType]::Button)
             $createClick = Click-AutomationElement $create
@@ -344,7 +350,8 @@ jobs:
               real_window_handle = [long]$proc.MainWindowHandle
               interactive_session = $true
               project_root_input = $projectRoot
-              input_method = 'real Win32 mouse focus + System.Windows.Forms.SendKeys keyboard paste'
+              input_value_observed = $enteredProjectRoot
+              input_method = 'real Win32 mouse click + UI Automation focus + System.Windows.Forms.SendKeys keyboard paste'
               create_click = $createClick
               active_observed = $true
               close_click = $closeClick
