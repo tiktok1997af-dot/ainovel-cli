@@ -120,27 +120,53 @@ export function ProjectSessionPanel({
   )
 }
 
-export function ProjectSession() {
+export type ProjectSessionController = {
+  state: ProjectSessionState
+  projectRootInput: string
+  setProjectRootInput: (value: string) => void
+  run: (operation: ProjectLifecycleOperation) => Promise<void>
+}
+
+export function useProjectSessionController(): ProjectSessionController {
   const [state, setState] = useState<ProjectSessionState>(() => initialProjectSessionState())
   const [projectRootInput, setProjectRootInput] = useState('')
 
   const run = useCallback(async (operation: ProjectLifecycleOperation) => {
     if (state.status === 'busy') return
+
     const client = createBrowserGatewayClient()
-    const next = await runProjectLifecycle(client, state, operation, projectRootInput, setState)
+    const next = await runProjectLifecycle(
+      client,
+      state,
+      operation,
+      projectRootInput,
+      setState,
+    )
+
     setState(next)
     setProjectRootInput(next.projectRoot)
   }, [projectRootInput, state])
 
+  return {
+    state,
+    projectRootInput,
+    setProjectRootInput,
+    run,
+  }
+}
+
+export function ProjectSession() {
+  const controller = useProjectSessionController()
+
   return (
     <ProjectSessionPanel
-      state={state}
-      projectRootInput={projectRootInput}
-      onProjectRootInput={setProjectRootInput}
-      onCreate={() => void run('create')}
-      onOpen={() => void run('open')}
-      onSwitch={() => void run('switch')}
-      onClose={() => void run('close')}
+      state={controller.state}
+      projectRootInput={controller.projectRootInput}
+      onProjectRootInput={controller.setProjectRootInput}
+      onCreate={() => void controller.run('create')}
+      onOpen={() => void controller.run('open')}
+      onSwitch={() => void controller.run('switch')}
+      onClose={() => void controller.run('close')}
     />
   )
 }
