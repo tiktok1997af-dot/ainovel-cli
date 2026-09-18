@@ -28,7 +28,7 @@ func (h *Host) DesktopSuspendWebSessionForProjectHandoff(ctx context.Context) er
 	if session == nil {
 		return nil
 	}
-	return session.Stop()
+	return session.StopAndWait(ctx)
 }
 
 // DesktopResumeWebSessionForProjectHandoff restarts the same persistent Gemini
