@@ -35,6 +35,16 @@ func (b *d07AdmissionRunBackend) bindParallel(parallel *dualWebParallelAuthority
 	b.mu.Unlock()
 }
 
+func (b *d07AdmissionRunBackend) DesktopRecoverResourceLocks() ([]domain.ResourceLockState, error) {
+	if b == nil || b.runBackend == nil {
+		return nil, ErrRuntimeUnavailable
+	}
+	recoverer, ok := b.runBackend.(runRestartRecoveryBackend)
+	if !ok {
+		return nil, fmt.Errorf("run backend does not support restart resource recovery")
+	}
+	return recoverer.DesktopRecoverResourceLocks()
+}
 func (b *d07AdmissionRunBackend) Resume() (string, error) {
 	if b == nil || b.runBackend == nil {
 		return "", ErrRuntimeUnavailable
