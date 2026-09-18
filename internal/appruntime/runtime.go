@@ -99,6 +99,30 @@ func New(core *host.Host) (*Runtime, error) {
 	return rt, nil
 }
 
+// SuspendProjectHandoff temporarily releases project-external WEB browser
+// ownership while keeping the project runtime itself alive for rollback.
+func (r *Runtime) SuspendProjectHandoff(ctx context.Context) error {
+	if err := r.ready(ctx); err != nil {
+		return normalizeAppError(err)
+	}
+	if err := r.core.DesktopSuspendWebSessionForProjectHandoff(ctx); err != nil {
+		return normalizeAppError(fmt.Errorf("suspend project WEB session for handoff: %w", err))
+	}
+	return nil
+}
+
+// ResumeProjectHandoff restores the same project's WEB browser ownership after
+// a replacement runtime failed to initialize.
+func (r *Runtime) ResumeProjectHandoff(ctx context.Context) error {
+	if err := r.ready(ctx); err != nil {
+		return normalizeAppError(err)
+	}
+	if err := r.core.DesktopResumeWebSessionForProjectHandoff(ctx); err != nil {
+		return normalizeAppError(fmt.Errorf("resume project WEB session after handoff failure: %w", err))
+	}
+	return nil
+}
+
 func (r *Runtime) Snapshot(ctx context.Context) (DesktopSnapshot, error) {
 	if err := r.ready(ctx); err != nil {
 		return DesktopSnapshot{}, normalizeAppError(err)

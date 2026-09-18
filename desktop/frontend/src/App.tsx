@@ -6,7 +6,16 @@ import {
   verifyGatewayRoundTrip,
   type GatewayRoundTripReport,
 } from './gateway'
-import { ProjectSession } from './project_session_ui'
+import {
+  ProjectSessionPanel,
+  useProjectSessionController,
+  type ProjectSessionController,
+} from './project_session_ui'
+import {
+  ProjectHubPanel,
+  loadProjectOverview,
+  type ProjectOverviewView,
+} from './project_hub'
 
 type Screen = {
   id: string
@@ -103,10 +112,20 @@ function GatewayDiagnostics() {
   )
 }
 
-function ChapterStudio() {
+function ChapterStudio({ controller }: { controller: ProjectSessionController }) {
+  const { state, projectRootInput, setProjectRootInput, run } = controller
+
   return (
     <>
-      <ProjectSession />
+      <ProjectSessionPanel
+        state={state}
+        projectRootInput={projectRootInput}
+        onProjectRootInput={setProjectRootInput}
+        onCreate={() => void run('create')}
+        onOpen={() => void run('open')}
+        onSwitch={() => void run('switch')}
+        onClose={() => void run('close')}
+      />
 
       <section className="workspace-grid" aria-label="Chapter Studio shell">
         <article className="panel editor-panel">
@@ -165,7 +184,7 @@ function ChapterStudio() {
             <ul>
               <li>Giữ đúng mạch manh mối từ checkpoint gần nhất.</li>
               <li>Không thay đổi canon đã khóa.</li>
-              <li>S01–S10 business implementation vẫn CLOSED.</li>
+              <li>S02–S10 business implementation vẫn CLOSED.</li>
             </ul>
           </div>
 
@@ -208,7 +227,7 @@ function ChapterStudio() {
       </section>
 
       <footer className="action-bar">
-        <span className="shell-note">GUI-02C.4 · typed Project Session lifecycle only · S01–S10 business remains CLOSED</span>
+        <span className="shell-note">S01 · shared Project Session projection · S02–S10 business remains CLOSED</span>
         <div className="action-buttons">
           <button className="primary">Generate Draft</button>
           <button>Review</button>
@@ -228,19 +247,64 @@ function Placeholder({ screen }: { screen: Screen }) {
       <h2>{screen.label}</h2>
       <p>{screen.hint}</p>
       <div className="placeholder-route">Canonical shell route: {screen.route}</div>
-      <p className="muted">GUI-02C.4 opens only bounded Project Session lifecycle integration. This screen's business behavior remains CLOSED.</p>
+      <p className="muted">S01 is open. This screen's business behavior remains CLOSED until its own AUTHOR gate opens.</p>
     </section>
   )
 }
 
 export default function App() {
-  const [activeId, setActiveId] = useState('S05')
+  const [activeId, setActiveId] = useState('S01')
   const activeScreen = useMemo(() => screens.find((screen) => screen.id === activeId) ?? screens[0], [activeId])
+
+  const projectSession = useProjectSessionController()
+  const [projectOverview, setProjectOverview] = useState<ProjectOverviewView | null>(null)
+  const [projectOverviewError, setProjectOverviewError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const projectRoot = projectSession.state.projectRoot
+
+    if (!projectRoot) {
+      setProjectOverview(null)
+      setProjectOverviewError('')
+      return () => {
+        cancelled = true
+      }
+    }
+
+    if (projectSession.state.status !== 'active') {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const refresh = async () => {
+      try {
+        const next = await loadProjectOverview(createBrowserGatewayClient())
+        if (!cancelled) {
+          setProjectOverview(next)
+          setProjectOverviewError('')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setProjectOverviewError(
+            error instanceof Error ? error.message : 'Project overview failed to load.',
+          )
+        }
+      }
+    }
+
+    void refresh()
+
+    return () => {
+      cancelled = true
+    }
+  }, [projectSession.state.projectRoot, projectSession.state.status])
 
   return (
     <div className="app-shell">
       <header className="titlebar">
-        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · GUI-02C.4</span></div>
+        <div className="titlebar-brand"><span className="brand-mark small">A</span><strong>AINOVEL Desktop</strong><span className="version">v0.2.0 · S01 GREEN-1</span></div>
         <div className="window-dots" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
       </header>
 
@@ -261,10 +325,11 @@ export default function App() {
           </nav>
 
           <div className="recent-projects">
-            <div className="sidebar-label">Recent Projects</div>
-            <button className="recent-project active">Hứa An 2026 <span>PREVIEW</span></button>
-            <button className="recent-project">Linh Dị 2026</button>
-            <button className="recent-project">Zombie 2026</button>
+            <div className="sidebar-label">Project Session</div>
+            <div className="recent-project active">
+              {projectOverview?.title || projectSession.state.projectRoot || 'No active project'}
+              <span>{projectSession.state.status.toUpperCase()}</span>
+            </div>
           </div>
         </aside>
 
@@ -273,8 +338,8 @@ export default function App() {
             <div className="project-heading">
               <div className="project-icon">▣</div>
               <div>
-                <div className="project-title-row"><h1>AINOVEL Project Session</h1><Badge tone="ready">LIFECYCLE</Badge><Badge tone="idle">BUSINESS CLOSED</Badge></div>
-                <div className="project-subtitle">GUI-02C.4 · backend-authoritative Create / Open / Switch / Close through typed Wails Gateway</div>
+                <div className="project-title-row"><h1>AINOVEL Project Session</h1><Badge tone="ready">LIFECYCLE</Badge><Badge tone="ready">S01 OPEN</Badge></div>
+                <div className="project-subtitle">S01 Project Hub · shared App-level session projection over locked GUI-02C lifecycle</div>
               </div>
             </div>
             <div className="search-box">⌕ <span>Tìm trong dự án...</span><kbd>Ctrl + K</kbd></div>
@@ -287,7 +352,23 @@ export default function App() {
           </div>
 
           <div className="content-scroll">
-            {activeId === 'S05' ? <ChapterStudio /> : <Placeholder screen={activeScreen} />}
+            {activeId === 'S01' ? (
+              <ProjectHubPanel
+                session={projectSession.state}
+                projectRootInput={projectSession.projectRootInput}
+                overview={projectOverview}
+                overviewError={projectOverviewError}
+                onProjectRootInput={projectSession.setProjectRootInput}
+                onCreate={() => void projectSession.run('create')}
+                onOpen={() => void projectSession.run('open')}
+                onSwitch={() => void projectSession.run('switch')}
+                onClose={() => void projectSession.run('close')}
+              />
+            ) : activeId === 'S05' ? (
+              <ChapterStudio controller={projectSession} />
+            ) : (
+              <Placeholder screen={activeScreen} />
+            )}
           </div>
         </main>
       </div>

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/desktopui"
@@ -69,6 +70,79 @@ func (c *projectSessionController) transitionRuntime(
 			return err
 		}
 	}
+	c.runtime = replacement
+	if activate != nil {
+		activate()
+	}
+	return nil
+}
+
+// handoffRuntime performs a rollback-capable runtime replacement while holding
+// the controller's exclusive ownership lock. The old runtime is hidden from
+// Gateway readers before build runs, but it is not closed until the replacement
+// is fully constructed. If build fails, rollback must restore any temporarily
+// released external ownership (for example the persistent WEB browser profile)
+// before the old runtime is republished.
+func (c *projectSessionController) handoffRuntime(
+	ctx context.Context,
+	build func(desktopui.RuntimeClient) (desktopui.RuntimeClient, error),
+	rollback func(desktopui.RuntimeClient) error,
+	prepare func(desktopui.RuntimeClient) error,
+	activate func(),
+) error {
+	if c == nil {
+		return errors.New("project session controller is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	old := c.runtime
+	if old == nil {
+		return errors.New("project session runtime is unavailable")
+	}
+
+	c.runtime = nil
+	replacement, err := build(old)
+	if err != nil {
+		if rollback != nil {
+			if rollbackErr := rollback(old); rollbackErr != nil {
+				_ = old.Close(ctx)
+				return errors.Join(err, rollbackErr)
+			}
+		}
+		c.runtime = old
+		return err
+	}
+	if replacement == nil {
+		if rollback != nil {
+			if rollbackErr := rollback(old); rollbackErr != nil {
+				_ = old.Close(ctx)
+				return errors.Join(errors.New("replacement runtime is nil"), rollbackErr)
+			}
+		}
+		c.runtime = old
+		return errors.New("replacement runtime is nil")
+	}
+	if replacement == old {
+		c.runtime = old
+		return errors.New("replacement runtime must differ from active runtime")
+	}
+
+	if err := old.Close(ctx); err != nil {
+		_ = replacement.Close(ctx)
+		return err
+	}
+	if prepare != nil {
+		if err := prepare(replacement); err != nil {
+			_ = replacement.Close(ctx)
+			return err
+		}
+	}
+
 	c.runtime = replacement
 	if activate != nil {
 		activate()
