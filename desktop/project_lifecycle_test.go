@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -277,5 +278,134 @@ func TestGatewayCloseProjectStopsSessionAndFailsClosed(t *testing.T) {
 	snapshot := gateway.Snapshot()
 	if snapshot.Error == nil || snapshot.Error.Code != appruntime.ErrorCodeRuntimeUnavailable {
 		t.Fatalf("Snapshot after close error = %#v, want runtime_unavailable", snapshot.Error)
+	}
+}
+
+
+type handoffGatewayRuntime struct {
+	*fakeGatewayRuntime
+	suspendCalls int
+	resumeCalls  int
+	suspendErr   error
+	resumeErr    error
+}
+
+func newHandoffGatewayRuntime() *handoffGatewayRuntime {
+	return &handoffGatewayRuntime{fakeGatewayRuntime: newFakeGatewayRuntime()}
+}
+
+func (r *handoffGatewayRuntime) SuspendProjectHandoff(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suspendCalls++
+	return r.suspendErr
+}
+
+func (r *handoffGatewayRuntime) ResumeProjectHandoff(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resumeCalls++
+	return r.resumeErr
+}
+
+func TestGatewaySwitchSuspendsOldRuntimeBeforeBuildingReplacement(t *testing.T) {
+	oldRuntime := newHandoffGatewayRuntime()
+	oldRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 61}
+	newRuntime := newFakeGatewayRuntime()
+	newRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 62}
+
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	factorySawSuspended := false
+
+	gateway := newGatewayWithRuntimeFactory(oldRuntime, nil, func(context.Context, string, bool) (desktopui.RuntimeClient, error) {
+		oldRuntime.mu.Lock()
+		factorySawSuspended = oldRuntime.suspendCalls == 1
+		oldRuntime.mu.Unlock()
+		return newRuntime, nil
+	})
+	gateway.projectRoot = rootA
+
+	result := gateway.SwitchProject(ProjectLifecycleRequest{ProjectRoot: rootB})
+	if result.Error != nil {
+		t.Fatalf("SwitchProject() error = %#v", result.Error)
+	}
+	if !factorySawSuspended {
+		t.Fatal("replacement factory ran before old runtime released WEB/profile ownership")
+	}
+	oldRuntime.mu.Lock()
+	suspendCalls := oldRuntime.suspendCalls
+	resumeCalls := oldRuntime.resumeCalls
+	oldRuntime.mu.Unlock()
+	if suspendCalls != 1 {
+		t.Fatalf("old runtime suspend calls = %d, want 1", suspendCalls)
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("old runtime resume calls = %d, want 0 after successful switch", resumeCalls)
+	}
+}
+
+func TestGatewaySwitchFactoryFailureResumesAndRestoresOldRuntime(t *testing.T) {
+	oldRuntime := newHandoffGatewayRuntime()
+	oldRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 71}
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+
+	gateway := newGatewayWithRuntimeFactory(oldRuntime, nil, func(context.Context, string, bool) (desktopui.RuntimeClient, error) {
+		return nil, errors.New("replacement construction failed")
+	})
+	gateway.projectRoot = rootA
+
+	result := gateway.SwitchProject(ProjectLifecycleRequest{ProjectRoot: rootB})
+	if result.Error == nil {
+		t.Fatal("SwitchProject() unexpectedly succeeded")
+	}
+	oldRuntime.mu.Lock()
+	suspendCalls := oldRuntime.suspendCalls
+	resumeCalls := oldRuntime.resumeCalls
+	closeCalls := oldRuntime.closeCalls
+	oldRuntime.mu.Unlock()
+	if suspendCalls != 1 || resumeCalls != 1 {
+		t.Fatalf("handoff calls suspend=%d resume=%d, want 1/1", suspendCalls, resumeCalls)
+	}
+	if closeCalls != 0 {
+		t.Fatalf("old runtime close calls = %d, want 0 after replacement factory failure", closeCalls)
+	}
+	if gateway.projectRoot != rootA {
+		t.Fatalf("project root after failed switch = %q, want old root %q", gateway.projectRoot, rootA)
+	}
+	snapshot := gateway.Snapshot()
+	if snapshot.Error != nil || snapshot.Data == nil || snapshot.Data.Revision != 71 {
+		t.Fatalf("old runtime was not restored after failed switch: %#v", snapshot)
+	}
+}
+
+func TestGatewaySwitchSuspendFailureDoesNotRunReplacementFactory(t *testing.T) {
+	oldRuntime := newHandoffGatewayRuntime()
+	oldRuntime.snapshot = appruntime.DesktopSnapshot{Contract: appruntime.CurrentContract(), Revision: 81}
+	oldRuntime.suspendErr = errors.New("suspend failed")
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	factoryCalls := 0
+
+	gateway := newGatewayWithRuntimeFactory(oldRuntime, nil, func(context.Context, string, bool) (desktopui.RuntimeClient, error) {
+		factoryCalls++
+		return newFakeGatewayRuntime(), nil
+	})
+	gateway.projectRoot = rootA
+
+	result := gateway.SwitchProject(ProjectLifecycleRequest{ProjectRoot: rootB})
+	if result.Error == nil {
+		t.Fatal("SwitchProject() unexpectedly succeeded")
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("replacement factory calls = %d, want 0 after suspend failure", factoryCalls)
+	}
+	if gateway.projectRoot != rootA {
+		t.Fatalf("project root after suspend failure = %q, want %q", gateway.projectRoot, rootA)
+	}
+	snapshot := gateway.Snapshot()
+	if snapshot.Error != nil || snapshot.Data == nil || snapshot.Data.Revision != 81 {
+		t.Fatalf("old runtime unavailable after suspend failure: %#v", snapshot)
 	}
 }
