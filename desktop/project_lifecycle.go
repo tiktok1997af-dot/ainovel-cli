@@ -46,8 +46,9 @@ func (g *Gateway) OpenProject(req ProjectLifecycleRequest) ProjectLifecycleResul
 	return g.activateProject(req, false, false)
 }
 
-// SwitchProject prepares the replacement runtime, then stops the old event
-// bridge before entering the controller's exclusive replacement operation.
+// SwitchProject enters an exclusive rollback-capable handoff, temporarily
+// releases the old runtime's WEB/profile ownership, then constructs and
+// publishes the replacement without exposing an intermediate runtime.
 func (g *Gateway) SwitchProject(req ProjectLifecycleRequest) ProjectLifecycleResult {
 	return g.activateProject(req, false, true)
 }
@@ -115,6 +116,11 @@ func (g *Gateway) activateProject(req ProjectLifecycleRequest, create, switching
 		factory = defaultProjectRuntimeFactory
 	}
 	ctx := g.requestContext()
+
+	if switching {
+		return g.switchProjectLocked(result, root, factory, ctx)
+	}
+
 	replacement, err := factory(ctx, root, create)
 	if err != nil {
 		result.Error = gatewayError(err)
@@ -125,10 +131,9 @@ func (g *Gateway) activateProject(req ProjectLifecycleRequest, create, switching
 		return result
 	}
 
-	// Cut the old event stream before taking exclusive controller ownership.
-	// transitionRuntime then waits for all in-flight Gateway leases, hides and
-	// closes the old runtime, prepares the replacement subscription while no
-	// runtime is visible, and commits runtime + bridge before readers resume.
+	// Create/Open have no old runtime to preserve. Prepare the replacement event
+	// bridge while runtime authority is hidden, then publish runtime + bridge as
+	// one controller transition.
 	g.stopEventBridge(ctx)
 	var bridge *preparedEventBridge
 	if err := g.session.transitionRuntime(
@@ -151,6 +156,90 @@ func (g *Gateway) activateProject(req ProjectLifecycleRequest, create, switching
 	g.projectRoot = root
 	g.mu.Unlock()
 
+	return g.projectLifecycleSnapshotResult(result, root, ctx)
+}
+
+type projectRuntimeHandoff interface {
+	SuspendProjectHandoff(context.Context) error
+	ResumeProjectHandoff(context.Context) error
+}
+
+// switchProjectLocked performs a rollback-capable handoff. The old runtime is
+// hidden under the session controller's exclusive lock before it releases the
+// persistent WEB profile. Only then may the replacement factory construct a
+// Host that needs the same profile. Factory failure resumes and republishes the
+// old runtime instead of converting Switch into frontend Close -> Open.
+func (g *Gateway) switchProjectLocked(
+	result ProjectLifecycleResult,
+	root string,
+	factory projectRuntimeFactory,
+	ctx context.Context,
+) ProjectLifecycleResult {
+	g.stopEventBridge(ctx)
+
+	var bridge *preparedEventBridge
+	err := g.session.handoffRuntime(
+		ctx,
+		func(old desktopui.RuntimeClient) (desktopui.RuntimeClient, error) {
+			if err := suspendProjectRuntimeForHandoff(ctx, old); err != nil {
+				return nil, err
+			}
+			return factory(ctx, root, false)
+		},
+		func(old desktopui.RuntimeClient) error {
+			return resumeProjectRuntimeForHandoff(ctx, old)
+		},
+		func(replacement desktopui.RuntimeClient) error {
+			var prepareErr error
+			bridge, prepareErr = g.prepareEventBridge(replacement)
+			return prepareErr
+		},
+		func() {
+			g.activatePreparedEventBridge(bridge)
+		},
+	)
+	if err != nil {
+		// A build/suspend failure may have restored the old runtime. Restore its
+		// event bridge before returning the typed lifecycle error.
+		if old, release, ok := g.acquireRuntime(); ok {
+			bridgeErr := g.startEventBridge(old)
+			release()
+			if bridgeErr != nil {
+				result.Error = gatewayError(bridgeErr)
+				return result
+			}
+		}
+		result.Error = gatewayError(err)
+		return result
+	}
+
+	g.mu.Lock()
+	g.projectRoot = root
+	g.mu.Unlock()
+	return g.projectLifecycleSnapshotResult(result, root, ctx)
+}
+
+func suspendProjectRuntimeForHandoff(ctx context.Context, runtime desktopui.RuntimeClient) error {
+	handoff, ok := runtime.(projectRuntimeHandoff)
+	if !ok {
+		return nil
+	}
+	return handoff.SuspendProjectHandoff(ctx)
+}
+
+func resumeProjectRuntimeForHandoff(ctx context.Context, runtime desktopui.RuntimeClient) error {
+	handoff, ok := runtime.(projectRuntimeHandoff)
+	if !ok {
+		return nil
+	}
+	return handoff.ResumeProjectHandoff(ctx)
+}
+
+func (g *Gateway) projectLifecycleSnapshotResult(
+	result ProjectLifecycleResult,
+	root string,
+	ctx context.Context,
+) ProjectLifecycleResult {
 	snapshot := g.Snapshot()
 	if snapshot.Error != nil {
 		g.stopEventBridge(ctx)
