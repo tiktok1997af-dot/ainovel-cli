@@ -202,6 +202,46 @@ func (m *SessionManager) Stop() error {
 	return process.Stop()
 }
 
+
+// StopAndWait terminates the owned browser process and waits until its process
+// lifecycle is fully reaped (or ctx is cancelled). Project-runtime handoff uses
+// this stronger boundary before another Host may launch Chrome against the same
+// persistent profile; Stop alone intentionally remains the lightweight general
+// shutdown primitive used by existing callers.
+func (m *SessionManager) StopAndWait(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	process := m.process
+	m.process = nil
+	m.snapshot.PID = 0
+	m.transitionLocked(SessionStopped, "")
+	m.mu.Unlock()
+	if process == nil {
+		return nil
+	}
+
+	stopErr := process.Stop()
+	done := process.Done()
+	if done == nil {
+		return stopErr
+	}
+	select {
+	case <-done:
+		return stopErr
+	case <-ctx.Done():
+		if stopErr != nil {
+			return fmt.Errorf("%v; wait for browser exit: %w", stopErr, ctx.Err())
+		}
+		return ctx.Err()
+	}
+}
+
 func (m *SessionManager) Snapshot() SessionSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
