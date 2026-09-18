@@ -202,7 +202,6 @@ func (m *SessionManager) Stop() error {
 	return process.Stop()
 }
 
-
 // StopAndWait terminates the owned browser process and waits until its process
 // lifecycle is fully reaped (or ctx is cancelled). Project-runtime handoff uses
 // this stronger boundary before another Host may launch Chrome against the same
