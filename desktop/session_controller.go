@@ -77,7 +77,6 @@ func (c *projectSessionController) transitionRuntime(
 	return nil
 }
 
-
 // handoffRuntime performs a rollback-capable runtime replacement while holding
 // the controller's exclusive ownership lock. The old runtime is hidden from
 // Gateway readers before build runs, but it is not closed until the replacement
