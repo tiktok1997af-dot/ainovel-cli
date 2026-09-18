@@ -99,7 +99,6 @@ func New(core *host.Host) (*Runtime, error) {
 	return rt, nil
 }
 
-
 // SuspendProjectHandoff temporarily releases project-external WEB browser
 // ownership while keeping the project runtime itself alive for rollback.
 func (r *Runtime) SuspendProjectHandoff(ctx context.Context) error {
