@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakeBrowserProcess struct {
@@ -208,5 +209,74 @@ func TestResolveChromeExecutableAcceptsExplicitFile(t *testing.T) {
 	want, _ := filepath.Abs(path)
 	if got != filepath.Clean(want) {
 		t.Fatalf("resolved path = %q, want %q", got, filepath.Clean(want))
+	}
+}
+
+
+type blockingStopBrowserProcess struct {
+	pid     int
+	done    chan error
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func newBlockingStopBrowserProcess(pid int) *blockingStopBrowserProcess {
+	return &blockingStopBrowserProcess{
+		pid:     pid,
+		done:    make(chan error),
+		stopped: make(chan struct{}),
+	}
+}
+
+func (p *blockingStopBrowserProcess) PID() int           { return p.pid }
+func (p *blockingStopBrowserProcess) Done() <-chan error { return p.done }
+func (p *blockingStopBrowserProcess) Stop() error {
+	p.once.Do(func() { close(p.stopped) })
+	return nil
+}
+
+type singleBrowserLauncher struct {
+	process BrowserProcess
+}
+
+func (l singleBrowserLauncher) Launch(context.Context, BrowserLaunchConfig) (BrowserProcess, error) {
+	return l.process, nil
+}
+
+func TestSessionManagerStopAndWaitWaitsForBrowserExit(t *testing.T) {
+	process := newBlockingStopBrowserProcess(4242)
+	manager := NewSessionManager(SessionConfig{
+		BrowserPath: fakeBrowserExecutable(t),
+		ProfileDir:  filepath.Join(t.TempDir(), "profile"),
+		Launcher:    singleBrowserLauncher{process: process},
+	})
+	if _, err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.StopAndWait(context.Background())
+	}()
+
+	select {
+	case <-process.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("StopAndWait did not stop browser process")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("StopAndWait returned before browser exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(process.done)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("StopAndWait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StopAndWait did not return after browser exit")
 	}
 }
