@@ -281,7 +281,6 @@ func TestGatewayCloseProjectStopsSessionAndFailsClosed(t *testing.T) {
 	}
 }
 
-
 type handoffGatewayRuntime struct {
 	*fakeGatewayRuntime
 	suspendCalls int
