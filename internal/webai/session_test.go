@@ -212,7 +212,6 @@ func TestResolveChromeExecutableAcceptsExplicitFile(t *testing.T) {
 	}
 }
 
-
 type blockingStopBrowserProcess struct {
 	pid     int
 	done    chan error
